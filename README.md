@@ -78,7 +78,51 @@ fault last
 
 This is the fastest way to understand the repo at a glance.
 
+### 1. Control Plane
+
+```mermaid
+flowchart LR
+    Manifest["Manifest Source<br/>configs/bringup/manifest.yaml"] --> Compiler["Compiler / Generators<br/>tools/bringup_compile.py"]
+    Compiler --> Host["Host Tooling<br/>tools/vm32 / triage_bundle.py"]
+    Host --> CI["CI / HIL Gates"]
+    Host --> Target["STM32F446 + FreeRTOS MPU"]
+```
+
+### 2. Target Runtime
+
+```mermaid
+flowchart TB
+    CLI["CLI / Shell<br/>bringup.* fault.* dep.* snapshot vm.* sonic.*"] --> Bringup["Bringup Engine<br/>bringup_phase.c + dependency_graph.c"]
+    Bringup --> Telemetry["Telemetry + Snapshot<br/>semantic telemetry / fault slices / evidence IDs"]
+    Telemetry --> Analysis["Analysis Engine<br/>rule engine + model adapter seam"]
+
+    subgraph Runtime["Inside the Target Runtime"]
+        KDI["KDI Driver Domains<br/>lifecycle / restart / containment"]
+        VM["VM32 Runtime<br/>bounded execution / policy monitor / enforce"]
+        HW["Kernel / BSP / Hardware<br/>FreeRTOS MPU / UART / sensor / IRQ / DMA"]
+    end
+
+    Bringup --> KDI
+    Telemetry --> VM
+    Analysis --> HW
+    KDI --> HW
+    VM --> HW
+```
+
+### 3. Observation Flow
+
+```mermaid
+flowchart LR
+    Source["UART / snapshot logs / triage bundle"] --> Tools["bringup_ui.py / triage_bundle.py / profile_compare.py"]
+    Tools --> Decision["human triage / CI decision"]
+```
+
+<details>
+<summary>Open the original system layout SVG</summary>
+
 ![MicroKernel-MPU system layout](docs/assets/system-layout.svg)
+
+</details>
 
 <details>
 <summary>ASCII architecture snapshot</summary>
