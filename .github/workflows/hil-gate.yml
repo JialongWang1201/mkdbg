@@ -1,0 +1,97 @@
+name: HIL Gate
+
+on:
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:
+    inputs:
+      serial_port:
+        description: "Serial port on self-hosted runner (optional, auto-detect if empty)"
+        required: false
+        default: ""
+      baud:
+        description: "UART baud rate"
+        required: false
+        default: "115200"
+      snapshot_timeout_s:
+        description: "bringup_regress snapshot timeout (seconds)"
+        required: false
+        default: "60"
+
+jobs:
+  hil-gate:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.fork == false
+    runs-on: [self-hosted, microkernel-mpu-hil]
+    timeout-minutes: 75
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve Serial Port
+        id: port
+        run: |
+          set -euo pipefail
+          PORT=""
+
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            PORT="${{ inputs.serial_port }}"
+          fi
+
+          if [[ -z "${PORT}" && -n "${HIL_SERIAL_PORT:-}" ]]; then
+            PORT="${HIL_SERIAL_PORT}"
+          fi
+
+          if [[ -z "${PORT}" ]]; then
+            for candidate in /dev/cu.usbmodem* /dev/ttyACM* /dev/ttyUSB*; do
+              if [[ -e "${candidate}" ]]; then
+                PORT="${candidate}"
+                break
+              fi
+            done
+          fi
+
+          if [[ -z "${PORT}" ]]; then
+            echo "error: no serial port resolved; set workflow input serial_port or repo variable HIL_SERIAL_PORT" >&2
+            exit 2
+          fi
+
+          echo "resolved serial port: ${PORT}"
+          echo "port=${PORT}" >> "${GITHUB_OUTPUT}"
+        env:
+          HIL_SERIAL_PORT: ${{ vars.HIL_SERIAL_PORT }}
+
+      - name: Run HIL Gate
+        id: hil
+        run: |
+          set -euo pipefail
+          mkdir -p logs
+
+          BAUD="115200"
+          SNAPSHOT_TIMEOUT_S="60"
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            [[ -n "${{ inputs.baud }}" ]] && BAUD="${{ inputs.baud }}"
+            [[ -n "${{ inputs.snapshot_timeout_s }}" ]] && SNAPSHOT_TIMEOUT_S="${{ inputs.snapshot_timeout_s }}"
+          fi
+
+          REPORT_PATH="logs/hil_gate_ci_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}.json"
+
+          bash tools/hil_gate.sh \
+            --port "${{ steps.port.outputs.port }}" \
+            --baud "${BAUD}" \
+            --snapshot-timeout-s "${SNAPSHOT_TIMEOUT_S}" \
+            --report-path "${REPORT_PATH}"
+
+          echo "report=${REPORT_PATH}" >> "${GITHUB_OUTPUT}"
+
+      - name: Upload HIL Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hil-gate-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: warn
+          path: |
+            logs/hil_gate_ci_${{ github.run_id }}_${{ github.run_attempt }}.json
+            logs/hil_gate_*.stdout.log
+            logs/hil_gate_*.stderr.log
+            logs/*_regress_*.log

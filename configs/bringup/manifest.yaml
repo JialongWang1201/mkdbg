@@ -1,0 +1,145 @@
+# Keep this manifest in a simple YAML subset so the host compiler has zero
+# third-party dependencies in CI.
+
+phases:
+  - enum: BRINGUP_PHASE_ROM_EARLY_INIT
+    name: rom-early-init
+    stage: BRINGUP_STAGE_INIT
+    aliases: [rom, early]
+  - enum: BRINGUP_PHASE_MPU_SETUP
+    name: mpu-setup
+    stage: BRINGUP_STAGE_MPU
+    aliases: [mpu]
+  - enum: BRINGUP_PHASE_KERNEL_START
+    name: kernel-start
+    stage: BRINGUP_STAGE_KERNEL
+    aliases: [kernel]
+  - enum: BRINGUP_PHASE_DRIVER_PROBE_DIAG
+    name: driver-probe-diag
+    stage: BRINGUP_STAGE_DRIVERS
+    aliases: [driver, probe, driver-probe, driver-diag, diag]
+  - enum: BRINGUP_PHASE_DRIVER_PROBE_UART
+    name: driver-probe-uart
+    stage: BRINGUP_STAGE_DRIVERS
+    aliases: [driver-uart, uart]
+  - enum: BRINGUP_PHASE_DRIVER_PROBE_SENSOR
+    name: driver-probe-sensor
+    stage: BRINGUP_STAGE_DRIVERS
+    aliases: [driver-sensor, sensor]
+  - enum: BRINGUP_PHASE_DRIVER_PROBE_VM
+    name: driver-probe-vm
+    stage: BRINGUP_STAGE_DRIVERS
+    aliases: [driver-vm, vm]
+  - enum: BRINGUP_PHASE_SERVICE_REGISTRATION
+    name: service-registration
+    stage: BRINGUP_STAGE_DRIVERS
+    aliases: [service, services]
+  - enum: BRINGUP_PHASE_USER_WORKLOAD_ENABLE
+    name: user-workload-enable
+    stage: BRINGUP_STAGE_READY
+    aliases: [user, workload]
+
+stages:
+  - enum: BRINGUP_STAGE_INIT
+    name: init
+    phase_begin: BRINGUP_PHASE_ROM_EARLY_INIT
+    phase_end: BRINGUP_PHASE_ROM_EARLY_INIT
+    entry_event: bringup.stage.init.enter
+    exit_event: bringup.stage.init.exit
+    aliases: []
+  - enum: BRINGUP_STAGE_MPU
+    name: mpu
+    phase_begin: BRINGUP_PHASE_MPU_SETUP
+    phase_end: BRINGUP_PHASE_MPU_SETUP
+    entry_event: bringup.stage.mpu.enter
+    exit_event: bringup.stage.mpu.exit
+    aliases: []
+  - enum: BRINGUP_STAGE_KERNEL
+    name: kernel
+    phase_begin: BRINGUP_PHASE_KERNEL_START
+    phase_end: BRINGUP_PHASE_KERNEL_START
+    entry_event: bringup.stage.kernel.enter
+    exit_event: bringup.stage.kernel.exit
+    aliases: []
+  - enum: BRINGUP_STAGE_DRIVERS
+    name: drivers
+    phase_begin: BRINGUP_PHASE_DRIVER_PROBE_DIAG
+    phase_end: BRINGUP_PHASE_SERVICE_REGISTRATION
+    entry_event: bringup.stage.drivers.enter
+    exit_event: bringup.stage.drivers.exit
+    aliases: [driver]
+  - enum: BRINGUP_STAGE_READY
+    name: ready
+    phase_begin: BRINGUP_PHASE_USER_WORKLOAD_ENABLE
+    phase_end: BRINGUP_PHASE_USER_WORKLOAD_ENABLE
+    entry_event: bringup.stage.ready.enter
+    exit_event: bringup.stage.ready.exit
+    aliases: []
+
+driver_edges:
+  - from: KDI_DRIVER_UART
+    to: KDI_DRIVER_DIAG
+    reason: diagnostic log/control path
+  - from: KDI_DRIVER_SENSOR
+    to: KDI_DRIVER_UART
+    reason: sensor telemetry uplink
+  - from: KDI_DRIVER_VM_RUNTIME
+    to: KDI_DRIVER_UART
+    reason: vm io service channel
+  - from: KDI_DRIVER_VM_RUNTIME
+    to: KDI_DRIVER_SENSOR
+    reason: vm consumes sensor data plane
+  - from: KDI_DRIVER_VM_RUNTIME
+    to: KDI_DRIVER_DIAG
+    reason: vm fault trace routing
+
+resource_edges:
+  - driver: KDI_DRIVER_UART
+    kind: DEP_RESOURCE_IRQ
+    resource_id: USARTx_VCP
+    reason: uart rx/tx interrupt path
+  - driver: KDI_DRIVER_UART
+    kind: DEP_RESOURCE_MEMORY
+    resource_id: g_shared_ctrl
+    reason: runtime knob sync
+  - driver: KDI_DRIVER_SENSOR
+    kind: DEP_RESOURCE_DMA
+    resource_id: ADC_DMA_RING
+    reason: adc dma sample ingress
+  - driver: KDI_DRIVER_SENSOR
+    kind: DEP_RESOURCE_MEMORY
+    resource_id: g_shared_adc
+    reason: sensor sample window
+  - driver: KDI_DRIVER_VM_RUNTIME
+    kind: DEP_RESOURCE_MEMORY
+    resource_id: g_shared_adc
+    reason: vm sensor read mapping
+  - driver: KDI_DRIVER_VM_RUNTIME
+    kind: DEP_RESOURCE_MEMORY
+    resource_id: g_shared_ctrl
+    reason: vm control mapping
+  - driver: KDI_DRIVER_VM_RUNTIME
+    kind: DEP_RESOURCE_MEMORY
+    resource_id: g_shared_stats
+    reason: vm stats mapping
+  - driver: KDI_DRIVER_DIAG
+    kind: DEP_RESOURCE_MEMORY
+    resource_id: log_queue
+    reason: diagnostic sink buffer
+
+stage_driver_edges:
+  - phase: BRINGUP_PHASE_KERNEL_START
+    driver: KDI_DRIVER_KERNEL
+    reason: kernel runtime online
+  - phase: BRINGUP_PHASE_DRIVER_PROBE_DIAG
+    driver: KDI_DRIVER_DIAG
+    reason: diag probe/activate
+  - phase: BRINGUP_PHASE_DRIVER_PROBE_UART
+    driver: KDI_DRIVER_UART
+    reason: uart probe/activate
+  - phase: BRINGUP_PHASE_DRIVER_PROBE_SENSOR
+    driver: KDI_DRIVER_SENSOR
+    reason: sensor probe/activate
+  - phase: BRINGUP_PHASE_DRIVER_PROBE_VM
+    driver: KDI_DRIVER_VM_RUNTIME
+    reason: vm probe/activate

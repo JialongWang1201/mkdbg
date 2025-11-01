@@ -1,0 +1,6 @@
+.DS_Store
+**/.DS_Store
+build/
+freertos/.DS_Store
+logs/
+**/__pycache__/

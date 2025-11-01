@@ -1,0 +1,134 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="980" viewBox="0 0 1400 980" role="img" aria-labelledby="title desc">
+  <title id="title">MicroKernel-MPU system layout</title>
+  <desc id="desc">System layout diagram showing host tooling, bringup manifest compiler, target runtime components, and analysis and UI data flow.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#08101a"/>
+      <stop offset="100%" stop-color="#0d1726"/>
+    </linearGradient>
+    <linearGradient id="hostBox" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0f2740"/>
+      <stop offset="100%" stop-color="#143454"/>
+    </linearGradient>
+    <linearGradient id="targetBox" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#15361e"/>
+      <stop offset="100%" stop-color="#1b4729"/>
+    </linearGradient>
+    <linearGradient id="analysisBox" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#3a2a11"/>
+      <stop offset="100%" stop-color="#553b16"/>
+    </linearGradient>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#93c5fd"/>
+    </marker>
+    <marker id="arrowGreen" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#86efac"/>
+    </marker>
+    <marker id="arrowGold" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#fcd34d"/>
+    </marker>
+    <style>
+      .title { font: 700 34px "SF Pro Display", "Segoe UI", Arial, sans-serif; fill: #e5eef9; }
+      .subtitle { font: 500 18px "SF Pro Text", "Segoe UI", Arial, sans-serif; fill: #9fb7d2; }
+      .section { font: 700 20px "SF Pro Text", "Segoe UI", Arial, sans-serif; fill: #eaf2fb; }
+      .boxTitle { font: 700 18px "SF Pro Text", "Segoe UI", Arial, sans-serif; fill: #f8fbff; }
+      .boxText { font: 500 15px "SF Pro Text", "Segoe UI", Arial, sans-serif; fill: #d8e3f0; }
+      .small { font: 500 14px "SF Pro Text", "Segoe UI", Arial, sans-serif; fill: #b9cadf; }
+      .label { font: 600 14px "SF Pro Text", "Segoe UI", Arial, sans-serif; fill: #d6e4f3; }
+    </style>
+  </defs>
+
+  <rect width="1400" height="980" fill="url(#bg)"/>
+
+  <text x="64" y="72" class="title">MicroKernel-MPU System Layout</text>
+  <text x="64" y="104" class="subtitle">Host tooling drives build, flash, bundle capture, and RCA. The target emits structured telemetry that flows into triage, dashboards, and regression gates.</text>
+
+  <rect x="56" y="144" width="1288" height="250" rx="18" fill="none" stroke="#29496d" stroke-width="2"/>
+  <text x="76" y="176" class="section">Host / CI / Control Plane</text>
+
+  <rect x="84" y="208" width="250" height="138" rx="14" fill="url(#hostBox)" stroke="#3b82f6" stroke-width="2"/>
+  <text x="106" y="240" class="boxTitle">Manifest Source</text>
+  <text x="106" y="270" class="boxText">configs/bringup/manifest.yaml</text>
+  <text x="106" y="298" class="small">Single source of truth for</text>
+  <text x="106" y="320" class="small">phase, stage, driver, and resource layout</text>
+
+  <rect x="390" y="208" width="278" height="138" rx="14" fill="url(#hostBox)" stroke="#3b82f6" stroke-width="2"/>
+  <text x="412" y="240" class="boxTitle">Compiler / Generators</text>
+  <text x="412" y="270" class="boxText">tools/bringup_compile.py</text>
+  <text x="412" y="298" class="small">Generates C headers, dependency data,</text>
+  <text x="412" y="320" class="small">and docs/generated/bringup_manifest.md</text>
+
+  <rect x="724" y="208" width="280" height="138" rx="14" fill="url(#hostBox)" stroke="#3b82f6" stroke-width="2"/>
+  <text x="746" y="240" class="boxTitle">Host Tooling</text>
+  <text x="746" y="270" class="boxText">tools/vm32, triage_bundle.py</text>
+  <text x="746" y="298" class="small">Build, flash, capture logs, replay bundles,</text>
+  <text x="746" y="320" class="small">profile compare, and bringup UI rendering</text>
+
+  <rect x="1060" y="208" width="250" height="138" rx="14" fill="url(#hostBox)" stroke="#3b82f6" stroke-width="2"/>
+  <text x="1082" y="240" class="boxTitle">CI / HIL Gates</text>
+  <text x="1082" y="270" class="boxText">host tests + self-hosted regressions</text>
+  <text x="1082" y="298" class="small">build, flash, bringup, KDI, IRQ,</text>
+  <text x="1082" y="320" class="small">profile regress, and release gating</text>
+
+  <line x1="334" y1="277" x2="390" y2="277" stroke="#93c5fd" stroke-width="4" marker-end="url(#arrow)"/>
+  <line x1="668" y1="277" x2="724" y2="277" stroke="#93c5fd" stroke-width="4" marker-end="url(#arrow)"/>
+  <line x1="1004" y1="277" x2="1060" y2="277" stroke="#93c5fd" stroke-width="4" marker-end="url(#arrow)"/>
+
+  <rect x="56" y="430" width="1288" height="378" rx="18" fill="none" stroke="#2b5b36" stroke-width="2"/>
+  <text x="76" y="462" class="section">Target Runtime: STM32F446 + FreeRTOS MPU</text>
+
+  <rect x="90" y="502" width="230" height="118" rx="14" fill="url(#targetBox)" stroke="#22c55e" stroke-width="2"/>
+  <text x="112" y="534" class="boxTitle">CLI / Shell</text>
+  <text x="112" y="562" class="boxText">bringup.*, fault.*, dep.*,</text>
+  <text x="112" y="586" class="boxText">snapshot, profile, vm.*, sonic.*</text>
+
+  <rect x="360" y="502" width="300" height="118" rx="14" fill="url(#targetBox)" stroke="#22c55e" stroke-width="2"/>
+  <text x="382" y="534" class="boxTitle">Bringup Engine</text>
+  <text x="382" y="562" class="boxText">bringup_phase.c + dependency_graph.c</text>
+  <text x="382" y="590" class="small">phase/stage wait analysis, rollback, rerun, what-if</text>
+
+  <rect x="700" y="502" width="300" height="118" rx="14" fill="url(#targetBox)" stroke="#22c55e" stroke-width="2"/>
+  <text x="722" y="534" class="boxTitle">Telemetry + Snapshot</text>
+  <text x="722" y="562" class="boxText">semantic telemetry, fault slices,</text>
+  <text x="722" y="586" class="boxText">feature vectors, evidence event IDs</text>
+
+  <rect x="1040" y="502" width="260" height="118" rx="14" fill="url(#targetBox)" stroke="#22c55e" stroke-width="2"/>
+  <text x="1062" y="534" class="boxTitle">Analysis Engine</text>
+  <text x="1062" y="562" class="boxText">rule engine + model adapter seam</text>
+  <text x="1062" y="590" class="small">failure class, hypothesis, checkpoints</text>
+
+  <rect x="190" y="660" width="280" height="110" rx="14" fill="url(#targetBox)" stroke="#22c55e" stroke-width="2"/>
+  <text x="212" y="692" class="boxTitle">KDI Driver Domains</text>
+  <text x="212" y="720" class="boxText">driver lifecycle, restart, fault containment,</text>
+  <text x="212" y="744" class="boxText">IRQ / DMA / capability policy state</text>
+
+  <rect x="520" y="660" width="280" height="110" rx="14" fill="url(#targetBox)" stroke="#22c55e" stroke-width="2"/>
+  <text x="542" y="692" class="boxTitle">VM32 Runtime</text>
+  <text x="542" y="720" class="boxText">bounded execution, workloads,</text>
+  <text x="542" y="744" class="boxText">policy monitor / enforce scenarios</text>
+
+  <rect x="850" y="660" width="280" height="110" rx="14" fill="url(#targetBox)" stroke="#22c55e" stroke-width="2"/>
+  <text x="872" y="692" class="boxTitle">Kernel / BSP / Hardware</text>
+  <text x="872" y="720" class="boxText">FreeRTOS MPU, scheduler, UART, sensor,</text>
+  <text x="872" y="744" class="boxText">board resources, interrupts, DMA</text>
+
+  <line x1="320" y1="560" x2="360" y2="560" stroke="#86efac" stroke-width="4" marker-end="url(#arrowGreen)"/>
+  <line x1="660" y1="560" x2="700" y2="560" stroke="#86efac" stroke-width="4" marker-end="url(#arrowGreen)"/>
+  <line x1="1000" y1="560" x2="1040" y2="560" stroke="#86efac" stroke-width="4" marker-end="url(#arrowGreen)"/>
+
+  <line x1="510" y1="620" x2="330" y2="660" stroke="#86efac" stroke-width="4" marker-end="url(#arrowGreen)"/>
+  <line x1="840" y1="620" x2="660" y2="660" stroke="#86efac" stroke-width="4" marker-end="url(#arrowGreen)"/>
+  <line x1="1130" y1="620" x2="990" y2="660" stroke="#86efac" stroke-width="4" marker-end="url(#arrowGreen)"/>
+
+  <rect x="56" y="840" width="1288" height="96" rx="18" fill="none" stroke="#7c5b17" stroke-width="2"/>
+  <text x="76" y="874" class="section">Observation / Incident Flow</text>
+  <text x="92" y="910" class="label">UART / snapshot logs / triage bundle</text>
+  <line x1="338" y1="904" x2="560" y2="904" stroke="#fcd34d" stroke-width="4" marker-end="url(#arrowGold)"/>
+  <text x="588" y="910" class="label">bringup_ui.py, triage_bundle.py, profile_compare.py</text>
+  <line x1="1015" y1="904" x2="1242" y2="904" stroke="#fcd34d" stroke-width="4" marker-end="url(#arrowGold)"/>
+  <text x="1260" y="910" class="label">human triage / CI decision</text>
+
+  <line x1="864" y1="346" x2="864" y2="466" stroke="#93c5fd" stroke-width="4" marker-end="url(#arrow)"/>
+  <text x="882" y="422" class="label">build / flash / serial control</text>
+  <line x1="864" y1="770" x2="864" y2="840" stroke="#fcd34d" stroke-width="4" marker-end="url(#arrowGold)"/>
+</svg>

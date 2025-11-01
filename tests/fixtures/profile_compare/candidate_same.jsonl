@@ -1,0 +1,11 @@
+{"type":"driver-profile-meta","version":1,"label":"candidate_same"}
+{"type":"driver-profile","driver":"uart","irq_samples":100,"dma_samples":100,"kdi_rc":"ok"}
+{"type":"driver-profile-irq","driver":"uart","dist":{"0":90,"1_4":10,"5_15":0,"16_63":0,"64_255":0,"256p":0}}
+{"type":"driver-profile-dma","driver":"uart","rx":{"0":85,"1_24":15,"25_49":0,"50_74":0,"75_99":0,"100":0},"tx":{"0":80,"1_24":20,"25_49":0,"50_74":0,"75_99":0,"100":0}}
+{"type":"driver-profile-kdi-a","driver":"uart","mpu":{"cnt":8,"fail":0},"irq":{"cnt":12,"fail":0},"dma":{"cnt":6,"fail":0}}
+{"type":"driver-profile-kdi-b","driver":"uart","fault":{"cnt":1,"fail":0},"power":{"cnt":0,"fail":0},"reset":{"cnt":0,"fail":0}}
+{"type":"driver-profile-state-visits","driver":"uart","init":1,"probe":1,"ready":1,"active":12,"error":0,"reset":0,"dead":0}
+{"type":"driver-profile-state-row","driver":"uart","from":"init","init":0,"probe":1,"ready":0,"active":0,"error":0,"reset":0,"dead":0}
+{"type":"driver-profile-state-row","driver":"uart","from":"probe","init":0,"probe":0,"ready":1,"active":0,"error":0,"reset":0,"dead":0}
+{"type":"driver-profile-state-row","driver":"uart","from":"ready","init":0,"probe":0,"ready":0,"active":1,"error":0,"reset":0,"dead":0}
+{"type":"driver-profile-state-row","driver":"uart","from":"active","init":0,"probe":0,"ready":0,"active":12,"error":0,"reset":0,"dead":0}

@@ -1,0 +1,20 @@
+snapshot begin reason=cli ts_ms=12345
+snapshot bringup boot_complete=0 active=none last_error=-902
+snapshot events window_ms=5000 count=4
+snapshot slices count=1
+snapshot slice id=0 reason=first corr_id=0x10000005 stage=driver-probe-sensor events=4 fault=1 reset=1 age_ms=[4200..100]
+snapshot feature slice=0 drv=sensor irq_abn=1 dma_full=1 dma_idle=0 kdi_fail_freq=1 state_loop=1 eperm=0 mpu_vio=0
+snapshot feature detail slice=0 irq_evt=6 irq_rate=1200 kdi_fail=3 lookback_ms=5000 corr=0x10000005
+snapshot hypothesis slice=0 name=dma_backpressure conf=82 evidence=2,3
+snapshot hypothesis explain slice=0 name=dma_backpressure p1=DMA ring pressure is elevated near fault.
+snapshot hypothesis explain slice=0 name=dma_backpressure p2=Backpressure signature appears in occupancy and limit signals.
+snapshot failure slice=0 category=early_resource_fault conf=78 evidence=2,3 stage=drivers
+snapshot failure explain slice=0 category=early_resource_fault p1=Resource pressure hits exceeded baseline.
+snapshot failure explain slice=0 category=early_resource_fault p2=Queue and budget saturation likely triggered early failure.
+snapshot ai failure slice=0 class=early_resource_fault stage=drivers driver=sensor evidence=2,3
+snapshot ai support slice=0 event=2 stage=driver-probe-sensor msg=dma ring_overflow rc=limit
+snapshot ai checkpoint slice=0 step=1 cmd=snapshot focus=dma_full/irq_abn/kdi_fail features
+snapshot event slice=0 id=0 age_ms=4200 ts_ms=8145 corr_id=0x10000005 flags=stage stage=driver-probe-sensor msg=bringup stage drivers enter
+snapshot event slice=0 id=1 age_ms=2600 ts_ms=9745 corr_id=0x10000005 flags=none stage=driver-probe-sensor msg=kdi irq storm sensor fail=2
+snapshot event slice=0 id=2 age_ms=300 ts_ms=12045 corr_id=0x10000005 flags=fault stage=driver-probe-sensor msg=Fault(cpu:MemManage)
+snapshot end

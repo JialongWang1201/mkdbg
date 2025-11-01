@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          set -euxo pipefail
+          CODENAME="$(. /etc/os-release && echo "${VERSION_CODENAME}")"
+          cat > /tmp/ubuntu-ci.list <<EOF
+          deb http://archive.ubuntu.com/ubuntu ${CODENAME} main universe restricted multiverse
+          deb http://archive.ubuntu.com/ubuntu ${CODENAME}-updates main universe restricted multiverse
+          deb http://archive.ubuntu.com/ubuntu ${CODENAME}-backports main universe restricted multiverse
+          deb http://security.ubuntu.com/ubuntu ${CODENAME}-security main universe restricted multiverse
+          EOF
+          sudo apt-get -o Acquire::Retries=3 \
+            -o Dir::Etc::sourcelist=/tmp/ubuntu-ci.list \
+            -o Dir::Etc::sourceparts=- \
+            update
+          sudo apt-get -o Acquire::Retries=3 \
+            -o Dir::Etc::sourcelist=/tmp/ubuntu-ci.list \
+            -o Dir::Etc::sourceparts=- \
+            install -y --no-install-recommends \
+            cmake \
+            gcc-arm-none-eabi \
+            libnewlib-arm-none-eabi \
+            libstdc++-arm-none-eabi-newlib \
+            binutils-arm-none-eabi
+
+      - name: Build
+        run: bash tools/build.sh
+
+  host-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run host unit tests
+        run: |
+          set -euxo pipefail
+          bash tools/vm32_host_tests.sh
+          bash tools/kdi_host_tests.sh
+          bash tools/sonic_lite_host_tests.sh
+          bash tools/bringup_host_tests.sh
+          bash tools/semantic_telemetry_host_tests.sh
+          bash tools/dependency_graph_host_tests.sh
+          bash tools/bringup_compile_host_tests.sh
+          bash tools/bringup_ui_host_tests.sh
+          bash tools/analysis_engine_host_tests.sh
+
+  host-regress:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run host regression and tooling checks
+        run: |
+          set -euxo pipefail
+          bash tools/vm32_ci.sh
+          bash tools/profile_compare_host_regress.sh
+          bash tools/triage_bundle_host_tests.sh
+          bash tools/triage_replay_host_tests.sh
+          bash tools/regression_summary_host_tests.sh
+
+      - name: Upload Host Regression Summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: host-regress-summary-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: warn
+          path: |
+            build/regression_summary.json
+            build/regression_summary.triage_bundle.json

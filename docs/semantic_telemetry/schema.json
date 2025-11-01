@@ -1,0 +1,359 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://microkernel-mpu.local/schemas/semantic_telemetry/schema.json",
+  "title": "MicroKernel-MPU Semantic Telemetry Record",
+  "description": "Schema-first semantic telemetry substrate. A telemetry stream is a sequence of EVENT, STATE_SNAPSHOT, and RESOURCE_METRIC records.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/Event"
+    },
+    {
+      "$ref": "#/$defs/StateSnapshot"
+    },
+    {
+      "$ref": "#/$defs/ResourceMetric"
+    }
+  ],
+  "$defs": {
+    "IdToken": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9._:-]+$",
+      "description": "Opaque identifier used for correlation or tracing (e.g. corr_id, span_id)."
+    },
+    "Timestamp": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Monotonic timestamp in the unit specified by ts_unit."
+    },
+    "TimestampUnit": {
+      "type": "string",
+      "enum": [
+        "ns",
+        "us"
+      ],
+      "description": "Timestamp unit for ts; monotonic time should be emitted at microsecond or nanosecond resolution."
+    },
+    "Source": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^(kernel|driver\\/[A-Za-z0-9_.-]+|service\\/[A-Za-z0-9_.-]+|user\\/[A-Za-z0-9_.-]+|host\\/[A-Za-z0-9_.-]+)$",
+      "description": "Emitter source. Canonical forms include kernel and driver/<name>."
+    },
+    "Severity": {
+      "type": "string",
+      "enum": [
+        "INFO",
+        "WARN",
+        "ERROR",
+        "FATAL"
+      ]
+    },
+    "EventType": {
+      "type": "string",
+      "enum": [
+        "COMMAND",
+        "KDI_CALL",
+        "CAPABILITY_CHECK",
+        "STATE_TRANSITION",
+        "IRQ",
+        "DEFERRED_WORK",
+        "DMA",
+        "RESOURCE_PRESSURE",
+        "BRINGUP_STAGE",
+        "POLICY_CHANGE",
+        "FAULT",
+        "RESET"
+      ]
+    },
+    "SnapshotType": {
+      "type": "string",
+      "enum": [
+        "SYSTEM",
+        "BRINGUP",
+        "DRIVER",
+        "FAULT",
+        "IRQ",
+        "DMA",
+        "POLICY"
+      ]
+    },
+    "MetricClass": {
+      "type": "string",
+      "enum": [
+        "COUNT",
+        "RATE",
+        "LEVEL"
+      ],
+      "description": "COUNT for monotonically increasing counters, RATE for per-window throughput, LEVEL for watermarks/queue depth/pressure."
+    },
+    "MetricValue": {
+      "oneOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "number"
+        }
+      ]
+    },
+    "StringMap": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "JsonObject": {
+      "type": "object",
+      "description": "Free-form structured payload. Schema-first callers should document stable keys per event/snapshot/metric type.",
+      "additionalProperties": true
+    },
+    "EntityRef": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32,
+          "description": "Examples: driver, irq, dma_ring, phase, policy, service."
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "domain": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "description": "Fault/isolation domain if applicable (e.g. kdi/uart, bringup, kernel)."
+        }
+      },
+      "required": [
+        "kind",
+        "id"
+      ],
+      "additionalProperties": false
+    },
+    "BaseRecord": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "type": "string",
+          "const": "semtelem.v1"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Per-emitter monotonically increasing sequence number (recommended)."
+        },
+        "ts": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "ts_unit": {
+          "$ref": "#/$defs/TimestampUnit"
+        },
+        "clock": {
+          "type": "string",
+          "const": "MONOTONIC"
+        },
+        "src": {
+          "$ref": "#/$defs/Source"
+        },
+        "corr_id": {
+          "$ref": "#/$defs/IdToken"
+        },
+        "span_id": {
+          "$ref": "#/$defs/IdToken"
+        },
+        "parent_span_id": {
+          "$ref": "#/$defs/IdToken"
+        },
+        "entity": {
+          "$ref": "#/$defs/EntityRef"
+        },
+        "tags": {
+          "$ref": "#/$defs/StringMap"
+        }
+      },
+      "required": [
+        "schema_version",
+        "ts",
+        "ts_unit",
+        "clock",
+        "src",
+        "corr_id"
+      ],
+      "dependentRequired": {
+        "parent_span_id": [
+          "span_id"
+        ]
+      }
+    },
+    "Event": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/BaseRecord"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "EVENT"
+            },
+            "type": {
+              "$ref": "#/$defs/EventType"
+            },
+            "severity": {
+              "$ref": "#/$defs/Severity"
+            },
+            "state_from": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "state_to": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "result": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 32,
+              "description": "Optional normalized outcome, e.g. ok, denied, timeout, fail."
+            },
+            "code": {
+              "type": "integer",
+              "description": "Subsystem-specific error/fault/status code if available."
+            },
+            "message": {
+              "type": "string",
+              "maxLength": 256,
+              "description": "Human-readable summary for logs/UI; not required for machine reasoning."
+            },
+            "data": {
+              "$ref": "#/$defs/JsonObject"
+            }
+          },
+          "required": [
+            "kind",
+            "type",
+            "severity"
+          ]
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "StateSnapshot": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/BaseRecord"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "STATE_SNAPSHOT"
+            },
+            "snapshot_type": {
+              "$ref": "#/$defs/SnapshotType"
+            },
+            "snapshot_reason": {
+              "type": "string",
+              "enum": [
+                "ON_DEMAND",
+                "PERIODIC",
+                "ON_FAULT",
+                "ON_RESET",
+                "ON_TRANSITION"
+              ]
+            },
+            "state": {
+              "$ref": "#/$defs/JsonObject"
+            }
+          },
+          "required": [
+            "kind",
+            "snapshot_type",
+            "state"
+          ]
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "ResourceMetric": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/BaseRecord"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "RESOURCE_METRIC"
+            },
+            "resource_kind": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 32,
+              "description": "Examples: dma_ring, irq_queue, heap, pool, mailbox."
+            },
+            "resource_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "metric": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "description": "Metric name, e.g. depth, drops, bytes_per_s, reclaim_failures."
+            },
+            "metric_class": {
+              "$ref": "#/$defs/MetricClass"
+            },
+            "value": {
+              "$ref": "#/$defs/MetricValue"
+            },
+            "unit": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 16,
+              "description": "Examples: count, bytes, bytes/s, pct, slots."
+            },
+            "window_us": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Sampling/aggregation window for RATE metrics."
+            },
+            "capacity": {
+              "$ref": "#/$defs/MetricValue"
+            },
+            "high_watermark": {
+              "$ref": "#/$defs/MetricValue"
+            },
+            "data": {
+              "$ref": "#/$defs/JsonObject"
+            }
+          },
+          "required": [
+            "kind",
+            "resource_kind",
+            "resource_id",
+            "metric",
+            "metric_class",
+            "value",
+            "unit"
+          ]
+        }
+      ],
+      "unevaluatedProperties": false
+    }
+  }
+}

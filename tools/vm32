@@ -1,0 +1,478 @@
+#!/usr/bin/env python3
+import argparse
+import json
+import shlex
+import subprocess
+import sys
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parent
+TOOLS = {
+    "asm": ROOT / "vm32_asm.py",
+    "disasm": ROOT / "vm32_disasm.py",
+    "load": ROOT / "vm32_load.py",
+    "tinyc": ROOT / "vm32_tinyc.py",
+    "verify": ROOT / "vm32_verify.py",
+    "board-regress": ROOT / "board_regress.py",
+    "sonic-regress": ROOT / "sonic_regress.py",
+    "kdi-regress": ROOT / "kdi_driver_regress.py",
+    "irq-regress": ROOT / "kdi_irq_regress.py",
+    "bringup-regress": ROOT / "bringup_regress.py",
+    "bringup-ui": ROOT / "bringup_ui.py",
+    "triage-bundle": ROOT / "triage_bundle.py",
+    "triage-replay": ROOT / "triage_replay.py",
+    "profile-compare": ROOT / "driver_profile_compare.py",
+    "profile-regress": ROOT / "driver_profile_compare_regress.py",
+}
+
+
+def run_process_result(cmd: list[str], cmd_name: str, extra_args: list[str]) -> dict:
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    result = {
+        "ok": proc.returncode == 0,
+        "cmd": cmd_name,
+        "args": extra_args,
+        "exit_code": proc.returncode,
+        "stdout": proc.stdout,
+        "stderr": proc.stderr,
+    }
+    try:
+        result["stdout_json"] = json.loads(proc.stdout) if proc.stdout.strip() else None
+    except Exception:
+        result["stdout_json"] = None
+    return result
+
+
+def run_process(cmd: list[str], cmd_name: str, extra_args: list[str], json_mode: bool) -> int:
+    if not json_mode:
+        return subprocess.call(cmd)
+    result = run_process_result(cmd, cmd_name, extra_args)
+    print(json.dumps(result, ensure_ascii=True))
+    return int(result["exit_code"])
+
+
+def run_tool(tool: str, extra_args: list[str], json_mode: bool) -> int:
+    script = TOOLS[tool]
+    if not script.exists():
+        print(f"error: missing tool {script}", file=sys.stderr)
+        return 2
+    cmd = [sys.executable, str(script)] + extra_args
+    return run_process(cmd, tool, extra_args, json_mode)
+
+
+def run_demo(extra_args: list[str], json_mode: bool) -> int:
+    script = ROOT / "vm32_demo.sh"
+    if not script.exists():
+        print(f"error: missing demo script {script}", file=sys.stderr)
+        return 2
+    cmd = ["bash", str(script)] + extra_args
+    return run_process(cmd, "demo", extra_args, json_mode)
+
+
+def run_named_command_result(cmd_name: str, extra_args: list[str]) -> dict:
+    if cmd_name == "demo":
+        script = ROOT / "vm32_demo.sh"
+        if not script.exists():
+            return {
+                "ok": False,
+                "cmd": cmd_name,
+                "args": extra_args,
+                "exit_code": 2,
+                "stdout": "",
+                "stderr": f"error: missing demo script {script}\n",
+                "stdout_json": None,
+            }
+        return run_process_result(["bash", str(script)] + extra_args, cmd_name, extra_args)
+
+    script = TOOLS.get(cmd_name)
+    if script is None:
+        return {
+            "ok": False,
+            "cmd": cmd_name,
+            "args": extra_args,
+            "exit_code": 2,
+            "stdout": "",
+            "stderr": f"error: unknown vm32 command '{cmd_name}'\n",
+            "stdout_json": None,
+        }
+    if not script.exists():
+        return {
+            "ok": False,
+            "cmd": cmd_name,
+            "args": extra_args,
+            "exit_code": 2,
+            "stdout": "",
+            "stderr": f"error: missing tool {script}\n",
+            "stdout_json": None,
+        }
+    return run_process_result([sys.executable, str(script)] + extra_args, cmd_name, extra_args)
+
+
+def parse_batch_file(path: str) -> list[tuple[int, list[str]]]:
+    steps = []
+    with open(path, "r", encoding="utf-8") as f:
+        for lineno, raw in enumerate(f, start=1):
+            line = raw.strip()
+            if not line or line.startswith("#") or line.startswith(";"):
+                continue
+            toks = shlex.split(line)
+            if toks:
+                steps.append((lineno, toks))
+    return steps
+
+
+def run_batch(path: str, keep_going: bool, json_mode: bool) -> int:
+    steps = parse_batch_file(path)
+    results = []
+    rc = 0
+
+    for lineno, toks in steps:
+        cmd_name = toks[0]
+        extra_args = toks[1:]
+        result = run_named_command_result(cmd_name, extra_args)
+        result["line"] = lineno
+        results.append(result)
+
+        if not json_mode:
+            print(f"[batch:{lineno}] vm32 {cmd_name} {' '.join(extra_args)}", flush=True)
+            if result["stdout"]:
+                sys.stdout.write(result["stdout"])
+                sys.stdout.flush()
+            if result["stderr"]:
+                sys.stdout.write(result["stderr"])
+                sys.stdout.flush()
+            if not result["ok"]:
+                print(f"[batch:{lineno}] failed rc={result['exit_code']}", flush=True)
+
+        if not result["ok"]:
+            rc = int(result["exit_code"])
+            if not keep_going:
+                break
+
+    if json_mode:
+        print(json.dumps({
+            "ok": rc == 0,
+            "cmd": "batch",
+            "args": [path],
+            "exit_code": rc,
+            "steps_total": len(steps),
+            "steps_executed": len(results),
+            "results": results,
+        }, ensure_ascii=True))
+    return rc
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="VM32 toolchain wrapper (asm/disasm/load/tinyc/verify/demo/board-regress/sonic-regress/kdi-regress/irq-regress/bringup-regress/bringup-ui/triage-bundle/triage-replay/profile-compare/profile-regress)"
+    )
+    parser.add_argument("--json", action="store_true", help="emit structured JSON result")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    p_asm = sub.add_parser("asm", help="assemble .asm -> .bin")
+    p_asm.add_argument("args", nargs=argparse.REMAINDER)
+
+    p_dis = sub.add_parser("disasm", help="disassemble .bin -> asm listing")
+    p_dis.add_argument("args", nargs=argparse.REMAINDER)
+
+    p_load = sub.add_parser("load", help="load .bin over UART")
+    p_load.add_argument("args", nargs=argparse.REMAINDER)
+
+    p_tc = sub.add_parser("tinyc", help="compile tiny C -> asm")
+    p_tc.add_argument("args", nargs=argparse.REMAINDER)
+
+    p_verify = sub.add_parser("verify", help="verify bounded CFG profile on .bin")
+    p_verify.add_argument("args", nargs=argparse.REMAINDER)
+
+    p_demo = sub.add_parser("demo", help="end-to-end demo script")
+    p_demo.add_argument("args", nargs=argparse.REMAINDER)
+
+    p_batch = sub.add_parser("batch", help="run vm32 commands from batch file")
+    p_batch.add_argument("file", help="batch file with one vm32 subcommand per line")
+    p_batch.add_argument("--keep-going", action="store_true", help="continue after failures")
+
+    p_board = sub.add_parser("board-regress", help="run on-board serial regression workflow")
+    p_board.add_argument("--port", required=True, help="serial port, e.g. /dev/cu.usbmodemXXXX")
+    p_board.add_argument("--baud", type=int, help="UART baud rate")
+    p_board.add_argument("--char-delay-ms", type=float, help="per-char TX delay in ms")
+    p_board.add_argument("--retries", type=int, help="retry count per step on mismatch")
+    p_board.add_argument("--no-reset", action="store_true", help="skip OpenOCD reset before test")
+    p_board.add_argument("--skip-mpu-overflow", action="store_true", help="skip final crash scenario")
+    p_board.add_argument("--inner-json", action="store_true", help="pass --json to board_regress.py")
+
+    p_sonic = sub.add_parser("sonic-regress", help="run on-board Sonic functional regression workflow")
+    p_sonic.add_argument("--port", required=True, help="serial port, e.g. /dev/cu.usbmodemXXXX")
+    p_sonic.add_argument("--baud", type=int, help="UART baud rate")
+    p_sonic.add_argument("--char-delay-ms", type=float, help="per-char TX delay in ms")
+    p_sonic.add_argument("--retries", type=int, help="retry count per step on mismatch")
+    p_sonic.add_argument("--no-reset", action="store_true", help="skip OpenOCD reset before test")
+    p_sonic.add_argument("--inner-json", action="store_true", help="pass --json to sonic_regress.py")
+
+    p_kdi = sub.add_parser("kdi-regress", help="run on-board KDI driver lifecycle regression workflow")
+    p_kdi.add_argument("--port", required=True, help="serial port, e.g. /dev/cu.usbmodemXXXX")
+    p_kdi.add_argument("--baud", type=int, help="UART baud rate")
+    p_kdi.add_argument("--char-delay-ms", type=float, help="per-char TX delay in ms")
+    p_kdi.add_argument("--retries", type=int, help="retry count per step on mismatch")
+    p_kdi.add_argument("--no-reset", action="store_true", help="skip OpenOCD reset before test")
+    p_kdi.add_argument("--flash", action="store_true", help="build and flash firmware before test")
+    p_kdi.add_argument("--flash-skip-build", action="store_true", help="with --flash, skip build and only flash existing ELF")
+    p_kdi.add_argument("--no-auto-flash-stale", action="store_true", help="disable auto flash when KDI preflight detects stale firmware")
+    p_kdi.add_argument("--inner-json", action="store_true", help="pass --json to kdi_driver_regress.py")
+
+    p_irq = sub.add_parser("irq-regress", help="run on-board KDI IRQ/deferred-work regression workflow")
+    p_irq.add_argument("--port", required=True, help="serial port, e.g. /dev/cu.usbmodemXXXX")
+    p_irq.add_argument("--baud", type=int, help="UART baud rate")
+    p_irq.add_argument("--char-delay-ms", type=float, help="per-char TX delay in ms")
+    p_irq.add_argument("--retries", type=int, help="retry count per step on mismatch")
+    p_irq.add_argument("--no-reset", action="store_true", help="skip OpenOCD reset before test")
+    p_irq.add_argument("--flash", action="store_true", help="build and flash firmware before test")
+    p_irq.add_argument("--flash-skip-build", action="store_true", help="with --flash, skip build and only flash existing ELF")
+    p_irq.add_argument("--no-auto-flash-stale", action="store_true", help="disable auto flash when KDI preflight detects stale firmware")
+    p_irq.add_argument("--inner-json", action="store_true", help="pass --json to kdi_irq_regress.py")
+
+    p_bringup = sub.add_parser("bringup-regress", help="run on-board bring-up phase regression workflow")
+    p_bringup.add_argument("--port", required=True, help="serial port, e.g. /dev/cu.usbmodemXXXX")
+    p_bringup.add_argument("--baud", type=int, help="UART baud rate")
+    p_bringup.add_argument("--char-delay-ms", type=float, help="per-char TX delay in ms")
+    p_bringup.add_argument("--retries", type=int, help="retry count per step on mismatch")
+    p_bringup.add_argument("--no-reset", action="store_true", help="skip OpenOCD reset before test")
+    p_bringup.add_argument("--flash", action="store_true", help="build and flash firmware before test")
+    p_bringup.add_argument("--flash-skip-build", action="store_true", help="with --flash, skip build and only flash existing ELF")
+    p_bringup.add_argument("--no-auto-flash-stale", action="store_true", help="disable auto flash when bringup preflight detects stale firmware")
+    p_bringup.add_argument("--inner-json", action="store_true", help="pass --json to bringup_regress.py")
+
+    p_bringup_ui = sub.add_parser("bringup-ui", help="open terminal dashboard for bringup/fault triage")
+    p_bringup_ui.add_argument("--port", help="serial port for live bundle capture")
+    p_bringup_ui.add_argument("--bundle-json", help="existing triage bundle json path")
+    p_bringup_ui.add_argument("--source-log", help="existing snapshot/bringup log path")
+    p_bringup_ui.add_argument("--baud", type=int, help="UART baud rate")
+    p_bringup_ui.add_argument("--char-delay-ms", type=float, help="per-char TX delay in ms")
+    p_bringup_ui.add_argument("--snapshot-timeout-s", type=float, help="snapshot timeout seconds")
+    p_bringup_ui.add_argument("--auto-refresh-s", type=float, help="initial auto refresh interval in seconds")
+    p_bringup_ui.add_argument("--target-driver", help="override dependency target driver")
+    p_bringup_ui.add_argument("--render-once", action="store_true", help="print one dashboard frame and exit")
+    p_bringup_ui.add_argument("--width", type=int, help="render width for --render-once")
+    p_bringup_ui.add_argument("--height", type=int, help="render height for --render-once")
+
+    p_triage = sub.add_parser("triage-bundle", help="capture one fault triage bundle (snapshot + stage + dependency)")
+    p_triage.add_argument("--port", help="serial port, e.g. /dev/cu.usbmodemXXXX")
+    p_triage.add_argument("--source-log", help="existing bringup/snapshot log path for offline bundle build")
+    p_triage.add_argument("--baud", type=int, help="UART baud rate")
+    p_triage.add_argument("--char-delay-ms", type=float, help="per-char TX delay in ms")
+    p_triage.add_argument("--snapshot-timeout-s", type=float, help="snapshot timeout seconds")
+    p_triage.add_argument("--target-driver", help="override dependency target driver")
+    p_triage.add_argument("--output", help="output bundle path")
+    p_triage.add_argument("--inner-json", action="store_true", help="pass --json to triage_bundle.py")
+
+    p_triage_replay = sub.add_parser("triage-replay", help="build/diff deterministic replay artifacts from triage bundles")
+    p_triage_replay.add_argument("args", nargs=argparse.REMAINDER)
+
+    p_profile_compare = sub.add_parser("profile-compare", help="compare driver profile snapshots and detect regressions")
+    p_profile_compare.add_argument("--baseline", required=True, help="baseline profile log/jsonl file")
+    p_profile_compare.add_argument("--candidate", required=True, help="candidate profile log/jsonl file")
+    p_profile_compare.add_argument("--baseline-index", type=int, help="baseline snapshot index (default: latest)")
+    p_profile_compare.add_argument("--candidate-index", type=int, help="candidate snapshot index (default: latest)")
+    p_profile_compare.add_argument("--driver", action="append", help="driver name (repeatable)")
+    p_profile_compare.add_argument("--period-compare", action="store_true", help="compare baseline period vs candidate-baseline delta")
+    p_profile_compare.add_argument("--dist-shift-threshold-pct", type=int, help="distribution shift TVD threshold percent")
+    p_profile_compare.add_argument("--dist-new-bin-pct", type=int, help="new-bin probability mass threshold percent")
+    p_profile_compare.add_argument("--jitter-min-delta", type=int, help="minimum jitter-transition increase to flag")
+    p_profile_compare.add_argument("--jitter-rate-delta-pct", type=int, help="minimum jitter-rate increase percent to flag")
+    p_profile_compare.add_argument("--loop-min-delta", type=int, help="minimum state-loop increase to flag")
+    p_profile_compare.add_argument("--baseline-label", help="baseline label for explanation")
+    p_profile_compare.add_argument("--candidate-label", help="candidate label for explanation")
+    p_profile_compare.add_argument("--fail-on-regression", action="store_true", help="return non-zero if any regression is detected")
+    p_profile_compare.add_argument("--inner-json", action="store_true", help="pass --json to driver_profile_compare.py")
+
+    p_profile_regress = sub.add_parser("profile-regress", help="run on-board driver profile comparison regression workflow")
+    p_profile_regress.add_argument("--port", required=True, help="serial port, e.g. /dev/cu.usbmodemXXXX")
+    p_profile_regress.add_argument("--baud", type=int, help="UART baud rate")
+    p_profile_regress.add_argument("--char-delay-ms", type=float, help="per-char TX delay in ms")
+    p_profile_regress.add_argument("--retries", type=int, help="retry count per step on mismatch")
+    p_profile_regress.add_argument("--no-reset", action="store_true", help="skip OpenOCD reset before test")
+    p_profile_regress.add_argument("--inner-json", action="store_true", help="pass --json to driver_profile_compare_regress.py")
+
+    ns = parser.parse_args()
+
+    if ns.cmd == "batch":
+        return run_batch(ns.file, ns.keep_going, ns.json)
+    if ns.cmd == "demo":
+        return run_demo(ns.args, ns.json)
+    if ns.cmd == "board-regress":
+        extra = ["--port", ns.port]
+        if ns.baud is not None:
+            extra.extend(["--baud", str(ns.baud)])
+        if ns.char_delay_ms is not None:
+            extra.extend(["--char-delay-ms", str(ns.char_delay_ms)])
+        if ns.retries is not None:
+            extra.extend(["--retries", str(ns.retries)])
+        if ns.no_reset:
+            extra.append("--no-reset")
+        if ns.skip_mpu_overflow:
+            extra.append("--skip-mpu-overflow")
+        if ns.inner_json:
+            extra.append("--json")
+        return run_tool(ns.cmd, extra, ns.json)
+    if ns.cmd == "sonic-regress":
+        extra = ["--port", ns.port]
+        if ns.baud is not None:
+            extra.extend(["--baud", str(ns.baud)])
+        if ns.char_delay_ms is not None:
+            extra.extend(["--char-delay-ms", str(ns.char_delay_ms)])
+        if ns.retries is not None:
+            extra.extend(["--retries", str(ns.retries)])
+        if ns.no_reset:
+            extra.append("--no-reset")
+        if ns.inner_json:
+            extra.append("--json")
+        return run_tool(ns.cmd, extra, ns.json)
+    if ns.cmd == "kdi-regress":
+        extra = ["--port", ns.port]
+        if ns.baud is not None:
+            extra.extend(["--baud", str(ns.baud)])
+        if ns.char_delay_ms is not None:
+            extra.extend(["--char-delay-ms", str(ns.char_delay_ms)])
+        if ns.retries is not None:
+            extra.extend(["--retries", str(ns.retries)])
+        if ns.no_reset:
+            extra.append("--no-reset")
+        if ns.flash:
+            extra.append("--flash")
+        if ns.flash_skip_build:
+            extra.append("--flash-skip-build")
+        if ns.no_auto_flash_stale:
+            extra.append("--no-auto-flash-stale")
+        if ns.inner_json:
+            extra.append("--json")
+        return run_tool(ns.cmd, extra, ns.json)
+    if ns.cmd == "irq-regress":
+        extra = ["--port", ns.port]
+        if ns.baud is not None:
+            extra.extend(["--baud", str(ns.baud)])
+        if ns.char_delay_ms is not None:
+            extra.extend(["--char-delay-ms", str(ns.char_delay_ms)])
+        if ns.retries is not None:
+            extra.extend(["--retries", str(ns.retries)])
+        if ns.no_reset:
+            extra.append("--no-reset")
+        if ns.flash:
+            extra.append("--flash")
+        if ns.flash_skip_build:
+            extra.append("--flash-skip-build")
+        if ns.no_auto_flash_stale:
+            extra.append("--no-auto-flash-stale")
+        if ns.inner_json:
+            extra.append("--json")
+        return run_tool(ns.cmd, extra, ns.json)
+    if ns.cmd == "bringup-regress":
+        extra = ["--port", ns.port]
+        if ns.baud is not None:
+            extra.extend(["--baud", str(ns.baud)])
+        if ns.char_delay_ms is not None:
+            extra.extend(["--char-delay-ms", str(ns.char_delay_ms)])
+        if ns.retries is not None:
+            extra.extend(["--retries", str(ns.retries)])
+        if ns.no_reset:
+            extra.append("--no-reset")
+        if ns.flash:
+            extra.append("--flash")
+        if ns.flash_skip_build:
+            extra.append("--flash-skip-build")
+        if ns.no_auto_flash_stale:
+            extra.append("--no-auto-flash-stale")
+        if ns.inner_json:
+            extra.append("--json")
+        return run_tool(ns.cmd, extra, ns.json)
+    if ns.cmd == "bringup-ui":
+        extra = []
+        if ns.port is not None:
+            extra.extend(["--port", ns.port])
+        if ns.bundle_json is not None:
+            extra.extend(["--bundle-json", ns.bundle_json])
+        if ns.source_log is not None:
+            extra.extend(["--source-log", ns.source_log])
+        if ns.baud is not None:
+            extra.extend(["--baud", str(ns.baud)])
+        if ns.char_delay_ms is not None:
+            extra.extend(["--char-delay-ms", str(ns.char_delay_ms)])
+        if ns.snapshot_timeout_s is not None:
+            extra.extend(["--snapshot-timeout-s", str(ns.snapshot_timeout_s)])
+        if ns.auto_refresh_s is not None:
+            extra.extend(["--auto-refresh-s", str(ns.auto_refresh_s)])
+        if ns.target_driver is not None:
+            extra.extend(["--target-driver", ns.target_driver])
+        if ns.render_once:
+            extra.append("--render-once")
+        if ns.width is not None:
+            extra.extend(["--width", str(ns.width)])
+        if ns.height is not None:
+            extra.extend(["--height", str(ns.height)])
+        return run_tool(ns.cmd, extra, ns.json)
+    if ns.cmd == "triage-bundle":
+        extra = []
+        if ns.port is not None:
+            extra.extend(["--port", ns.port])
+        if ns.source_log is not None:
+            extra.extend(["--source-log", ns.source_log])
+        if ns.baud is not None:
+            extra.extend(["--baud", str(ns.baud)])
+        if ns.char_delay_ms is not None:
+            extra.extend(["--char-delay-ms", str(ns.char_delay_ms)])
+        if ns.snapshot_timeout_s is not None:
+            extra.extend(["--snapshot-timeout-s", str(ns.snapshot_timeout_s)])
+        if ns.target_driver is not None:
+            extra.extend(["--target-driver", ns.target_driver])
+        if ns.output is not None:
+            extra.extend(["--output", ns.output])
+        if ns.inner_json:
+            extra.append("--json")
+        return run_tool(ns.cmd, extra, ns.json)
+    if ns.cmd == "profile-regress":
+        extra = ["--port", ns.port]
+        if ns.baud is not None:
+            extra.extend(["--baud", str(ns.baud)])
+        if ns.char_delay_ms is not None:
+            extra.extend(["--char-delay-ms", str(ns.char_delay_ms)])
+        if ns.retries is not None:
+            extra.extend(["--retries", str(ns.retries)])
+        if ns.no_reset:
+            extra.append("--no-reset")
+        if ns.inner_json:
+            extra.append("--json")
+        return run_tool(ns.cmd, extra, ns.json)
+    if ns.cmd == "profile-compare":
+        extra = ["--baseline", ns.baseline, "--candidate", ns.candidate]
+        if ns.baseline_index is not None:
+            extra.extend(["--baseline-index", str(ns.baseline_index)])
+        if ns.candidate_index is not None:
+            extra.extend(["--candidate-index", str(ns.candidate_index)])
+        if ns.driver is not None:
+            for driver in ns.driver:
+                extra.extend(["--driver", driver])
+        if ns.period_compare:
+            extra.append("--period-compare")
+        if ns.dist_shift_threshold_pct is not None:
+            extra.extend(["--dist-shift-threshold-pct", str(ns.dist_shift_threshold_pct)])
+        if ns.dist_new_bin_pct is not None:
+            extra.extend(["--dist-new-bin-pct", str(ns.dist_new_bin_pct)])
+        if ns.jitter_min_delta is not None:
+            extra.extend(["--jitter-min-delta", str(ns.jitter_min_delta)])
+        if ns.jitter_rate_delta_pct is not None:
+            extra.extend(["--jitter-rate-delta-pct", str(ns.jitter_rate_delta_pct)])
+        if ns.loop_min_delta is not None:
+            extra.extend(["--loop-min-delta", str(ns.loop_min_delta)])
+        if ns.baseline_label is not None:
+            extra.extend(["--baseline-label", ns.baseline_label])
+        if ns.candidate_label is not None:
+            extra.extend(["--candidate-label", ns.candidate_label])
+        if ns.fail_on_regression:
+            extra.append("--fail-on-regression")
+        if ns.inner_json:
+            extra.append("--json")
+        return run_tool(ns.cmd, extra, ns.json)
+    return run_tool(ns.cmd, ns.args, ns.json)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,4 @@
+# VM32 host smoke batch
+verify demo/hello.bin
+asm demo/hello.asm --load --base 0
+verify demo/hello.bin --json

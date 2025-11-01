@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="980" viewBox="0 0 1440 980" role="img" aria-labelledby="title desc">
+  <title id="title">MicroKernel-MPU Bringup UI dashboard screenshot</title>
+  <desc id="desc">Terminal-style screenshot of the bringup dashboard showing progress, messages, and current report panels.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0b1020"/>
+      <stop offset="100%" stop-color="#09131a"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="12" stdDeviation="16" flood-color="#000000" flood-opacity="0.35"/>
+    </filter>
+  </defs>
+
+  <rect width="1440" height="980" fill="#060b14"/>
+  <rect x="48" y="44" width="1344" height="892" rx="16" fill="url(#bg)" stroke="#1e3a5f" stroke-width="2" filter="url(#shadow)"/>
+  <rect x="48" y="44" width="1344" height="44" rx="16" fill="#0d1729"/>
+  <circle cx="82" cy="66" r="8" fill="#f25f5c"/>
+  <circle cx="110" cy="66" r="8" fill="#ffbd2e"/>
+  <circle cx="138" cy="66" r="8" fill="#27c93f"/>
+  <text x="720" y="72" text-anchor="middle" fill="#8fb2d9" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="18">tools/vm32 bringup-ui --bundle-json tests/fixtures/triage/sample_bundle.json</text>
+
+  <g font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="20" fill="#d8e3f0">
+    <text x="86" y="124">+-------------------------------------------------- MicroKernel-MPU ---------------------------------------------------+</text>
+    <text x="86" y="154">|MicroKernel-MPU Bringup Console                                                                                       |</text>
+    <text x="86" y="184">|Hardware-first terminal dashboard for bringup, dependency, and fault triage                                           |</text>
+    <text x="86" y="214">|source=fixture:sample_bundle.json fault_slices=1 window_ms=5000                                                       |</text>
+    <text x="86" y="244">+----------------------------------------------------------------------------------------------------------------------+</text>
+
+    <text x="86" y="290" fill="#7dd3fc">+------------------- Progress -------------------+</text>
+    <text x="770" y="290" fill="#7dd3fc">+------------------------ Messages &amp; Tools -------------------------+</text>
+    <text x="86" y="320">|source: fixture:sample_bundle.json              |</text>
+    <text x="770" y="320">|recent activity:                                                   |</text>
+    <text x="86" y="350">|target: sensor | action: reset                  |</text>
+    <text x="770" y="350">|- 15:08:27 loaded bundle json sample_bundle.json                   |</text>
+    <text x="86" y="380">|                                                |</text>
+    <text x="770" y="380">|                                                                   |</text>
+    <text x="86" y="410">|boot_complete=0 active=none last_error=-902     |</text>
+    <text x="770" y="410">|keys:                                                              |</text>
+    <text x="86" y="440">|stage=drivers status=running blocked=1          |</text>
+    <text x="770" y="440" fill="#86efac">|g refresh live bundle                                              |</text>
+    <text x="86" y="470">|wait phase=driver-probe-sensor waiting=1/3      |</text>
+    <text x="770" y="470" fill="#86efac">|a toggle auto refresh                                              |</text>
+    <text x="86" y="500">|                                                |</text>
+    <text x="770" y="500" fill="#86efac">|+/- adjust auto interval                                           |</text>
+    <text x="86" y="530">|stage timeline:                                 |</text>
+    <text x="770" y="530" fill="#86efac">|1/2/3 select reset/throttle/deny report                            |</text>
+    <text x="86" y="560">|  init     st=done        fail=0 rb=0           |</text>
+    <text x="770" y="560" fill="#86efac">|[ or ] cycle fault slice                                           |</text>
+    <text x="86" y="590">|  mpu      st=done        fail=0 rb=0           |</text>
+    <text x="770" y="590" fill="#86efac">|h show this help summary                                           |</text>
+    <text x="86" y="620" fill="#7dd3fc">+------------------------------------------------+</text>
+    <text x="770" y="620" fill="#7dd3fc">+-------------------------------------------------------------------+</text>
+
+    <text x="86" y="670" fill="#fcd34d">+--------------------------------------------------- Current Report ---------------------------------------------------+</text>
+    <text x="86" y="700">|slice 1/1 corr=0x10000005 stage=driver-probe-sensor driver=sensor                                                     |</text>
+    <text x="86" y="730">|failure=early_resource_fault conf=78% events=4 fault=1 reset=1                                                        |</text>
+    <text x="86" y="760">|features irq_abn=1 dma_full=1 kdi_fail=1 loop=1                                                                       |</text>
+    <text x="86" y="790">|hypothesis=dma_backpressure conf=82% evidence=2,3                                                                     |</text>
+    <text x="86" y="820">|explanation:                                                                                                          |</text>
+    <text x="86" y="850">|- Resource pressure hits exceeded baseline.                                                                           |</text>
+    <text x="86" y="880">|- Queue and budget saturation likely triggered early failure.                                                         |</text>
+    <text x="86" y="910">|checkpoints: stage->driver->resource alignment, dep what-if, fault slice, evidence ids                               |</text>
+  </g>
+</svg>

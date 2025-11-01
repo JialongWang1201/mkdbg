@@ -1,0 +1,380 @@
+{
+  "ok": true,
+  "source": {
+    "mode": "fixture",
+    "path": "tests/fixtures/triage/sample_bundle.json"
+  },
+  "snapshot": {
+    "line_count": 20,
+    "bringup": {
+      "boot_complete": 0,
+      "active": "none",
+      "last_error": -902
+    },
+    "events_window": {
+      "window_ms": 5000,
+      "count": 4
+    },
+    "slice_count_declared": 1,
+    "fault_slices": [
+      {
+        "slice_id": 0,
+        "meta": {
+          "reason": "first",
+          "corr_id": "0x10000005",
+          "stage": "driver-probe-sensor",
+          "events": 4,
+          "fault_events": 1,
+          "reset_events": 1,
+          "age_ms_min": 4200,
+          "age_ms_max": 100
+        },
+        "feature_vector": {
+          "driver": "sensor",
+          "irq_abnormal": 1,
+          "dma_full": 1,
+          "dma_idle_spin": 0,
+          "kdi_fail_frequent": 1,
+          "state_error_reset_loop": 1,
+          "cap_eperm": 0,
+          "cap_mpu_violation": 0
+        },
+        "feature_detail": {
+          "irq_event_count": 6,
+          "irq_rate_per_sec": 1200,
+          "kdi_fail_count": 3,
+          "lookback_ms": 5000,
+          "corr_id": "0x10000005"
+        },
+        "failure": {
+          "category": "early_resource_fault",
+          "confidence": 78,
+          "evidence_ids": [2, 3],
+          "stage": "drivers"
+        },
+        "failure_explain": {
+          "p1": "Resource pressure hits exceeded baseline.",
+          "p2": "Queue and budget saturation likely triggered early failure."
+        },
+        "ai_failure": {
+          "class": "early_resource_fault",
+          "stage": "drivers",
+          "driver": "sensor",
+          "evidence_ids": [2, 3]
+        },
+        "hypotheses": [
+          {
+            "name": "dma_backpressure",
+            "confidence": 82,
+            "evidence_ids": [2, 3],
+            "explain_p1": "DMA ring pressure is elevated near fault.",
+            "explain_p2": "Backpressure signature appears in occupancy and limit signals."
+          }
+        ],
+        "ai_support": [
+          {
+            "event_id": 2,
+            "stage": "driver-probe-sensor",
+            "msg": "dma ring_overflow rc=limit"
+          }
+        ],
+        "ai_checkpoints": [
+          {
+            "step": 1,
+            "cmd": "snapshot",
+            "focus": "dma_full/irq_abn/kdi_fail features"
+          },
+          {
+            "step": 2,
+            "cmd": "kdi irq show",
+            "focus": "pending/defer/drop/worker errors"
+          },
+          {
+            "step": 3,
+            "cmd": "bringup stage wait",
+            "focus": "resource wait chain"
+          }
+        ],
+        "events": [
+          {
+            "event_id": 0,
+            "age_ms": 4200,
+            "ts_ms": 8145,
+            "corr_id": "0x10000005",
+            "flags": "stage",
+            "stage": "driver-probe-sensor",
+            "msg": "bringup stage drivers enter"
+          },
+          {
+            "event_id": 1,
+            "age_ms": 2600,
+            "ts_ms": 9745,
+            "corr_id": "0x10000005",
+            "flags": "none",
+            "stage": "driver-probe-sensor",
+            "msg": "kdi irq storm sensor fail=2"
+          },
+          {
+            "event_id": 2,
+            "age_ms": 300,
+            "ts_ms": 12045,
+            "corr_id": "0x10000005",
+            "flags": "fault",
+            "stage": "driver-probe-sensor",
+            "msg": "Fault(cpu:MemManage)"
+          }
+        ]
+      }
+    ]
+  },
+  "stage": {
+    "wait_json": [
+      {
+        "type": "bringup-stage-wait-summary",
+        "stage": "drivers",
+        "status": "running",
+        "blocked": 1,
+        "phase": "driver-probe-sensor",
+        "targets": 3,
+        "waiting": 1
+      },
+      {
+        "type": "bringup-stage-wait-driver",
+        "stage": "drivers",
+        "driver": "sensor",
+        "driver_state": "init",
+        "state_rc": "ok",
+        "reason": "sensor probe/activate"
+      },
+      {
+        "type": "bringup-stage-wait-resource",
+        "stage": "drivers",
+        "driver": "sensor",
+        "kind": "dma",
+        "resource": "ADC_DMA_RING",
+        "reason": "adc dma sample ingress"
+      }
+    ],
+    "stage_json": [
+      {
+        "type": "bringup-stage-summary",
+        "boot_complete": 0,
+        "current": "drivers",
+        "status": "running",
+        "phase": "driver-probe-sensor",
+        "blocked": 1,
+        "last_error": -902
+      },
+      {
+        "type": "bringup-stage",
+        "name": "init",
+        "status": "done",
+        "attempts": 1,
+        "fails": 0,
+        "rollbacks": 0,
+        "enter_seq": 1,
+        "leave_seq": 2,
+        "last_error": 0,
+        "entry_event": "bringup.stage.init.enter",
+        "exit_event": "bringup.stage.init.exit"
+      },
+      {
+        "type": "bringup-stage",
+        "name": "mpu",
+        "status": "done",
+        "attempts": 1,
+        "fails": 0,
+        "rollbacks": 0,
+        "enter_seq": 3,
+        "leave_seq": 4,
+        "last_error": 0,
+        "entry_event": "bringup.stage.mpu.enter",
+        "exit_event": "bringup.stage.mpu.exit"
+      },
+      {
+        "type": "bringup-stage",
+        "name": "kernel",
+        "status": "done",
+        "attempts": 1,
+        "fails": 0,
+        "rollbacks": 0,
+        "enter_seq": 5,
+        "leave_seq": 6,
+        "last_error": 0,
+        "entry_event": "bringup.stage.kernel.enter",
+        "exit_event": "bringup.stage.kernel.exit"
+      },
+      {
+        "type": "bringup-stage",
+        "name": "drivers",
+        "status": "running",
+        "attempts": 4,
+        "fails": 1,
+        "rollbacks": 1,
+        "enter_seq": 7,
+        "leave_seq": 0,
+        "last_error": -902,
+        "entry_event": "bringup.stage.drivers.enter",
+        "exit_event": "bringup.stage.drivers.exit"
+      },
+      {
+        "type": "bringup-stage",
+        "name": "ready",
+        "status": "pending",
+        "attempts": 0,
+        "fails": 0,
+        "rollbacks": 0,
+        "enter_seq": 0,
+        "leave_seq": 0,
+        "last_error": 0,
+        "entry_event": "bringup.stage.ready.enter",
+        "exit_event": "bringup.stage.ready.exit"
+      }
+    ]
+  },
+  "dependency": {
+    "target_driver": "sensor",
+    "impact": {
+      "summary": {
+        "type": "dep-impact-summary",
+        "reset": "sensor",
+        "affected": 1
+      },
+      "drivers": [
+        {
+          "type": "dep-impact",
+          "reset": "sensor",
+          "driver": "vm-runtime"
+        }
+      ]
+    },
+    "whatif": {
+      "reset": {
+        "summary": {
+          "type": "dep-whatif-summary",
+          "action": "reset",
+          "target": "sensor",
+          "static_projection": 1,
+          "affected_drivers": 2,
+          "affected_stages": 1
+        },
+        "drivers": [
+          {
+            "type": "dep-whatif-driver",
+            "action": "reset",
+            "target": "sensor",
+            "driver": "sensor",
+            "depth": 0,
+            "via": "none",
+            "effect": "target reset outage",
+            "reason": "action target"
+          },
+          {
+            "type": "dep-whatif-driver",
+            "action": "reset",
+            "target": "sensor",
+            "driver": "vm-runtime",
+            "depth": 1,
+            "via": "sensor",
+            "effect": "upstream service loss propagation",
+            "reason": "vm consumes sensor data plane"
+          }
+        ],
+        "stages": [
+          {
+            "type": "dep-whatif-stage",
+            "stage": "drivers",
+            "phase": "driver-probe-sensor",
+            "driver": "sensor",
+            "reason": "sensor probe/activate"
+          }
+        ],
+        "secondary": []
+      },
+      "throttle": {
+        "summary": {
+          "type": "dep-whatif-summary",
+          "action": "throttle",
+          "target": "sensor",
+          "static_projection": 1,
+          "affected_drivers": 2,
+          "affected_stages": 1
+        },
+        "drivers": [
+          {
+            "type": "dep-whatif-driver",
+            "action": "throttle",
+            "target": "sensor",
+            "driver": "sensor",
+            "depth": 0,
+            "via": "none",
+            "effect": "target throughput/latency degradation",
+            "reason": "action target"
+          },
+          {
+            "type": "dep-whatif-driver",
+            "action": "throttle",
+            "target": "sensor",
+            "driver": "vm-runtime",
+            "depth": 1,
+            "via": "sensor",
+            "effect": "upstream backpressure propagation",
+            "reason": "vm consumes sensor data plane"
+          }
+        ],
+        "stages": [
+          {
+            "type": "dep-whatif-stage",
+            "stage": "drivers",
+            "phase": "driver-probe-sensor",
+            "driver": "sensor",
+            "reason": "sensor probe/activate"
+          }
+        ],
+        "secondary": []
+      },
+      "deny": {
+        "summary": {
+          "type": "dep-whatif-summary",
+          "action": "deny",
+          "target": "sensor",
+          "static_projection": 1,
+          "affected_drivers": 2,
+          "affected_stages": 1
+        },
+        "drivers": [
+          {
+            "type": "dep-whatif-driver",
+            "action": "deny",
+            "target": "sensor",
+            "driver": "sensor",
+            "depth": 0,
+            "via": "none",
+            "effect": "target permission denial",
+            "reason": "action target"
+          },
+          {
+            "type": "dep-whatif-driver",
+            "action": "deny",
+            "target": "sensor",
+            "driver": "vm-runtime",
+            "depth": 1,
+            "via": "sensor",
+            "effect": "upstream capability block propagation",
+            "reason": "vm consumes sensor data plane"
+          }
+        ],
+        "stages": [
+          {
+            "type": "dep-whatif-stage",
+            "stage": "drivers",
+            "phase": "driver-probe-sensor",
+            "driver": "sensor",
+            "reason": "sensor probe/activate"
+          }
+        ],
+        "secondary": []
+      }
+    }
+  }
+}
