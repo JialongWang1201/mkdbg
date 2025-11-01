@@ -82,39 +82,32 @@ This is the fastest way to understand the repo at a glance.
 
 ```mermaid
 flowchart LR
-    Manifest["Manifest Source<br/>configs/bringup/manifest.yaml"] --> Compiler["Compiler / Generators<br/>tools/bringup_compile.py"]
-    Compiler --> Host["Host Tooling<br/>tools/vm32 / triage_bundle.py"]
-    Host --> CI["CI / HIL Gates"]
-    Host --> Target["STM32F446 + FreeRTOS MPU"]
+    A[Manifest Source] --> B[Compiler and Generators]
+    B --> C[Host Tooling]
+    C --> D[CI and HIL Gates]
+    C --> E[STM32F446 Runtime]
 ```
 
 ### 2. Target Runtime
 
 ```mermaid
 flowchart TB
-    CLI["CLI / Shell<br/>bringup.* fault.* dep.* snapshot vm.* sonic.*"] --> Bringup["Bringup Engine<br/>bringup_phase.c + dependency_graph.c"]
-    Bringup --> Telemetry["Telemetry + Snapshot<br/>semantic telemetry / fault slices / evidence IDs"]
-    Telemetry --> Analysis["Analysis Engine<br/>rule engine + model adapter seam"]
-
-    subgraph Runtime["Inside the Target Runtime"]
-        KDI["KDI Driver Domains<br/>lifecycle / restart / containment"]
-        VM["VM32 Runtime<br/>bounded execution / policy monitor / enforce"]
-        HW["Kernel / BSP / Hardware<br/>FreeRTOS MPU / UART / sensor / IRQ / DMA"]
-    end
-
-    Bringup --> KDI
-    Telemetry --> VM
-    Analysis --> HW
-    KDI --> HW
-    VM --> HW
+    A[CLI and Shell] --> B[Bringup Engine]
+    B --> C[Telemetry and Snapshot]
+    C --> D[Analysis Engine]
+    B --> E[KDI Driver Domains]
+    C --> F[VM32 Runtime]
+    D --> G[Kernel BSP and Hardware]
+    E --> G
+    F --> G
 ```
 
 ### 3. Observation Flow
 
 ```mermaid
 flowchart LR
-    Source["UART / snapshot logs / triage bundle"] --> Tools["bringup_ui.py / triage_bundle.py / profile_compare.py"]
-    Tools --> Decision["human triage / CI decision"]
+    A[UART Logs and Triage Bundle] --> B[Triage and Dashboard Tools]
+    B --> C[Human Triage or CI Decision]
 ```
 
 <details>
