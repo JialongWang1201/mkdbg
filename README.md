@@ -81,7 +81,7 @@ This is the fastest way to understand the repo at a glance.
 ### 1. Control Plane
 
 ```mermaid
-flowchart LR
+flowchart TB
     A[Manifest Source] --> B[Compiler and Generators]
     B --> C[Host Tooling]
     C --> D[CI and HIL Gates]
@@ -105,7 +105,7 @@ flowchart TB
 ### 3. Observation Flow
 
 ```mermaid
-flowchart LR
+flowchart TB
     A[UART Logs and Triage Bundle] --> B[Triage and Dashboard Tools]
     B --> C[Human Triage or CI Decision]
 ```
