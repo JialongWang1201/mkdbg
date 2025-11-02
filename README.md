@@ -159,7 +159,9 @@ flowchart TB
 
 The terminal dashboard is the fastest operator surface for stuck-stage triage, fault slices, and dependency what-if.
 
-![Bringup UI dashboard](docs/assets/bringup-ui-dashboard.png)
+<p align="center">
+  <img src="docs/assets/bringup-ui-dashboard.png" alt="Bringup UI dashboard" width="920">
+</p>
 
 Try it locally:
 
