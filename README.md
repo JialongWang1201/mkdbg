@@ -78,8 +78,6 @@ fault last
 
 This is the fastest way to understand the repo at a glance.
 
-![MicroKernel-MPU system layout](docs/assets/system-layout.svg)
-
 <details>
 <summary>ASCII architecture snapshot</summary>
 
@@ -121,10 +119,6 @@ This is the fastest way to understand the repo at a glance.
 ## Terminal Dashboard
 
 The terminal dashboard is the fastest operator surface for stuck-stage triage, fault slices, and dependency what-if.
-
-<p align="center">
-  <img src="docs/assets/bringup-ui-dashboard.png" alt="Bringup UI dashboard" width="920">
-</p>
 
 Try it locally:
 
