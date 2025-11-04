@@ -291,6 +291,36 @@ static void test_errors(void) {
   check(res == VM32_ERR_MEM, "illegal opcode");
 }
 
+static void test_underflow_preserves_stack(void) {
+  Vm32 vm;
+  Vm32Result res = VM32_OK;
+  uint8_t add_prog[] = {
+    VM32_OP_PUSH, 0x78, 0x56, 0x34, 0x12,
+    VM32_OP_ADD
+  };
+  uint8_t store_prog[] = {
+    VM32_OP_PUSH, 0x40, 0x00, 0x00, 0x00,
+    VM32_OP_STORE
+  };
+
+  vm32_reset(&vm);
+  reset_io();
+  load_prog(&vm, add_prog, sizeof(add_prog));
+  run_until(&vm, &res, 4);
+  check(res == VM32_ERR_STACK, "add underflow result");
+  check(vm.dtop == 1, "add underflow preserves dtop");
+  check(vm.ds[0] == 0x12345678U, "add underflow preserves operand");
+
+  vm32_reset(&vm);
+  reset_io();
+  load_prog(&vm, store_prog, sizeof(store_prog));
+  res = VM32_OK;
+  run_until(&vm, &res, 4);
+  check(res == VM32_ERR_STACK, "store underflow result");
+  check(vm.dtop == 1, "store underflow preserves dtop");
+  check(vm.ds[0] == 0x40U, "store underflow preserves operand");
+}
+
 static void test_wrap_store(void) {
   Vm32 vm;
   vm32_reset(&vm);
@@ -401,6 +431,7 @@ int main(void) {
   test_io_led();
   test_io_uart_in();
   test_errors();
+  test_underflow_preserves_stack();
   test_wrap_store();
   test_mig_monitor_mode();
   test_mig_enforce_mode();

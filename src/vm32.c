@@ -577,6 +577,9 @@ Vm32Result vm32_step(Vm32 *vm)
     }
     case VM32_OP_ADD: {
       uint32_t a, b;
+      if (vm->dtop < 2U) {
+        return VM32_ERR_STACK;
+      }
       if (vm32_pop(vm, &b) != VM32_OK || vm32_pop(vm, &a) != VM32_OK) {
         return VM32_ERR_STACK;
       }
@@ -584,6 +587,9 @@ Vm32Result vm32_step(Vm32 *vm)
     }
     case VM32_OP_SUB: {
       uint32_t a, b;
+      if (vm->dtop < 2U) {
+        return VM32_ERR_STACK;
+      }
       if (vm32_pop(vm, &b) != VM32_OK || vm32_pop(vm, &a) != VM32_OK) {
         return VM32_ERR_STACK;
       }
@@ -591,6 +597,9 @@ Vm32Result vm32_step(Vm32 *vm)
     }
     case VM32_OP_AND: {
       uint32_t a, b;
+      if (vm->dtop < 2U) {
+        return VM32_ERR_STACK;
+      }
       if (vm32_pop(vm, &b) != VM32_OK || vm32_pop(vm, &a) != VM32_OK) {
         return VM32_ERR_STACK;
       }
@@ -598,6 +607,9 @@ Vm32Result vm32_step(Vm32 *vm)
     }
     case VM32_OP_OR: {
       uint32_t a, b;
+      if (vm->dtop < 2U) {
+        return VM32_ERR_STACK;
+      }
       if (vm32_pop(vm, &b) != VM32_OK || vm32_pop(vm, &a) != VM32_OK) {
         return VM32_ERR_STACK;
       }
@@ -605,6 +617,9 @@ Vm32Result vm32_step(Vm32 *vm)
     }
     case VM32_OP_XOR: {
       uint32_t a, b;
+      if (vm->dtop < 2U) {
+        return VM32_ERR_STACK;
+      }
       if (vm32_pop(vm, &b) != VM32_OK || vm32_pop(vm, &a) != VM32_OK) {
         return VM32_ERR_STACK;
       }
@@ -621,6 +636,9 @@ Vm32Result vm32_step(Vm32 *vm)
     }
     case VM32_OP_SHL: {
       uint32_t a, b;
+      if (vm->dtop < 2U) {
+        return VM32_ERR_STACK;
+      }
       if (vm32_pop(vm, &b) != VM32_OK || vm32_pop(vm, &a) != VM32_OK) {
         return VM32_ERR_STACK;
       }
@@ -628,6 +646,9 @@ Vm32Result vm32_step(Vm32 *vm)
     }
     case VM32_OP_SHR: {
       uint32_t a, b;
+      if (vm->dtop < 2U) {
+        return VM32_ERR_STACK;
+      }
       if (vm32_pop(vm, &b) != VM32_OK || vm32_pop(vm, &a) != VM32_OK) {
         return VM32_ERR_STACK;
       }
@@ -653,6 +674,9 @@ Vm32Result vm32_step(Vm32 *vm)
     }
     case VM32_OP_STORE: {
       uint32_t addr, v;
+      if (vm->dtop < 2U) {
+        return VM32_ERR_STACK;
+      }
       if (vm32_pop(vm, &addr) != VM32_OK || vm32_pop(vm, &v) != VM32_OK) {
         return VM32_ERR_STACK;
       }
@@ -681,6 +705,9 @@ Vm32Result vm32_step(Vm32 *vm)
     }
     case VM32_OP_OUT: {
       uint32_t addr, v;
+      if (vm->dtop < 2U) {
+        return VM32_ERR_STACK;
+      }
       if (vm32_pop(vm, &addr) != VM32_OK || vm32_pop(vm, &v) != VM32_OK) {
         return VM32_ERR_STACK;
       }
