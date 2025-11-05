@@ -1036,29 +1036,22 @@ static void snapshot_log_ai_explanation(uint8_t slice_id,
   }
 }
 
-static void snapshot_log_failure_classification(uint8_t slice_id,
-                                                const SnapshotEvent *events,
-                                                uint8_t event_count,
-                                                const SnapshotEventSlice *slice,
-                                                const SnapshotFaultFeatureVector *vec)
+static int snapshot_collect_failure_result(const SnapshotEvent *events,
+                                           uint8_t event_count,
+                                           const SnapshotEventSlice *slice,
+                                           const SnapshotFaultFeatureVector *vec,
+                                           AnalysisFailureResult *out)
 {
   AnalysisEvent analysis_events[SNAPSHOT_EVENT_CAP];
   AnalysisEventSlice analysis_slice = {0};
   AnalysisInput input = {0};
   AnalysisResult result = {0};
-  char evidence_buf[32];
-  char buf[176];
-  const char *stage_name = "none";
 
-  if (events == NULL || slice == NULL || vec == NULL) {
-    return;
+  if (events == NULL || slice == NULL || vec == NULL || out == NULL) {
+    return -1;
   }
   if (event_count > SNAPSHOT_EVENT_CAP) {
-    return;
-  }
-  if (slice->stage_valid != 0U && slice->stage_id < (uint8_t)BRINGUP_PHASE_COUNT) {
-    BringupStageId stage = bringup_stage_from_phase((BringupPhaseId)slice->stage_id);
-    stage_name = bringup_stage_name(stage);
+    return -1;
   }
 
   for (uint8_t i = 0U; i < event_count; ++i) {
@@ -1085,47 +1078,76 @@ static void snapshot_log_failure_classification(uint8_t slice_id,
   input.boot_complete = bringup_phase_model.boot_complete;
 
   if (analysis_engine_analyze_fault_slice(&snapshot_analysis_engine, &input, &result) != 0) {
+    return -1;
+  }
+
+  *out = result.failure;
+  return 0;
+}
+
+static void snapshot_log_failure_classification(uint8_t slice_id,
+                                                const SnapshotEvent *events,
+                                                uint8_t event_count,
+                                                const SnapshotEventSlice *slice,
+                                                const SnapshotFaultFeatureVector *vec)
+{
+  AnalysisFailureResult failure = {0};
+  char evidence_buf[32];
+  char buf[176];
+  const char *stage_name = "none";
+
+  if (events == NULL || slice == NULL || vec == NULL) {
+    return;
+  }
+  if (event_count > SNAPSHOT_EVENT_CAP) {
+    return;
+  }
+  if (slice->stage_valid != 0U && slice->stage_id < (uint8_t)BRINGUP_PHASE_COUNT) {
+    BringupStageId stage = bringup_stage_from_phase((BringupPhaseId)slice->stage_id);
+    stage_name = bringup_stage_name(stage);
+  }
+  if (snapshot_collect_failure_result(events, event_count, slice, vec, &failure) != 0) {
     return;
   }
 
-  snapshot_hyp_evidence_text(result.failure.evidence_ids,
-                             result.failure.evidence_count,
+  snapshot_hyp_evidence_text(failure.evidence_ids,
+                             failure.evidence_count,
                              evidence_buf,
                              sizeof(evidence_buf));
   snprintf(buf, sizeof(buf),
            "snapshot failure slice=%u category=%s conf=%u evidence=%s stage=%s\r\n",
            (unsigned)slice_id,
-           snapshot_failure_category_name(result.failure.category),
-           (unsigned)result.failure.confidence,
+           snapshot_failure_category_name(failure.category),
+           (unsigned)failure.confidence,
            evidence_buf,
            stage_name);
   log_send_blocking(buf);
 
-  if (result.failure.explain_p1[0] != '\0') {
+  if (failure.explain_p1[0] != '\0') {
     snprintf(buf, sizeof(buf),
              "snapshot failure explain slice=%u category=%s p1=%s\r\n",
              (unsigned)slice_id,
-             snapshot_failure_category_name(result.failure.category),
-             result.failure.explain_p1);
+             snapshot_failure_category_name(failure.category),
+             failure.explain_p1);
     log_send_blocking(buf);
   }
-  if (result.failure.explain_p2[0] != '\0') {
+  if (failure.explain_p2[0] != '\0') {
     snprintf(buf, sizeof(buf),
              "snapshot failure explain slice=%u category=%s p2=%s\r\n",
              (unsigned)slice_id,
-             snapshot_failure_category_name(result.failure.category),
-             result.failure.explain_p2);
+             snapshot_failure_category_name(failure.category),
+             failure.explain_p2);
     log_send_blocking(buf);
   }
 
   snapshot_log_ai_explanation(slice_id,
-                              result.failure.category,
+                              failure.category,
                               slice,
                               events,
                               event_count,
                               vec,
-                              result.failure.evidence_ids,
-                              result.failure.evidence_count,
+                              failure.evidence_ids,
+                              failure.evidence_count,
                               stage_name);
 }
 
