@@ -135,6 +135,17 @@ VM32_MEM_SIZE=256 bash tools/build.sh
 BOARD_UART_PORT=2 bash tools/build.sh
 ```
 
+`mkdbg` wraps these same primitives behind one repo-aware CLI:
+
+```bash
+bash tools/install_mkdbg.sh
+mkdbg init --name microkernel --port /dev/cu.usbmodemXXXX
+mkdbg build
+mkdbg flash
+mkdbg attach
+mkdbg hil --port /dev/cu.usbmodemXXXX
+```
+
 UART mapping:
 - `1`: USART1 (PA9/PA10)
 - `2`: USART2 (PA2/PA3, default)

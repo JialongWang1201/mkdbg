@@ -157,6 +157,22 @@ bash tools/hil_gate.sh --port /dev/cu.usbmodemXXXX
 python3 tools/regression_summary.py --output build/regression_summary.json
 ```
 
+`mkdbg` is the higher-level repo-aware debug wrapper for one-line install
+and multi-repo build/flash/HIL workflows:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/JialongWang1201/MicroKernel-MPU/main/tools/install_mkdbg.sh | sh
+bash tools/install_mkdbg.sh
+mkdbg init --name microkernel --port /dev/cu.usbmodemXXXX
+mkdbg build
+mkdbg flash
+mkdbg attach
+mkdbg snapshot --port /dev/cu.usbmodemXXXX
+mkdbg hil --port /dev/cu.usbmodemXXXX
+mkdbg repo add tahoe --path ../TahoeOS --build-cmd "make -j4"
+mkdbg run --repo tahoe -- make test
+```
+
 Hardware gate default pipeline:
 
 ```text
@@ -185,6 +201,7 @@ python3 tools/<script>.py --help
 README is now the entry page. The detailed engineering docs live here:
 
 - `docs/DEVELOPER_GUIDE.md` for maintainer workflow and deeper operations
+- `docs/MKDBG.md` for the repo-aware debug CLI and multi-repo workflow
 - `docs/generated/bringup_manifest.md` for the generated bringup phase/stage view
 - `docs/PLATFORM_NARRATIVE.md` for naming and architecture narrative
 - `docs/vm32_design.md` for the VM ISA/runtime design

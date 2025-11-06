@@ -4,3 +4,4 @@ build/
 freertos/.DS_Store
 logs/
 **/__pycache__/
+.mkdbg.toml

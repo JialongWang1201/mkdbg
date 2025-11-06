@@ -1,0 +1,472 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import os
+import shlex
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+try:
+  import tomllib
+except ModuleNotFoundError:
+  try:
+    import tomli as tomllib  # type: ignore
+  except ModuleNotFoundError as exc:
+    raise SystemExit("error: mkdbg requires Python 3.11+ or tomli") from exc
+
+
+CONFIG_NAME = ".mkdbg.toml"
+PRESET_MICROKERNEL = "microkernel-mpu"
+PRESET_GENERIC = "generic"
+FIELD_ORDER = (
+    "preset",
+    "path",
+    "port",
+    "build_cmd",
+    "flash_cmd",
+    "hil_cmd",
+    "snapshot_cmd",
+    "attach_cmd",
+    "elf_path",
+    "snapshot_output",
+    "openocd_cfg",
+    "openocd_server_cmd",
+    "gdb",
+    "gdb_target",
+)
+
+
+def die(message: str, code: int = 2) -> "None":
+  print(f"error: {message}", file=sys.stderr)
+  raise SystemExit(code)
+
+
+def toml_quote(value: str) -> str:
+  return "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+
+
+def default_repo_config(preset: str, repo_path: str) -> dict[str, str]:
+  if preset == PRESET_MICROKERNEL:
+    return {
+        "preset": PRESET_MICROKERNEL,
+        "path": repo_path,
+        "build_cmd": "bash tools/build.sh",
+        "flash_cmd": "bash tools/flash.sh",
+        "hil_cmd": "bash tools/hil_gate.sh --port {port}",
+        "snapshot_cmd": (
+            "python3 tools/triage_bundle.py --port {port} "
+            "--output {snapshot_output}"
+        ),
+        "elf_path": "build/MicroKernel_MPU.elf",
+        "snapshot_output": "build/mkdbg.bundle.json",
+        "openocd_cfg": "tools/openocd.cfg",
+        "gdb": "arm-none-eabi-gdb",
+        "gdb_target": "localhost:3333",
+    }
+  return {
+      "preset": PRESET_GENERIC,
+      "path": repo_path,
+      "snapshot_output": "build/mkdbg.bundle.json",
+      "gdb": "gdb",
+      "gdb_target": "localhost:3333",
+  }
+
+
+def repo_display_name(path: Path) -> str:
+  return path.name if path.name else "repo"
+
+
+def render_config(data: dict) -> str:
+  lines = [
+      "version = 1",
+      f"default_repo = {toml_quote(str(data['default_repo']))}",
+      "",
+  ]
+  repos = data.get("repos", {})
+  for name in sorted(repos):
+    repo = repos[name]
+    lines.append(f"[repos.{toml_quote(name)}]")
+    seen = set()
+    for key in FIELD_ORDER:
+      if key in repo:
+        lines.append(f"{key} = {toml_quote(str(repo[key]))}")
+        seen.add(key)
+    for key in sorted(repo):
+      if key not in seen:
+        lines.append(f"{key} = {toml_quote(str(repo[key]))}")
+    lines.append("")
+  return "\n".join(lines).rstrip() + "\n"
+
+
+def load_config(path: Path) -> dict:
+  with path.open("rb") as f:
+    data = tomllib.load(f)
+  if not isinstance(data, dict):
+    die(f"invalid config: {path}")
+  repos = data.get("repos")
+  if not isinstance(repos, dict) or not repos:
+    die(f"config has no repos: {path}")
+  default_repo = data.get("default_repo")
+  if not isinstance(default_repo, str) or default_repo not in repos:
+    die(f"config default_repo is invalid: {path}")
+  out = {
+      "version": int(data.get("version", 1)),
+      "default_repo": default_repo,
+      "repos": {},
+  }
+  for name, repo in repos.items():
+    if not isinstance(name, str) or not isinstance(repo, dict):
+      die(f"invalid repo entry in {path}")
+    out["repos"][name] = {str(k): str(v) for k, v in repo.items()}
+  return out
+
+
+def save_config(path: Path, data: dict) -> None:
+  path.write_text(render_config(data), encoding="utf-8")
+
+
+def find_config(start: Path) -> Path | None:
+  cur = start.resolve()
+  for candidate_dir in (cur, *cur.parents):
+    candidate = candidate_dir / CONFIG_NAME
+    if candidate.exists():
+      return candidate
+  return None
+
+
+def require_config(start: Path) -> Path:
+  config = find_config(start)
+  if config is None:
+    die(f"missing {CONFIG_NAME}; run `mkdbg init` first")
+  return config
+
+
+def make_repo_path(raw_path: str, config_dir: Path) -> str:
+  path = Path(raw_path).expanduser()
+  if not path.is_absolute():
+    path = (config_dir / path).resolve()
+  try:
+    rel = path.relative_to(config_dir)
+    return "." if str(rel) == "" else str(rel)
+  except ValueError:
+    return str(path)
+
+
+def resolve_repo_root(config_path: Path, repo: dict[str, str]) -> Path:
+  raw = repo.get("path", ".")
+  path = Path(raw).expanduser()
+  if not path.is_absolute():
+    path = (config_path.parent / path).resolve()
+  return path
+
+
+def resolve_repo(config_path: Path, data: dict, name: str | None) -> tuple[str, dict[str, str], Path]:
+  repo_name = name or data["default_repo"]
+  repos = data["repos"]
+  if repo_name not in repos:
+    die(f"repo `{repo_name}` not found in {config_path}")
+  repo = repos[repo_name]
+  root = resolve_repo_root(config_path, repo)
+  if not root.exists():
+    die(f"repo root does not exist: {root}")
+  return repo_name, repo, root
+
+
+def format_path(root: Path, raw: str | None) -> str:
+  if raw is None or raw == "":
+    return ""
+  path = Path(raw).expanduser()
+  if not path.is_absolute():
+    path = (root / path).resolve()
+  return str(path)
+
+
+def build_context(repo_name: str,
+                  repo: dict[str, str],
+                  repo_root: Path,
+                  port: str | None) -> dict[str, str]:
+  snapshot_output = repo.get("snapshot_output", "build/mkdbg.bundle.json")
+  ctx = {
+      "repo": repo_name,
+      "repo_root": str(repo_root),
+      "port": port or repo.get("port", ""),
+      "elf_path": format_path(repo_root, repo.get("elf_path")),
+      "openocd_cfg": format_path(repo_root, repo.get("openocd_cfg")),
+      "snapshot_output": format_path(repo_root, snapshot_output),
+      "gdb_target": repo.get("gdb_target", "localhost:3333"),
+  }
+  return ctx
+
+
+def format_command(template: str, ctx: dict[str, str]) -> str:
+  try:
+    return template.format_map(ctx)
+  except KeyError as exc:
+    die(f"missing template value `{exc.args[0]}` for command `{template}`")
+
+
+def run_shell(command: str, cwd: Path, dry_run: bool) -> int:
+  print(f"[mkdbg] cwd={cwd}")
+  print(f"[mkdbg] cmd={command}")
+  if dry_run:
+    return 0
+  return subprocess.call(command, cwd=str(cwd), shell=True)
+
+
+def pick_port(repo: dict[str, str], cli_port: str | None) -> str:
+  port = cli_port or repo.get("port")
+  if not port:
+    die("this command requires a serial port; pass `--port` or set `port` in config")
+  return port
+
+
+def apply_repo_overrides(repo: dict[str, str], args: argparse.Namespace, config_dir: Path) -> dict[str, str]:
+  out = dict(repo)
+  mapping = {
+      "port": "port",
+      "build_cmd": "build_cmd",
+      "flash_cmd": "flash_cmd",
+      "hil_cmd": "hil_cmd",
+      "snapshot_cmd": "snapshot_cmd",
+      "attach_cmd": "attach_cmd",
+      "elf_path": "elf_path",
+      "snapshot_output": "snapshot_output",
+      "openocd_cfg": "openocd_cfg",
+      "openocd_server_cmd": "openocd_server_cmd",
+      "gdb": "gdb",
+      "gdb_target": "gdb_target",
+  }
+  for attr, key in mapping.items():
+    value = getattr(args, attr, None)
+    if value is not None:
+      out[key] = value
+  if getattr(args, "path", None) is not None:
+    out["path"] = make_repo_path(args.path, config_dir)
+  return out
+
+
+def cmd_init(args: argparse.Namespace) -> int:
+  config_path = Path.cwd() / CONFIG_NAME
+  if config_path.exists() and not args.force:
+    die(f"{CONFIG_NAME} already exists; use --force to overwrite")
+
+  repo_name = args.name or repo_display_name(Path.cwd())
+  repo = default_repo_config(args.preset, ".")
+  if args.port is not None:
+    repo["port"] = args.port
+  data = {
+      "version": 1,
+      "default_repo": repo_name,
+      "repos": {
+          repo_name: repo,
+      },
+  }
+  save_config(config_path, data)
+  print(f"wrote {config_path}")
+  print(f"default repo: {repo_name} ({args.preset})")
+  return 0
+
+
+def cmd_repo_add(args: argparse.Namespace) -> int:
+  config_path = require_config(Path.cwd())
+  data = load_config(config_path)
+  config_dir = config_path.parent
+  repo = default_repo_config(args.preset, make_repo_path(args.path, config_dir))
+  repo = apply_repo_overrides(repo, args, config_dir)
+  data["repos"][args.name] = repo
+  if args.default:
+    data["default_repo"] = args.name
+  save_config(config_path, data)
+  print(f"updated {config_path}")
+  return 0
+
+
+def cmd_repo_list(args: argparse.Namespace) -> int:
+  del args
+  config_path = require_config(Path.cwd())
+  data = load_config(config_path)
+  for name in sorted(data["repos"]):
+    repo = data["repos"][name]
+    marker = "*" if name == data["default_repo"] else " "
+    preset = repo.get("preset", PRESET_GENERIC)
+    path = resolve_repo_root(config_path, repo)
+    print(f"{marker} {name}\tpreset={preset}\tpath={path}")
+  return 0
+
+
+def run_configured_action(args: argparse.Namespace, field: str, needs_port: bool) -> int:
+  config_path = require_config(Path.cwd())
+  data = load_config(config_path)
+  repo_name, repo, repo_root = resolve_repo(config_path, data, getattr(args, "repo", None))
+  port = pick_port(repo, args.port) if needs_port else (args.port or repo.get("port"))
+  ctx = build_context(repo_name, repo, repo_root, port)
+  template = repo.get(field)
+  if not template:
+    die(f"repo `{repo_name}` has no `{field}` configured")
+  command = format_command(template, ctx)
+  return run_shell(command, repo_root, args.dry_run)
+
+
+def cmd_run(args: argparse.Namespace) -> int:
+  config_path = require_config(Path.cwd())
+  data = load_config(config_path)
+  repo_name, repo, repo_root = resolve_repo(config_path, data, args.repo)
+  command_parts = list(args.command)
+  if command_parts and command_parts[0] == "--":
+    command_parts = command_parts[1:]
+  if not command_parts:
+    die("run requires a command after `--`")
+  ctx = build_context(repo_name, repo, repo_root, args.port or repo.get("port"))
+  command = format_command(shlex.join(command_parts), ctx)
+  return run_shell(command, repo_root, args.dry_run)
+
+
+def terminate_process(proc: subprocess.Popen[str]) -> None:
+  if proc.poll() is not None:
+    return
+  proc.terminate()
+  try:
+    proc.wait(timeout=5)
+  except subprocess.TimeoutExpired:
+    proc.kill()
+    proc.wait(timeout=5)
+
+
+def cmd_attach(args: argparse.Namespace) -> int:
+  config_path = require_config(Path.cwd())
+  data = load_config(config_path)
+  repo_name, repo, repo_root = resolve_repo(config_path, data, args.repo)
+  ctx = build_context(repo_name, repo, repo_root, args.port or repo.get("port"))
+
+  attach_cmd = repo.get("attach_cmd")
+  if attach_cmd:
+    return run_shell(format_command(attach_cmd, ctx), repo_root, args.dry_run)
+
+  elf_path = ctx["elf_path"]
+  openocd_cfg = ctx["openocd_cfg"]
+  if not elf_path:
+    die(f"repo `{repo_name}` has no `elf_path` configured")
+  if not openocd_cfg:
+    die(f"repo `{repo_name}` has no `openocd_cfg` configured")
+
+  gdb_bin = repo.get("gdb", "arm-none-eabi-gdb")
+  gdb_target = repo.get("gdb_target", "localhost:3333")
+  openocd_cmd = repo.get(
+      "openocd_server_cmd",
+      f'openocd -f {shlex.quote(openocd_cfg)} -c "gdb_port 3333; init; reset halt"',
+  )
+  gdb_cmd = (
+      f"{shlex.quote(gdb_bin)} {shlex.quote(elf_path)} "
+      f"-ex {shlex.quote(f'target extended-remote {gdb_target}')}"
+  )
+
+  print(f"[mkdbg] cwd={repo_root}")
+  print(f"[mkdbg] openocd={openocd_cmd}")
+  print(f"[mkdbg] gdb={gdb_cmd}")
+  if args.dry_run:
+    return 0
+
+  server_proc = subprocess.Popen(openocd_cmd, cwd=str(repo_root), shell=True)
+  rc = 1
+  try:
+    time.sleep(args.server_wait_s)
+    if server_proc.poll() is not None:
+      return int(server_proc.returncode or 1)
+    rc = subprocess.call(gdb_cmd, cwd=str(repo_root), shell=True)
+  finally:
+    terminate_process(server_proc)
+  return rc
+
+
+def build_parser() -> argparse.ArgumentParser:
+  parser = argparse.ArgumentParser(
+      description="mkdbg: repo-aware embedded debug and HIL orchestration CLI",
+  )
+  sub = parser.add_subparsers(dest="cmd", required=True)
+
+  p_init = sub.add_parser("init", help="write a local .mkdbg.toml")
+  p_init.add_argument("--preset",
+                      choices=(PRESET_MICROKERNEL, PRESET_GENERIC),
+                      default=PRESET_MICROKERNEL,
+                      help="starter repo preset")
+  p_init.add_argument("--name", help="repo name to seed into config")
+  p_init.add_argument("--port", help="default serial port")
+  p_init.add_argument("--force", action="store_true", help="overwrite existing config")
+  p_init.set_defaults(func=cmd_init)
+
+  p_repo = sub.add_parser("repo", help="manage repo definitions")
+  repo_sub = p_repo.add_subparsers(dest="repo_cmd", required=True)
+
+  p_repo_add = repo_sub.add_parser("add", help="add or update one repo entry")
+  p_repo_add.add_argument("name", help="logical repo name")
+  p_repo_add.add_argument("--path", required=True, help="repo checkout path")
+  p_repo_add.add_argument("--preset",
+                          choices=(PRESET_MICROKERNEL, PRESET_GENERIC),
+                          default=PRESET_GENERIC,
+                          help="seed command defaults")
+  p_repo_add.add_argument("--default", action="store_true", help="make this the default repo")
+  p_repo_add.add_argument("--port")
+  p_repo_add.add_argument("--build-cmd")
+  p_repo_add.add_argument("--flash-cmd")
+  p_repo_add.add_argument("--hil-cmd")
+  p_repo_add.add_argument("--snapshot-cmd")
+  p_repo_add.add_argument("--attach-cmd")
+  p_repo_add.add_argument("--elf-path")
+  p_repo_add.add_argument("--snapshot-output")
+  p_repo_add.add_argument("--openocd-cfg")
+  p_repo_add.add_argument("--openocd-server-cmd")
+  p_repo_add.add_argument("--gdb")
+  p_repo_add.add_argument("--gdb-target")
+  p_repo_add.set_defaults(func=cmd_repo_add)
+
+  p_repo_list = repo_sub.add_parser("list", help="list repos from config")
+  p_repo_list.set_defaults(func=cmd_repo_list)
+
+  for name, field, needs_port in (
+      ("build", "build_cmd", False),
+      ("flash", "flash_cmd", False),
+      ("hil", "hil_cmd", True),
+      ("snapshot", "snapshot_cmd", True),
+  ):
+    cmd = sub.add_parser(name, help=f"run repo `{name}` command")
+    cmd.add_argument("repo", nargs="?", help="repo name (default: config default_repo)")
+    cmd.add_argument("--port", help="override serial port")
+    cmd.add_argument("--dry-run", action="store_true", help="print command without running it")
+    cmd.set_defaults(func=lambda args, f=field, p=needs_port: run_configured_action(args, f, p))
+
+  p_attach = sub.add_parser("attach", help="launch a debug session")
+  p_attach.add_argument("repo", nargs="?", help="repo name (default: config default_repo)")
+  p_attach.add_argument("--port", help="optional serial override for templates")
+  p_attach.add_argument("--dry-run", action="store_true", help="print commands without running them")
+  p_attach.add_argument("--server-wait-s",
+                        type=float,
+                        default=1.2,
+                        help="time to wait for the OpenOCD server before starting gdb")
+  p_attach.set_defaults(func=cmd_attach)
+
+  p_run = sub.add_parser("run", help="run an arbitrary repo-local command")
+  p_run.add_argument("--repo", help="repo name (default: config default_repo)")
+  p_run.add_argument("--port", help="optional serial override for templates")
+  p_run.add_argument("--dry-run", action="store_true", help="print command without running it")
+  p_run.add_argument("command", nargs=argparse.REMAINDER, help="command to run after `--`")
+  p_run.set_defaults(func=cmd_run)
+
+  return parser
+
+
+def main() -> int:
+  parser = build_parser()
+  args = parser.parse_args()
+  return int(args.func(args))
+
+
+if __name__ == "__main__":
+  try:
+    raise SystemExit(main())
+  except KeyboardInterrupt:
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
+    raise SystemExit(130)
