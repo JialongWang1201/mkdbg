@@ -173,6 +173,21 @@ mkdbg repo add tahoe --path ../TahoeOS --build-cmd "make -j4"
 mkdbg run --repo tahoe -- make test
 ```
 
+`ovwatch` is the separate project-facing debug tool with its own target
+adapter model for `MicroKernel-MPU` and `TahoeOS` style repos:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/JialongWang1201/MicroKernel-MPU/main/tools/install_ovwatch.sh | sh
+bash tools/install_ovwatch.sh
+ovwatch init --name microkernel --adapter microkernel-mpu
+ovwatch doctor
+ovwatch attach-plan
+ovwatch debug
+ovwatch target add tahoe --adapter tahoeos --path ../TahoeOS --build-cmd "make -j4" --run-cmd "make run" --debug-cmd "./scripts/debug_session.sh"
+ovwatch run tahoe --dry-run
+ovwatch debug tahoe --dry-run
+```
+
 Hardware gate default pipeline:
 
 ```text
@@ -202,6 +217,7 @@ README is now the entry page. The detailed engineering docs live here:
 
 - `docs/DEVELOPER_GUIDE.md` for maintainer workflow and deeper operations
 - `docs/MKDBG.md` for the repo-aware debug CLI and multi-repo workflow
+- `docs/OVWATCH.md` for the project-facing debug CLI and target adapters
 - `docs/generated/bringup_manifest.md` for the generated bringup phase/stage view
 - `docs/PLATFORM_NARRATIVE.md` for naming and architecture narrative
 - `docs/vm32_design.md` for the VM ISA/runtime design

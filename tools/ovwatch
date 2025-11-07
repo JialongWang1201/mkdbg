@@ -1,0 +1,547 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import shlex
+import shutil
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+try:
+  import tomllib
+except ModuleNotFoundError:
+  try:
+    import tomli as tomllib  # type: ignore
+  except ModuleNotFoundError as exc:
+    raise SystemExit("error: ovwatch requires Python 3.11+ or tomli") from exc
+
+
+CONFIG_NAME = ".ovwatch.toml"
+ADAPTER_MICROKERNEL = "microkernel-mpu"
+ADAPTER_TAHOE = "tahoeos"
+ADAPTER_GENERIC = "generic"
+FIELD_ORDER = (
+    "adapter",
+    "path",
+    "build_cmd",
+    "flash_cmd",
+    "run_cmd",
+    "debug_cmd",
+    "probe_transport",
+    "probe_config",
+    "probe_server_cmd",
+    "probe_endpoint",
+    "debug_client",
+    "elf_path",
+    "serial_port",
+)
+
+
+def die(message: str, code: int = 2) -> "None":
+  print(f"error: {message}", file=sys.stderr)
+  raise SystemExit(code)
+
+
+def toml_quote(value: str) -> str:
+  return "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+
+
+def make_target_path(raw_path: str, config_dir: Path) -> str:
+  path = Path(raw_path).expanduser()
+  if not path.is_absolute():
+    path = (config_dir / path).resolve()
+  try:
+    rel = path.relative_to(config_dir)
+    return "." if str(rel) == "" else str(rel)
+  except ValueError:
+    return str(path)
+
+
+def resolve_path(root: Path, raw: str | None) -> str:
+  if raw is None or raw == "":
+    return ""
+  path = Path(raw).expanduser()
+  if not path.is_absolute():
+    path = (root / path).resolve()
+  return str(path)
+
+
+def default_target_config(adapter: str, target_path: str) -> dict[str, str]:
+  if adapter == ADAPTER_MICROKERNEL:
+    return {
+        "adapter": ADAPTER_MICROKERNEL,
+        "path": target_path,
+        "build_cmd": "bash tools/build.sh",
+        "flash_cmd": "bash tools/flash.sh",
+        "probe_transport": "openocd-gdb",
+        "probe_config": "tools/openocd.cfg",
+        "probe_endpoint": "localhost:3333",
+        "debug_client": "arm-none-eabi-gdb",
+        "elf_path": "build/MicroKernel_MPU.elf",
+        "serial_port": "",
+    }
+  if adapter == ADAPTER_TAHOE:
+    return {
+        "adapter": ADAPTER_TAHOE,
+        "path": target_path,
+        "build_cmd": "make -j4",
+        "run_cmd": "make run",
+        "elf_path": "build/tahoeos.elf",
+        "probe_transport": "custom",
+        "serial_port": "",
+    }
+  return {
+      "adapter": ADAPTER_GENERIC,
+      "path": target_path,
+      "probe_transport": "custom",
+      "serial_port": "",
+  }
+
+
+def render_config(data: dict) -> str:
+  lines = [
+      "version = 1",
+      f"default_target = {toml_quote(str(data['default_target']))}",
+      "",
+  ]
+  targets = data.get("targets", {})
+  for name in sorted(targets):
+    target = targets[name]
+    lines.append(f"[targets.{toml_quote(name)}]")
+    seen = set()
+    for key in FIELD_ORDER:
+      if key in target:
+        lines.append(f"{key} = {toml_quote(str(target[key]))}")
+        seen.add(key)
+    for key in sorted(target):
+      if key not in seen:
+        lines.append(f"{key} = {toml_quote(str(target[key]))}")
+    lines.append("")
+  return "\n".join(lines).rstrip() + "\n"
+
+
+def load_config(path: Path) -> dict:
+  with path.open("rb") as f:
+    data = tomllib.load(f)
+  if not isinstance(data, dict):
+    die(f"invalid config: {path}")
+  targets = data.get("targets")
+  if not isinstance(targets, dict) or not targets:
+    die(f"config has no targets: {path}")
+  default_target = data.get("default_target")
+  if not isinstance(default_target, str) or default_target not in targets:
+    die(f"config default_target is invalid: {path}")
+  out = {
+      "version": int(data.get("version", 1)),
+      "default_target": default_target,
+      "targets": {},
+  }
+  for name, target in targets.items():
+    if not isinstance(name, str) or not isinstance(target, dict):
+      die(f"invalid target entry in {path}")
+    out["targets"][name] = {str(k): str(v) for k, v in target.items()}
+  return out
+
+
+def save_config(path: Path, data: dict) -> None:
+  path.write_text(render_config(data), encoding="utf-8")
+
+
+def find_config(start: Path) -> Path | None:
+  cur = start.resolve()
+  for candidate_dir in (cur, *cur.parents):
+    candidate = candidate_dir / CONFIG_NAME
+    if candidate.exists():
+      return candidate
+  return None
+
+
+def require_config(start: Path) -> Path:
+  config = find_config(start)
+  if config is None:
+    die(f"missing {CONFIG_NAME}; run `ovwatch init` first")
+  return config
+
+
+def resolve_target_root(config_path: Path, target: dict[str, str]) -> Path:
+  raw = target.get("path", ".")
+  path = Path(raw).expanduser()
+  if not path.is_absolute():
+    path = (config_path.parent / path).resolve()
+  return path
+
+
+def resolve_target(config_path: Path,
+                   data: dict,
+                   name: str | None) -> tuple[str, dict[str, str], Path]:
+  target_name = name or data["default_target"]
+  targets = data["targets"]
+  if target_name not in targets:
+    die(f"target `{target_name}` not found in {config_path}")
+  target = targets[target_name]
+  root = resolve_target_root(config_path, target)
+  if not root.exists():
+    die(f"target root does not exist: {root}")
+  return target_name, target, root
+
+
+def build_context(target_name: str,
+                  target: dict[str, str],
+                  target_root: Path) -> dict[str, str]:
+  return {
+      "target": target_name,
+      "target_root": str(target_root),
+      "elf_path": resolve_path(target_root, target.get("elf_path")),
+      "probe_config": resolve_path(target_root, target.get("probe_config")),
+      "probe_endpoint": target.get("probe_endpoint", "localhost:3333"),
+      "serial_port": target.get("serial_port", ""),
+  }
+
+
+def format_command(template: str, ctx: dict[str, str]) -> str:
+  try:
+    return template.format_map(ctx)
+  except KeyError as exc:
+    die(f"missing template value `{exc.args[0]}` for command `{template}`")
+
+
+def run_shell(command: str, cwd: Path, dry_run: bool) -> int:
+  print(f"[ovwatch] cwd={cwd}")
+  print(f"[ovwatch] cmd={command}")
+  if dry_run:
+    return 0
+  return subprocess.call(command, cwd=str(cwd), shell=True)
+
+
+def command_program(command: str) -> str | None:
+  parts = shlex.split(command)
+  if not parts:
+    return None
+  return parts[0]
+
+
+def command_available(command: str) -> bool:
+  program = command_program(command)
+  if not program:
+    return False
+  if "/" in program:
+    return Path(program).expanduser().exists()
+  return shutil.which(program) is not None
+
+
+def default_probe_server_cmd(target: dict[str, str], ctx: dict[str, str]) -> str:
+  custom = target.get("probe_server_cmd", "")
+  if custom:
+    return format_command(custom, ctx)
+  probe_config = ctx["probe_config"]
+  if not probe_config:
+    die("openocd-gdb transport requires `probe_config`")
+  return f'openocd -f {shlex.quote(probe_config)} -c "gdb_port 3333; init; reset halt"'
+
+
+def default_debug_client_cmd(target: dict[str, str], ctx: dict[str, str]) -> str:
+  debug_client = target.get("debug_client", "")
+  elf_path = ctx["elf_path"]
+  endpoint = ctx["probe_endpoint"]
+  if not debug_client:
+    die("openocd-gdb transport requires `debug_client`")
+  if not elf_path:
+    die("debug session requires `elf_path`")
+  return (
+      f"{shlex.quote(debug_client)} {shlex.quote(elf_path)} "
+      f"-ex {shlex.quote(f'target extended-remote {endpoint}')}"
+  )
+
+
+def resolve_debug_plan(target_name: str,
+                       target: dict[str, str],
+                       target_root: Path) -> tuple[str, str, str]:
+  ctx = build_context(target_name, target, target_root)
+  debug_cmd = target.get("debug_cmd", "")
+  transport = target.get("probe_transport", "custom")
+
+  if debug_cmd:
+    return ("custom", "", format_command(debug_cmd, ctx))
+  if transport == "openocd-gdb":
+    server_cmd = default_probe_server_cmd(target, ctx)
+    client_cmd = default_debug_client_cmd(target, ctx)
+    return (transport, server_cmd, client_cmd)
+  die(f"target `{target_name}` has no debug entry configured")
+
+
+def terminate_process(proc: subprocess.Popen[str]) -> None:
+  if proc.poll() is not None:
+    return
+  proc.terminate()
+  try:
+    proc.wait(timeout=5)
+  except subprocess.TimeoutExpired:
+    proc.kill()
+    proc.wait(timeout=5)
+
+
+def target_display_name(path: Path) -> str:
+  return path.name if path.name else "target"
+
+
+def apply_target_overrides(target: dict[str, str],
+                           args: argparse.Namespace,
+                           config_dir: Path) -> dict[str, str]:
+  out = dict(target)
+  mapping = {
+      "build_cmd": "build_cmd",
+      "flash_cmd": "flash_cmd",
+      "run_cmd": "run_cmd",
+      "debug_cmd": "debug_cmd",
+      "probe_transport": "probe_transport",
+      "probe_config": "probe_config",
+      "probe_server_cmd": "probe_server_cmd",
+      "probe_endpoint": "probe_endpoint",
+      "debug_client": "debug_client",
+      "elf_path": "elf_path",
+      "serial_port": "serial_port",
+  }
+  for attr, key in mapping.items():
+    value = getattr(args, attr, None)
+    if value is not None:
+      out[key] = value
+  if getattr(args, "path", None) is not None:
+    out["path"] = make_target_path(args.path, config_dir)
+  return out
+
+
+def cmd_init(args: argparse.Namespace) -> int:
+  config_path = Path.cwd() / CONFIG_NAME
+  if config_path.exists() and not args.force:
+    die(f"{CONFIG_NAME} already exists; use --force to overwrite")
+
+  target_name = args.name or target_display_name(Path.cwd())
+  target = default_target_config(args.adapter, ".")
+  target = apply_target_overrides(target, args, Path.cwd())
+  data = {
+      "version": 1,
+      "default_target": target_name,
+      "targets": {
+          target_name: target,
+      },
+  }
+  save_config(config_path, data)
+  print(f"wrote {config_path}")
+  print(f"default target: {target_name} ({args.adapter})")
+  return 0
+
+
+def cmd_target_add(args: argparse.Namespace) -> int:
+  config_path = require_config(Path.cwd())
+  data = load_config(config_path)
+  config_dir = config_path.parent
+  target = default_target_config(args.adapter, make_target_path(args.path, config_dir))
+  target = apply_target_overrides(target, args, config_dir)
+  data["targets"][args.name] = target
+  if args.default:
+    data["default_target"] = args.name
+  save_config(config_path, data)
+  print(f"updated {config_path}")
+  return 0
+
+
+def cmd_target_list(args: argparse.Namespace) -> int:
+  del args
+  config_path = require_config(Path.cwd())
+  data = load_config(config_path)
+  for name in sorted(data["targets"]):
+    target = data["targets"][name]
+    marker = "*" if name == data["default_target"] else " "
+    adapter = target.get("adapter", ADAPTER_GENERIC)
+    path = resolve_target_root(config_path, target)
+    print(f"{marker} {name}\tadapter={adapter}\tpath={path}")
+  return 0
+
+
+def run_target_action(args: argparse.Namespace, field: str) -> int:
+  config_path = require_config(Path.cwd())
+  data = load_config(config_path)
+  target_name, target, target_root = resolve_target(config_path, data, getattr(args, "target", None))
+  ctx = build_context(target_name, target, target_root)
+  template = target.get(field)
+  if not template:
+    die(f"target `{target_name}` has no `{field}` configured")
+  command = format_command(template, ctx)
+  return run_shell(command, target_root, args.dry_run)
+
+
+def cmd_attach_plan(args: argparse.Namespace) -> int:
+  config_path = require_config(Path.cwd())
+  data = load_config(config_path)
+  target_name, target, target_root = resolve_target(config_path, data, args.target)
+  mode, server_cmd, client_cmd = resolve_debug_plan(target_name, target, target_root)
+  print(f"[ovwatch] target={target_name}")
+  print(f"[ovwatch] mode={mode}")
+  print(f"[ovwatch] cwd={target_root}")
+  if server_cmd:
+    print(f"[ovwatch] server={server_cmd}")
+  print(f"[ovwatch] client={client_cmd}")
+  return 0
+
+
+def cmd_debug(args: argparse.Namespace) -> int:
+  config_path = require_config(Path.cwd())
+  data = load_config(config_path)
+  target_name, target, target_root = resolve_target(config_path, data, args.target)
+  mode, server_cmd, client_cmd = resolve_debug_plan(target_name, target, target_root)
+  print(f"[ovwatch] target={target_name}")
+  print(f"[ovwatch] mode={mode}")
+  print(f"[ovwatch] cwd={target_root}")
+  if server_cmd:
+    print(f"[ovwatch] server={server_cmd}")
+  print(f"[ovwatch] client={client_cmd}")
+  if args.dry_run:
+    return 0
+  if not server_cmd:
+    return subprocess.call(client_cmd, cwd=str(target_root), shell=True)
+
+  server_proc = subprocess.Popen(server_cmd, cwd=str(target_root), shell=True)
+  rc = 1
+  try:
+    time.sleep(args.server_wait_s)
+    if server_proc.poll() is not None:
+      return int(server_proc.returncode or 1)
+    rc = subprocess.call(client_cmd, cwd=str(target_root), shell=True)
+  finally:
+    terminate_process(server_proc)
+  return rc
+
+
+def cmd_doctor(args: argparse.Namespace) -> int:
+  config_path = require_config(Path.cwd())
+  data = load_config(config_path)
+  target_name, target, target_root = resolve_target(config_path, data, args.target)
+  ctx = build_context(target_name, target, target_root)
+  checks: list[tuple[bool, str, str]] = []
+
+  checks.append((target_root.exists(), "root", str(target_root)))
+  for field in ("build_cmd", "flash_cmd", "run_cmd", "debug_cmd", "probe_server_cmd"):
+    value = target.get(field, "")
+    if value:
+      command = format_command(value, ctx)
+      checks.append((command_available(command), field, command_program(command) or command))
+
+  transport = target.get("probe_transport", "custom")
+  if transport == "openocd-gdb":
+    probe_config = ctx["probe_config"]
+    elf_path = ctx["elf_path"]
+    debug_client = target.get("debug_client", "")
+    checks.append((bool(probe_config) and Path(probe_config).exists(), "probe_config", probe_config or "<missing>"))
+    checks.append((bool(elf_path) and Path(elf_path).exists(), "elf_path", elf_path or "<missing>"))
+    checks.append((command_available(default_probe_server_cmd(target, ctx)), "probe_server", command_program(default_probe_server_cmd(target, ctx)) or "openocd"))
+    checks.append((command_available(debug_client), "debug_client", debug_client or "<missing>"))
+  elif not target.get("debug_cmd", ""):
+    checks.append((False, "debug", "set `debug_cmd` or use `openocd-gdb` transport"))
+
+  failed = False
+  for ok, label, detail in checks:
+    status = "ok" if ok else "missing"
+    print(f"[ovwatch] {status:<7} {label}: {detail}")
+    failed = failed or not ok
+  return 1 if failed else 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+  parser = argparse.ArgumentParser(
+      description="ovwatch: repo-aware debug entrypoint with target adapters",
+  )
+  sub = parser.add_subparsers(dest="cmd", required=True)
+
+  p_init = sub.add_parser("init", help=f"write a local {CONFIG_NAME}")
+  p_init.add_argument("--adapter",
+                      choices=(ADAPTER_MICROKERNEL, ADAPTER_TAHOE, ADAPTER_GENERIC),
+                      default=ADAPTER_MICROKERNEL,
+                      help="starter target adapter")
+  p_init.add_argument("--name", help="target name to seed into config")
+  p_init.add_argument("--path", help="target checkout path override")
+  p_init.add_argument("--build-cmd")
+  p_init.add_argument("--flash-cmd")
+  p_init.add_argument("--run-cmd")
+  p_init.add_argument("--debug-cmd")
+  p_init.add_argument("--probe-transport")
+  p_init.add_argument("--probe-config")
+  p_init.add_argument("--probe-server-cmd")
+  p_init.add_argument("--probe-endpoint")
+  p_init.add_argument("--debug-client")
+  p_init.add_argument("--elf-path")
+  p_init.add_argument("--serial-port")
+  p_init.add_argument("--force", action="store_true", help="overwrite existing config")
+  p_init.set_defaults(func=cmd_init)
+
+  p_target = sub.add_parser("target", help="manage target definitions")
+  target_sub = p_target.add_subparsers(dest="target_cmd", required=True)
+
+  p_target_add = target_sub.add_parser("add", help="add or update one target entry")
+  p_target_add.add_argument("name", help="logical target name")
+  p_target_add.add_argument("--path", required=True, help="target checkout path")
+  p_target_add.add_argument("--adapter",
+                            choices=(ADAPTER_MICROKERNEL, ADAPTER_TAHOE, ADAPTER_GENERIC),
+                            default=ADAPTER_GENERIC,
+                            help="seed adapter defaults")
+  p_target_add.add_argument("--default", action="store_true", help="make this the default target")
+  p_target_add.add_argument("--build-cmd")
+  p_target_add.add_argument("--flash-cmd")
+  p_target_add.add_argument("--run-cmd")
+  p_target_add.add_argument("--debug-cmd")
+  p_target_add.add_argument("--probe-transport")
+  p_target_add.add_argument("--probe-config")
+  p_target_add.add_argument("--probe-server-cmd")
+  p_target_add.add_argument("--probe-endpoint")
+  p_target_add.add_argument("--debug-client")
+  p_target_add.add_argument("--elf-path")
+  p_target_add.add_argument("--serial-port")
+  p_target_add.set_defaults(func=cmd_target_add)
+
+  p_target_list = target_sub.add_parser("list", help="list targets from config")
+  p_target_list.set_defaults(func=cmd_target_list)
+
+  for name, field in (
+      ("build", "build_cmd"),
+      ("flash", "flash_cmd"),
+      ("run", "run_cmd"),
+  ):
+    cmd = sub.add_parser(name, help=f"run target `{name}` command")
+    cmd.add_argument("target", nargs="?", help="target name (default: config default_target)")
+    cmd.add_argument("--dry-run", action="store_true", help="print command without running it")
+    cmd.set_defaults(func=lambda args, f=field: run_target_action(args, f))
+
+  p_doctor = sub.add_parser("doctor", help="check target debug prerequisites")
+  p_doctor.add_argument("target", nargs="?", help="target name (default: config default_target)")
+  p_doctor.set_defaults(func=cmd_doctor)
+
+  p_plan = sub.add_parser("attach-plan", help="show the resolved debug session plan")
+  p_plan.add_argument("target", nargs="?", help="target name (default: config default_target)")
+  p_plan.set_defaults(func=cmd_attach_plan)
+
+  p_debug = sub.add_parser("debug", help="start the resolved debug session")
+  p_debug.add_argument("target", nargs="?", help="target name (default: config default_target)")
+  p_debug.add_argument("--dry-run", action="store_true", help="print plan without launching it")
+  p_debug.add_argument("--server-wait-s",
+                       type=float,
+                       default=1.2,
+                       help="time to wait for the probe server before starting the client")
+  p_debug.set_defaults(func=cmd_debug)
+
+  return parser
+
+
+def main() -> int:
+  parser = build_parser()
+  args = parser.parse_args()
+  return int(args.func(args))
+
+
+if __name__ == "__main__":
+  try:
+    raise SystemExit(main())
+  except KeyboardInterrupt:
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
+    raise SystemExit(130)
