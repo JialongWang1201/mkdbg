@@ -1,7 +1,8 @@
 # mkdbg
 
-`mkdbg` is a repo-aware embedded debug wrapper that sits on top of the
-existing build, flash, OpenOCD, GDB, serial, and HIL tooling.
+`mkdbg` is the supported public debug CLI for this repo. It is a repo-aware
+embedded debug wrapper that sits on top of the existing build, flash, OpenOCD,
+GDB, serial, and HIL tooling.
 
 It is intentionally not a replacement for GDB. The goal is to make
 common embedded flows feel like a single operator-facing CLI:
@@ -36,6 +37,7 @@ mkdbg init --name microkernel --port /dev/cu.usbmodem21303
 Then use the common flows:
 
 ```bash
+mkdbg doctor
 mkdbg build
 mkdbg flash
 mkdbg attach
@@ -114,7 +116,9 @@ Supported template fields:
 
 Current MVP supports:
 
+- `mkdbg --version`
 - `mkdbg init`
+- `mkdbg doctor`
 - `mkdbg repo add`
 - `mkdbg repo list`
 - `mkdbg build`

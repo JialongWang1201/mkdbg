@@ -1,5 +1,9 @@
 # ovwatch
 
+`ovwatch` is experimental adapter work. It is not the supported public debug
+entrypoint for this repo; README and user-facing setup should point to
+`mkdbg`.
+
 `ovwatch` is a repo-aware debug entrypoint with its own target model and
 command surface. It is meant to be your project-facing debugger CLI,
 while target-specific debug transports stay behind adapter definitions.

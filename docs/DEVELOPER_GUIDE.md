@@ -140,6 +140,7 @@ BOARD_UART_PORT=2 bash tools/build.sh
 ```bash
 bash tools/install_mkdbg.sh
 mkdbg init --name microkernel --port /dev/cu.usbmodemXXXX
+mkdbg doctor
 mkdbg build
 mkdbg flash
 mkdbg attach

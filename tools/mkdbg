@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import os
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -20,6 +21,7 @@ except ModuleNotFoundError:
 
 
 CONFIG_NAME = ".mkdbg.toml"
+VERSION = "0.1.0"
 PRESET_MICROKERNEL = "microkernel-mpu"
 PRESET_GENERIC = "generic"
 FIELD_ORDER = (
@@ -217,6 +219,22 @@ def run_shell(command: str, cwd: Path, dry_run: bool) -> int:
   return subprocess.call(command, cwd=str(cwd), shell=True)
 
 
+def command_program(command: str) -> str | None:
+  parts = shlex.split(command)
+  if not parts:
+    return None
+  return parts[0]
+
+
+def command_available(command: str) -> bool:
+  program = command_program(command)
+  if not program:
+    return False
+  if "/" in program:
+    return Path(program).expanduser().exists()
+  return shutil.which(program) is not None
+
+
 def pick_port(repo: dict[str, str], cli_port: str | None) -> str:
   port = cli_port or repo.get("port")
   if not port:
@@ -296,6 +314,56 @@ def cmd_repo_list(args: argparse.Namespace) -> int:
     path = resolve_repo_root(config_path, repo)
     print(f"{marker} {name}\tpreset={preset}\tpath={path}")
   return 0
+
+
+def repo_uses_default_attach_flow(repo: dict[str, str]) -> bool:
+  if repo.get("attach_cmd"):
+    return False
+  if repo.get("preset") == PRESET_MICROKERNEL:
+    return True
+  return any(repo.get(field) for field in ("elf_path", "openocd_cfg", "openocd_server_cmd", "gdb"))
+
+
+def cmd_doctor(args: argparse.Namespace) -> int:
+  config_path = require_config(Path.cwd())
+  data = load_config(config_path)
+  repo_name, repo, repo_root = resolve_repo(config_path, data, args.repo)
+  port = args.port or repo.get("port")
+  ctx = build_context(repo_name, repo, repo_root, port)
+  checks: list[tuple[bool, str, str]] = []
+
+  checks.append((config_path.exists(), "config", str(config_path)))
+  checks.append((repo_root.exists(), "root", str(repo_root)))
+  checks.append((True, "repo", repo_name))
+
+  if repo.get("hil_cmd") or repo.get("snapshot_cmd"):
+    checks.append((bool(port), "port", port or "<missing>"))
+
+  for field in ("build_cmd", "flash_cmd", "hil_cmd", "snapshot_cmd", "attach_cmd", "openocd_server_cmd"):
+    value = repo.get(field, "")
+    if value:
+      command = format_command(value, ctx)
+      checks.append((command_available(command), field, command_program(command) or command))
+
+  if repo_uses_default_attach_flow(repo):
+    elf_path = ctx["elf_path"]
+    openocd_cfg = ctx["openocd_cfg"]
+    gdb_bin = repo.get("gdb", "")
+    checks.append((bool(elf_path) and Path(elf_path).exists(), "elf_path", elf_path or "<missing>"))
+    checks.append((bool(openocd_cfg) and Path(openocd_cfg).exists(), "openocd_cfg", openocd_cfg or "<missing>"))
+    if repo.get("openocd_server_cmd", ""):
+      server_cmd = format_command(repo["openocd_server_cmd"], ctx)
+      checks.append((command_available(server_cmd), "openocd", command_program(server_cmd) or server_cmd))
+    else:
+      checks.append((command_available("openocd"), "openocd", "openocd"))
+    checks.append((bool(gdb_bin) and command_available(gdb_bin), "gdb", gdb_bin or "<missing>"))
+
+  failed = False
+  for ok, label, detail in checks:
+    status = "ok" if ok else "missing"
+    print(f"[mkdbg] {status:<7} {label}: {detail}")
+    failed = failed or not ok
+  return 1 if failed else 0
 
 
 def run_configured_action(args: argparse.Namespace, field: str, needs_port: bool) -> int:
@@ -393,6 +461,7 @@ def build_parser() -> argparse.ArgumentParser:
   parser = argparse.ArgumentParser(
       description="mkdbg: repo-aware embedded debug and HIL orchestration CLI",
   )
+  parser.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
   sub = parser.add_subparsers(dest="cmd", required=True)
 
   p_init = sub.add_parser("init", help="write a local .mkdbg.toml")
@@ -432,6 +501,11 @@ def build_parser() -> argparse.ArgumentParser:
 
   p_repo_list = repo_sub.add_parser("list", help="list repos from config")
   p_repo_list.set_defaults(func=cmd_repo_list)
+
+  p_doctor = sub.add_parser("doctor", help="check repo debug prerequisites")
+  p_doctor.add_argument("repo", nargs="?", help="repo name (default: config default_repo)")
+  p_doctor.add_argument("--port", help="override serial port for command/template checks")
+  p_doctor.set_defaults(func=cmd_doctor)
 
   for name, field, needs_port in (
       ("build", "build_cmd", False),
