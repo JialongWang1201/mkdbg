@@ -68,6 +68,8 @@ Install `mkdbg` from a local checkout:
 bash tools/install_mkdbg.sh
 ```
 
+Native foundation preview: `bash tools/build_mkdbg_native.sh && build/mkdbg-native --version`
+
 Or install it remotely:
 
 ```bash
