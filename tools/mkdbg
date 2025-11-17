@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shlex
 import shutil
@@ -21,6 +22,10 @@ except ModuleNotFoundError:
 
 
 CONFIG_NAME = ".mkdbg.toml"
+STATE_DIR_NAME = ".mkdbg"
+INCIDENTS_DIR_NAME = "incidents"
+INCIDENT_META_NAME = "incident.json"
+INCIDENT_CURRENT_NAME = "current"
 VERSION = "0.1.0"
 PRESET_MICROKERNEL = "microkernel-mpu"
 PRESET_GENERIC = "generic"
@@ -145,6 +150,63 @@ def require_config(start: Path) -> Path:
   if config is None:
     die(f"missing {CONFIG_NAME}; run `mkdbg init` first")
   return config
+
+
+def state_root(config_path: Path) -> Path:
+  return config_path.parent / STATE_DIR_NAME
+
+
+def incidents_root(config_path: Path) -> Path:
+  return state_root(config_path) / INCIDENTS_DIR_NAME
+
+
+def incident_current_path(config_path: Path) -> Path:
+  return incidents_root(config_path) / INCIDENT_CURRENT_NAME
+
+
+def incident_meta_path(incident_dir: Path) -> Path:
+  return incident_dir / INCIDENT_META_NAME
+
+
+def sanitize_slug(value: str) -> str:
+  chars: list[str] = []
+  for ch in value.strip().lower():
+    if ch.isalnum():
+      chars.append(ch)
+    elif ch in ("-", "_", " "):
+      chars.append("-")
+  slug = "".join(chars).strip("-")
+  while "--" in slug:
+    slug = slug.replace("--", "-")
+  return slug or "incident"
+
+
+def load_incident_meta(incident_dir: Path) -> dict[str, object]:
+  with incident_meta_path(incident_dir).open("r", encoding="utf-8") as f:
+    data = json.load(f)
+  if not isinstance(data, dict):
+    die(f"invalid incident metadata: {incident_dir}")
+  return data
+
+
+def save_incident_meta(incident_dir: Path, data: dict[str, object]) -> None:
+  incident_meta_path(incident_dir).write_text(
+      json.dumps(data, ensure_ascii=True, indent=2) + "\n",
+      encoding="utf-8",
+  )
+
+
+def load_current_incident(config_path: Path) -> tuple[str, Path, dict[str, object]] | None:
+  current_path = incident_current_path(config_path)
+  if not current_path.exists():
+    return None
+  incident_id = current_path.read_text(encoding="utf-8").strip()
+  if incident_id == "":
+    return None
+  incident_dir = incidents_root(config_path) / incident_id
+  if not incident_dir.exists():
+    die(f"current incident directory missing: {incident_dir}")
+  return incident_id, incident_dir, load_incident_meta(incident_dir)
 
 
 def make_repo_path(raw_path: str, config_dir: Path) -> str:
@@ -533,6 +595,98 @@ def cmd_watch(args: argparse.Namespace) -> int:
   return run_shell(shell_join(command_parts), repo_root, args.dry_run)
 
 
+def cmd_incident_open(args: argparse.Namespace) -> int:
+  config_path = require_config(Path.cwd())
+  data = load_config(config_path)
+  repo_name, repo, repo_root = resolve_repo(config_path, data, resolve_repo_arg(args))
+  incidents_dir = incidents_root(config_path)
+  current_path = incident_current_path(config_path)
+
+  active = load_current_incident(config_path)
+  if active is not None:
+    die(f"incident `{active[0]}` is already active; close it first")
+
+  incident_name = args.name or repo_name
+  incident_id = f"{time.strftime('%Y%m%d_%H%M%S')}-{sanitize_slug(incident_name)}"
+  incident_dir = incidents_dir / incident_id
+  incident_dir.mkdir(parents=True, exist_ok=False)
+
+  meta: dict[str, object] = {
+      "id": incident_id,
+      "name": incident_name,
+      "status": "open",
+      "repo": repo_name,
+      "repo_root": str(repo_root),
+      "port": args.port or repo.get("port", ""),
+      "opened_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+  }
+  save_incident_meta(incident_dir, meta)
+  current_path.parent.mkdir(parents=True, exist_ok=True)
+  current_path.write_text(incident_id + "\n", encoding="utf-8")
+
+  print(f"incident: {incident_id}")
+  print(f"path: {incident_dir}")
+  print(f"repo: {repo_name}")
+  if meta["port"]:
+    print(f"port: {meta['port']}")
+  return 0
+
+
+def cmd_incident_status(args: argparse.Namespace) -> int:
+  config_path = require_config(Path.cwd())
+  active = load_current_incident(config_path)
+  if active is None:
+    if args.json:
+      print(json.dumps({"ok": True, "active": False}, ensure_ascii=True))
+    else:
+      print("incident: none")
+    return 0
+
+  incident_id, incident_dir, meta = active
+  payload = {
+      "ok": True,
+      "active": True,
+      "id": incident_id,
+      "path": str(incident_dir),
+      "name": str(meta.get("name", "")),
+      "status": str(meta.get("status", "")),
+      "repo": str(meta.get("repo", "")),
+      "port": str(meta.get("port", "")),
+      "opened_at": str(meta.get("opened_at", "")),
+      "closed_at": str(meta.get("closed_at", "")),
+  }
+  if args.json:
+    print(json.dumps(payload, ensure_ascii=True))
+  else:
+    print(f"incident: {payload['id']}")
+    print(f"path: {payload['path']}")
+    print(f"status: {payload['status']}")
+    print(f"repo: {payload['repo']}")
+    if payload["port"]:
+      print(f"port: {payload['port']}")
+    print(f"opened_at: {payload['opened_at']}")
+    if payload["closed_at"]:
+      print(f"closed_at: {payload['closed_at']}")
+  return 0
+
+
+def cmd_incident_close(args: argparse.Namespace) -> int:
+  config_path = require_config(Path.cwd())
+  active = load_current_incident(config_path)
+  if active is None:
+    die("no active incident to close")
+
+  incident_id, incident_dir, meta = active
+  meta["status"] = "closed"
+  meta["closed_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+  save_incident_meta(incident_dir, meta)
+  incident_current_path(config_path).unlink(missing_ok=True)
+
+  print(f"closed incident: {incident_id}")
+  print(f"path: {incident_dir}")
+  return 0
+
+
 def cmd_capture_bundle(args: argparse.Namespace) -> int:
   config_path = require_config(Path.cwd())
   data = load_config(config_path)
@@ -558,8 +712,13 @@ def cmd_capture_bundle(args: argparse.Namespace) -> int:
     command_parts.extend(["--snapshot-timeout-s", str(args.snapshot_timeout_s)])
   if args.target_driver is not None:
     command_parts.extend(["--target-driver", args.target_driver])
-  if args.output is not None:
-    command_parts.extend(["--output", format_path(repo_root, args.output)])
+  output_path = format_path(repo_root, args.output) if args.output is not None else None
+  if output_path is None:
+    active = load_current_incident(config_path)
+    if active is not None:
+      output_path = str(active[1] / "bundle.json")
+  if output_path is not None:
+    command_parts.extend(["--output", output_path])
   if args.json:
     command_parts.append("--json")
 
@@ -753,6 +912,23 @@ def build_parser() -> argparse.ArgumentParser:
   p_run.add_argument("--dry-run", action="store_true", help="print command without running it")
   p_run.add_argument("command", nargs=argparse.REMAINDER, help="command to run after `--`")
   p_run.set_defaults(func=cmd_run)
+
+  p_incident = sub.add_parser("incident", help="manage one active incident session")
+  incident_sub = p_incident.add_subparsers(dest="incident_cmd", required=True)
+
+  p_incident_open = incident_sub.add_parser("open", help="open one active incident session")
+  p_incident_open.add_argument("repo", nargs="?", help="repo name (default: config default_repo)")
+  p_incident_open.add_argument("--target", help="target alias (same as repo name)")
+  p_incident_open.add_argument("--name", help="human-friendly incident name")
+  p_incident_open.add_argument("--port", help="optional port to bind into incident metadata")
+  p_incident_open.set_defaults(func=cmd_incident_open)
+
+  p_incident_status = incident_sub.add_parser("status", help="show the active incident session")
+  p_incident_status.add_argument("--json", action="store_true", help="print machine-readable status")
+  p_incident_status.set_defaults(func=cmd_incident_status)
+
+  p_incident_close = incident_sub.add_parser("close", help="close the active incident session")
+  p_incident_close.set_defaults(func=cmd_incident_close)
 
   p_watch = sub.add_parser("watch", help="open the terminal dashboard for bringup and fault triage")
   p_watch.add_argument("repo", nargs="?", help="repo name (default: config default_repo)")

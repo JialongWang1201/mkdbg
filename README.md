@@ -82,6 +82,8 @@ mkdbg doctor
 mkdbg build
 mkdbg flash
 mkdbg probe halt
+mkdbg incident open --name irq-timeout
+mkdbg incident status
 mkdbg capture bundle --port /dev/cu.usbmodemXXXX
 mkdbg attach --break main --command continue --command bt --batch
 mkdbg snapshot --port /dev/cu.usbmodemXXXX

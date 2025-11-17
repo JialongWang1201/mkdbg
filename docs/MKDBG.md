@@ -11,6 +11,7 @@ common embedded flows feel like a single operator-facing CLI:
 - register one or more repos or target aliases
 - build / flash / attach / snapshot / run HIL
 - capture one triage bundle for later replay and sharing
+- persist one active incident session around captured artifacts
 - keep repo-specific commands in configuration instead of shell history
 
 ## Install
@@ -43,6 +44,8 @@ mkdbg build
 mkdbg flash
 mkdbg probe halt
 mkdbg probe flash
+mkdbg incident open --name irq-timeout
+mkdbg incident status
 mkdbg attach
 mkdbg attach --break main --command continue --command bt --batch
 mkdbg capture bundle --port /dev/cu.usbmodem21303
@@ -144,6 +147,9 @@ Current MVP supports:
 - `mkdbg target use`
 - `mkdbg build`
 - `mkdbg flash`
+- `mkdbg incident open`
+- `mkdbg incident status`
+- `mkdbg incident close`
 - `mkdbg probe reset`
 - `mkdbg probe halt`
 - `mkdbg probe resume`

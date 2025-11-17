@@ -11,9 +11,14 @@ ATTACH_OUT="${TMP_DIR}/attach.out"
 ATTACH_ERR="${TMP_DIR}/attach.err"
 RUN_OUT="${TMP_DIR}/run.out"
 WATCH_OUT="${TMP_DIR}/watch.out"
+INCIDENT_OPEN_OUT="${TMP_DIR}/incident_open.out"
+INCIDENT_STATUS_OUT="${TMP_DIR}/incident_status.out"
+INCIDENT_STATUS_JSON_OUT="${TMP_DIR}/incident_status.json"
+INCIDENT_CLOSE_OUT="${TMP_DIR}/incident_close.out"
 CAPTURE_DRY_OUT="${TMP_DIR}/capture_dry.out"
 CAPTURE_JSON_OUT="${TMP_DIR}/capture.json"
 CAPTURE_STDOUT="${TMP_DIR}/capture.stdout"
+CAPTURE_INCIDENT_STDOUT="${TMP_DIR}/capture_incident.stdout"
 PROBE_HALT_OUT="${TMP_DIR}/probe_halt.out"
 PROBE_FLASH_OUT="${TMP_DIR}/probe_flash.out"
 PROBE_READ32_OUT="${TMP_DIR}/probe_read32.out"
@@ -204,6 +209,40 @@ for item in checks:
         raise SystemExit(f"missing expected watch output: {item}")
 PY
 
+PATH="${BIN_DIR}:${PATH}" python3 "${ROOT_DIR}/tools/mkdbg" incident open --target rootfixture \
+  --name irq-timeout > "${INCIDENT_OPEN_OUT}"
+python3 - "${INCIDENT_OPEN_OUT}" <<'PY'
+import sys
+from pathlib import Path
+
+text = Path(sys.argv[1]).read_text(encoding="utf-8")
+checks = [
+    "incident: ",
+    "path: ",
+    "repo: rootfixture",
+]
+for item in checks:
+    if item not in text:
+        raise SystemExit(f"missing expected incident open output: {item}")
+PY
+
+PATH="${BIN_DIR}:${PATH}" python3 "${ROOT_DIR}/tools/mkdbg" incident status > "${INCIDENT_STATUS_OUT}"
+PATH="${BIN_DIR}:${PATH}" python3 "${ROOT_DIR}/tools/mkdbg" incident status --json > "${INCIDENT_STATUS_JSON_OUT}"
+python3 - "${INCIDENT_STATUS_OUT}" "${INCIDENT_STATUS_JSON_OUT}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+text = Path(sys.argv[1]).read_text(encoding="utf-8")
+status = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+if "status: open" not in text:
+    raise SystemExit("expected open incident status")
+if status.get("active") is not True:
+    raise SystemExit("expected active incident")
+if status.get("repo") != "rootfixture":
+    raise SystemExit("expected incident repo rootfixture")
+PY
+
 PATH="${BIN_DIR}:${PATH}" python3 "${ROOT_DIR}/tools/mkdbg" capture bundle --target microkernel \
   --dry-run > "${CAPTURE_DRY_OUT}"
 python3 - "${CAPTURE_DRY_OUT}" <<'PY'
@@ -247,6 +286,43 @@ if summary.get("fault_slices", 0) < 1:
     raise SystemExit("expected capture fault_slices >= 1")
 if bundle.get("dependency", {}).get("target_driver") != "sensor":
     raise SystemExit("expected capture target driver sensor")
+PY
+
+PATH="${BIN_DIR}:${PATH}" python3 "${ROOT_DIR}/tools/mkdbg" capture bundle --target rootfixture \
+  --source-log tests/fixtures/triage/sample_snapshot.log \
+  --json > "${CAPTURE_INCIDENT_STDOUT}"
+python3 - "${CAPTURE_INCIDENT_STDOUT}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+stdout_lines = [line for line in Path(sys.argv[1]).read_text(encoding="utf-8").splitlines() if line.strip()]
+json_lines = [line for line in stdout_lines if line.lstrip().startswith("{")]
+if not json_lines:
+    raise SystemExit("expected capture incident json summary line")
+summary = json.loads(json_lines[-1])
+bundle_path = Path(summary["bundle_path"])
+if bundle_path.name != "bundle.json":
+    raise SystemExit("expected default incident bundle name")
+if bundle_path.parent.parent.name != "incidents":
+    raise SystemExit("expected bundle under .mkdbg/incidents/<id>/bundle.json")
+if not bundle_path.exists():
+    raise SystemExit("expected incident bundle file to exist")
+PY
+
+PATH="${BIN_DIR}:${PATH}" python3 "${ROOT_DIR}/tools/mkdbg" incident close > "${INCIDENT_CLOSE_OUT}"
+PATH="${BIN_DIR}:${PATH}" python3 "${ROOT_DIR}/tools/mkdbg" incident status --json > "${INCIDENT_STATUS_JSON_OUT}"
+python3 - "${INCIDENT_CLOSE_OUT}" "${INCIDENT_STATUS_JSON_OUT}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+text = Path(sys.argv[1]).read_text(encoding="utf-8")
+status = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+if "closed incident: " not in text:
+    raise SystemExit("expected incident close output")
+if status.get("active") is not False:
+    raise SystemExit("expected no active incident after close")
 PY
 
 PATH="${BIN_DIR}:${PATH}" python3 "${ROOT_DIR}/tools/mkdbg" probe halt --target microkernel --dry-run > "${PROBE_HALT_OUT}"
