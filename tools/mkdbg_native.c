@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -91,6 +92,16 @@ typedef struct {
 typedef struct {
   int json;
 } IncidentStatusOptions;
+
+typedef struct {
+  const char *repo;
+  const char *target;
+  const char *port;
+  const char *source_log;
+  const char *output;
+  int json;
+  int dry_run;
+} CaptureBundleOptions;
 
 typedef struct {
   char id[MAX_NAME];
@@ -626,6 +637,90 @@ static int write_incident_metadata(const char *meta_path, const IncidentMetadata
   return 0;
 }
 
+static int load_current_incident_dir(const char *config_path, char *out, size_t out_size)
+{
+  char incident_id[MAX_NAME];
+  char incidents_root[PATH_MAX];
+
+  if (load_current_incident_id(config_path, incident_id, sizeof(incident_id)) != 0) {
+    return -1;
+  }
+  incidents_root_from_config(config_path, incidents_root, sizeof(incidents_root));
+  join_path(incidents_root, incident_id, out, out_size);
+  return 0;
+}
+
+static void print_shell_arg(FILE *f, const char *arg)
+{
+  size_t i;
+  int needs_quote = 0;
+
+  for (i = 0; arg[i] != '\0'; ++i) {
+    unsigned char ch = (unsigned char)arg[i];
+    if (!(isalnum(ch) || ch == '/' || ch == '.' || ch == '_' || ch == '-' || ch == ':' || ch == '=')) {
+      needs_quote = 1;
+      break;
+    }
+  }
+  if (!needs_quote && arg[0] != '\0') {
+    fputs(arg, f);
+    return;
+  }
+  fputc('\'', f);
+  for (i = 0; arg[i] != '\0'; ++i) {
+    if (arg[i] == '\'') {
+      fputs("'\\''", f);
+    } else {
+      fputc(arg[i], f);
+    }
+  }
+  fputc('\'', f);
+}
+
+static int run_process(char *const argv[], const char *cwd, int dry_run)
+{
+  pid_t pid;
+  int status;
+  size_t i;
+
+  printf("[mkdbg] cwd=%s\n", cwd);
+  printf("[mkdbg] cmd=");
+  for (i = 0U; argv[i] != NULL; ++i) {
+    if (i != 0U) {
+      fputc(' ', stdout);
+    }
+    print_shell_arg(stdout, argv[i]);
+  }
+  fputc('\n', stdout);
+  if (dry_run) {
+    return 0;
+  }
+
+  pid = fork();
+  if (pid < 0) {
+    die("fork failed: %s", strerror(errno));
+  }
+  if (pid == 0) {
+    if (chdir(cwd) != 0) {
+      fprintf(stderr, "error: chdir failed: %s\n", strerror(errno));
+      _exit(127);
+    }
+    execvp(argv[0], argv);
+    fprintf(stderr, "error: exec failed for %s: %s\n", argv[0], strerror(errno));
+    _exit(127);
+  }
+  if (waitpid(pid, &status, 0) < 0) {
+    die("waitpid failed: %s", strerror(errno));
+  }
+  if (WIFEXITED(status)) {
+    return WEXITSTATUS(status);
+  }
+  if (WIFSIGNALED(status)) {
+    return 128 + WTERMSIG(status);
+  }
+  return 1;
+}
+
 static int command_program(const char *command, char *out, size_t out_size)
 {
   size_t i = 0U;
@@ -711,7 +806,7 @@ static int command_available(const char *command)
 static void usage(void)
 {
   printf("mkdbg-native %s\n", MKDBG_NATIVE_VERSION);
-  printf("usage: mkdbg-native [--version] <init|doctor|repo|target|incident> [options]\n");
+  printf("usage: mkdbg-native [--version] <init|doctor|repo|target|incident|capture> [options]\n");
 }
 
 static void init_default_repo_name(char *out, size_t out_size)
@@ -1120,6 +1215,73 @@ static int cmd_incident_close(void)
   return 0;
 }
 
+static int cmd_capture_bundle(const CaptureBundleOptions *opts)
+{
+  char config_path[PATH_MAX];
+  char repo_root[PATH_MAX];
+  char script_path[PATH_MAX];
+  char source_log_path[PATH_MAX];
+  char output_path[PATH_MAX];
+  char incident_dir[PATH_MAX];
+  const char *repo_name;
+  const RepoConfig *repo;
+  const char *port;
+  MkdbgConfig config;
+  char *argv[10];
+  int argc = 0;
+
+  if (find_config_upward(config_path, sizeof(config_path)) != 0) {
+    die("missing %s; run `mkdbg init` first", CONFIG_NAME);
+  }
+  if (load_config_file(config_path, &config) != 0) {
+    die("invalid config: %s", config_path);
+  }
+  resolve_repo_name(&config, opts->repo, opts->target, &repo_name);
+  repo = find_repo_const(&config, repo_name);
+  if (repo == NULL) {
+    die("repo `%s` not found in %s", repo_name, config_path);
+  }
+  if (opts->source_log != NULL && opts->port != NULL) {
+    die("capture bundle accepts at most one of --source-log or --port");
+  }
+
+  resolve_repo_root(config_path, repo, repo_root, sizeof(repo_root));
+  join_path(repo_root, "tools/triage_bundle.py", script_path, sizeof(script_path));
+  if (!opts->dry_run && !path_exists(script_path)) {
+    die("repo `%s` has no triage bundle script: %s", repo_name, script_path);
+  }
+
+  argv[argc++] = "python3";
+  argv[argc++] = script_path;
+  if (opts->source_log != NULL) {
+    resolve_path(repo_root, opts->source_log, source_log_path, sizeof(source_log_path));
+    argv[argc++] = "--source-log";
+    argv[argc++] = source_log_path;
+  } else {
+    port = (opts->port != NULL) ? opts->port : repo->port;
+    if (port == NULL || port[0] == '\0') {
+      die("capture bundle requires --port or repo port");
+    }
+    argv[argc++] = "--port";
+    argv[argc++] = (char *)port;
+  }
+
+  if (opts->output != NULL) {
+    resolve_path(repo_root, opts->output, output_path, sizeof(output_path));
+    argv[argc++] = "--output";
+    argv[argc++] = output_path;
+  } else if (load_current_incident_dir(config_path, incident_dir, sizeof(incident_dir)) == 0) {
+    join_path(incident_dir, "bundle.json", output_path, sizeof(output_path));
+    argv[argc++] = "--output";
+    argv[argc++] = output_path;
+  }
+  if (opts->json) {
+    argv[argc++] = "--json";
+  }
+  argv[argc] = NULL;
+  return run_process(argv, repo_root, opts->dry_run);
+}
+
 static int parse_init_args(int argc, char **argv, InitOptions *opts)
 {
   int i;
@@ -1254,6 +1416,46 @@ static int parse_incident_status_args(int argc, char **argv, IncidentStatusOptio
   return 0;
 }
 
+static int parse_capture_bundle_args(int argc, char **argv, CaptureBundleOptions *opts)
+{
+  int i;
+  memset(opts, 0, sizeof(*opts));
+  for (i = 0; i < argc; ++i) {
+    if (strcmp(argv[i], "--target") == 0) {
+      if (i + 1 >= argc) {
+        die("missing value for --target");
+      }
+      opts->target = argv[++i];
+    } else if (strcmp(argv[i], "--port") == 0) {
+      if (i + 1 >= argc) {
+        die("missing value for --port");
+      }
+      opts->port = argv[++i];
+    } else if (strcmp(argv[i], "--source-log") == 0) {
+      if (i + 1 >= argc) {
+        die("missing value for --source-log");
+      }
+      opts->source_log = argv[++i];
+    } else if (strcmp(argv[i], "--output") == 0) {
+      if (i + 1 >= argc) {
+        die("missing value for --output");
+      }
+      opts->output = argv[++i];
+    } else if (strcmp(argv[i], "--json") == 0) {
+      opts->json = 1;
+    } else if (strcmp(argv[i], "--dry-run") == 0) {
+      opts->dry_run = 1;
+    } else if (argv[i][0] == '-') {
+      die("unknown capture bundle argument: %s", argv[i]);
+    } else if (opts->repo == NULL) {
+      opts->repo = argv[i];
+    } else {
+      die("capture bundle accepts at most one repo name");
+    }
+  }
+  return 0;
+}
+
 int main(int argc, char **argv)
 {
   if (argc == 2 && strcmp(argv[1], "--version") == 0) {
@@ -1319,6 +1521,18 @@ int main(int argc, char **argv)
       return cmd_incident_close();
     }
     die("unknown incident subcommand: %s", argv[2]);
+  }
+
+  if (strcmp(argv[1], "capture") == 0) {
+    if (argc < 3) {
+      die("capture requires a subcommand");
+    }
+    if (strcmp(argv[2], "bundle") == 0) {
+      CaptureBundleOptions opts;
+      parse_capture_bundle_args(argc - 3, argv + 3, &opts);
+      return cmd_capture_bundle(&opts);
+    }
+    die("unknown capture subcommand: %s", argv[2]);
   }
 
   die("unknown command: %s", argv[1]);
