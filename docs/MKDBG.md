@@ -22,11 +22,16 @@ Local checkout:
 bash tools/install_mkdbg.sh
 ```
 
+This installs the native C frontend as `mkdbg`.
+
 One-line remote install:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/JialongWang1201/MicroKernel-MPU/main/tools/install_mkdbg.sh | sh
 ```
+
+The remote installer currently builds the native frontend from source and
+requires `curl` and `cc`.
 
 ## Quick Start
 

@@ -68,13 +68,16 @@ Install `mkdbg` from a local checkout:
 bash tools/install_mkdbg.sh
 ```
 
-Native foundation preview: `bash tools/build_mkdbg_native.sh && build/mkdbg-native --version`
+This installs the native C frontend as `mkdbg`. Preview build:
+`bash tools/build_mkdbg_native.sh && build/mkdbg-native --version`
 
 Or install it remotely:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/JialongWang1201/MicroKernel-MPU/main/tools/install_mkdbg.sh | sh
 ```
+
+Remote native install currently builds from source and requires `curl` and `cc`.
 
 Typical flow:
 
