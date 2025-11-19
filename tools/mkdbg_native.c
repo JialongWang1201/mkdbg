@@ -11,6 +11,10 @@
 #include <time.h>
 #include <unistd.h>
 
+#ifndef PATH_MAX
+#define PATH_MAX 4096
+#endif
+
 #define MKDBG_NATIVE_VERSION "0.1.0"
 #define CONFIG_NAME ".mkdbg.toml"
 #define STATE_DIR_NAME ".mkdbg"
@@ -762,9 +766,7 @@ static int command_program(const char *command, char *out, size_t out_size)
 static int search_path(const char *program)
 {
   const char *env = getenv("PATH");
-  char *dup;
-  char *token;
-  char *saveptr = NULL;
+  const char *segment = env;
 
   if (program == NULL || program[0] == '\0') {
     return 0;
@@ -776,21 +778,30 @@ static int search_path(const char *program)
     return 0;
   }
 
-  dup = strdup(env);
-  if (dup == NULL) {
-    return 0;
-  }
-  token = strtok_r(dup, ":", &saveptr);
-  while (token != NULL) {
+  while (segment != NULL && segment[0] != '\0') {
+    const char *next = strchr(segment, ':');
+    size_t len = (next != NULL) ? (size_t)(next - segment) : strlen(segment);
     char candidate[PATH_MAX];
-    join_path(token, program, candidate, sizeof(candidate));
+    char directory[PATH_MAX];
+
+    if (len == 0U) {
+      copy_string(directory, sizeof(directory), ".");
+    } else {
+      if (len >= sizeof(directory)) {
+        len = sizeof(directory) - 1U;
+      }
+      memcpy(directory, segment, len);
+      directory[len] = '\0';
+    }
+    join_path(directory, program, candidate, sizeof(candidate));
     if (path_executable(candidate)) {
-      free(dup);
       return 1;
     }
-    token = strtok_r(NULL, ":", &saveptr);
+    if (next == NULL) {
+      break;
+    }
+    segment = next + 1;
   }
-  free(dup);
   return 0;
 }
 
