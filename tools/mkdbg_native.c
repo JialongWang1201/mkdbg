@@ -108,6 +108,19 @@ typedef struct {
 } CaptureBundleOptions;
 
 typedef struct {
+  const char *repo;
+  const char *target;
+  const char *port;
+  const char *bundle_json;
+  const char *source_log;
+  const char *auto_refresh_s;
+  const char *width;
+  const char *height;
+  int render_once;
+  int dry_run;
+} WatchOptions;
+
+typedef struct {
   char id[MAX_NAME];
   char name[MAX_NAME];
   char status[MAX_NAME];
@@ -817,7 +830,7 @@ static int command_available(const char *command)
 static void usage(void)
 {
   printf("mkdbg-native %s\n", MKDBG_NATIVE_VERSION);
-  printf("usage: mkdbg-native [--version] <init|doctor|repo|target|incident|capture> [options]\n");
+  printf("usage: mkdbg-native [--version] <init|doctor|repo|target|incident|capture|watch> [options]\n");
 }
 
 static void init_default_repo_name(char *out, size_t out_size)
@@ -1293,6 +1306,82 @@ static int cmd_capture_bundle(const CaptureBundleOptions *opts)
   return run_process(argv, repo_root, opts->dry_run);
 }
 
+static int cmd_watch(const WatchOptions *opts)
+{
+  char config_path[PATH_MAX];
+  char repo_root[PATH_MAX];
+  char script_path[PATH_MAX];
+  char bundle_json_path[PATH_MAX];
+  char source_log_path[PATH_MAX];
+  const char *repo_name;
+  const RepoConfig *repo;
+  const char *port;
+  MkdbgConfig config;
+  char *argv[16];
+  int argc = 0;
+
+  if (find_config_upward(config_path, sizeof(config_path)) != 0) {
+    die("missing %s; run `mkdbg init` first", CONFIG_NAME);
+  }
+  if (load_config_file(config_path, &config) != 0) {
+    die("invalid config: %s", config_path);
+  }
+  resolve_repo_name(&config, opts->repo, opts->target, &repo_name);
+  repo = find_repo_const(&config, repo_name);
+  if (repo == NULL) {
+    die("repo `%s` not found in %s", repo_name, config_path);
+  }
+  if (opts->bundle_json != NULL && opts->source_log != NULL) {
+    die("watch accepts at most one of --bundle-json or --source-log");
+  }
+  if ((opts->bundle_json != NULL || opts->source_log != NULL) && opts->port != NULL) {
+    die("watch cannot combine --port with --bundle-json or --source-log");
+  }
+
+  resolve_repo_root(config_path, repo, repo_root, sizeof(repo_root));
+  join_path(repo_root, "tools/bringup_ui.py", script_path, sizeof(script_path));
+  if (!opts->dry_run && !path_exists(script_path)) {
+    die("repo `%s` has no dashboard script: %s", repo_name, script_path);
+  }
+
+  argv[argc++] = "python3";
+  argv[argc++] = script_path;
+  if (opts->bundle_json != NULL) {
+    resolve_path(repo_root, opts->bundle_json, bundle_json_path, sizeof(bundle_json_path));
+    argv[argc++] = "--bundle-json";
+    argv[argc++] = bundle_json_path;
+  } else if (opts->source_log != NULL) {
+    resolve_path(repo_root, opts->source_log, source_log_path, sizeof(source_log_path));
+    argv[argc++] = "--source-log";
+    argv[argc++] = source_log_path;
+  } else {
+    port = (opts->port != NULL) ? opts->port : repo->port;
+    if (port == NULL || port[0] == '\0') {
+      die("watch requires --port or repo port");
+    }
+    argv[argc++] = "--port";
+    argv[argc++] = (char *)port;
+  }
+
+  if (opts->auto_refresh_s != NULL) {
+    argv[argc++] = "--auto-refresh-s";
+    argv[argc++] = (char *)opts->auto_refresh_s;
+  }
+  if (opts->render_once) {
+    argv[argc++] = "--render-once";
+  }
+  if (opts->width != NULL) {
+    argv[argc++] = "--width";
+    argv[argc++] = (char *)opts->width;
+  }
+  if (opts->height != NULL) {
+    argv[argc++] = "--height";
+    argv[argc++] = (char *)opts->height;
+  }
+  argv[argc] = NULL;
+  return run_process(argv, repo_root, opts->dry_run);
+}
+
 static int parse_init_args(int argc, char **argv, InitOptions *opts)
 {
   int i;
@@ -1467,6 +1556,61 @@ static int parse_capture_bundle_args(int argc, char **argv, CaptureBundleOptions
   return 0;
 }
 
+static int parse_watch_args(int argc, char **argv, WatchOptions *opts)
+{
+  int i;
+  memset(opts, 0, sizeof(*opts));
+  for (i = 0; i < argc; ++i) {
+    if (strcmp(argv[i], "--target") == 0) {
+      if (i + 1 >= argc) {
+        die("missing value for --target");
+      }
+      opts->target = argv[++i];
+    } else if (strcmp(argv[i], "--port") == 0) {
+      if (i + 1 >= argc) {
+        die("missing value for --port");
+      }
+      opts->port = argv[++i];
+    } else if (strcmp(argv[i], "--bundle-json") == 0) {
+      if (i + 1 >= argc) {
+        die("missing value for --bundle-json");
+      }
+      opts->bundle_json = argv[++i];
+    } else if (strcmp(argv[i], "--source-log") == 0) {
+      if (i + 1 >= argc) {
+        die("missing value for --source-log");
+      }
+      opts->source_log = argv[++i];
+    } else if (strcmp(argv[i], "--auto-refresh-s") == 0) {
+      if (i + 1 >= argc) {
+        die("missing value for --auto-refresh-s");
+      }
+      opts->auto_refresh_s = argv[++i];
+    } else if (strcmp(argv[i], "--width") == 0) {
+      if (i + 1 >= argc) {
+        die("missing value for --width");
+      }
+      opts->width = argv[++i];
+    } else if (strcmp(argv[i], "--height") == 0) {
+      if (i + 1 >= argc) {
+        die("missing value for --height");
+      }
+      opts->height = argv[++i];
+    } else if (strcmp(argv[i], "--render-once") == 0) {
+      opts->render_once = 1;
+    } else if (strcmp(argv[i], "--dry-run") == 0) {
+      opts->dry_run = 1;
+    } else if (argv[i][0] == '-') {
+      die("unknown watch argument: %s", argv[i]);
+    } else if (opts->repo == NULL) {
+      opts->repo = argv[i];
+    } else {
+      die("watch accepts at most one repo name");
+    }
+  }
+  return 0;
+}
+
 int main(int argc, char **argv)
 {
   if (argc == 2 && strcmp(argv[1], "--version") == 0) {
@@ -1544,6 +1688,12 @@ int main(int argc, char **argv)
       return cmd_capture_bundle(&opts);
     }
     die("unknown capture subcommand: %s", argv[2]);
+  }
+
+  if (strcmp(argv[1], "watch") == 0) {
+    WatchOptions opts;
+    parse_watch_args(argc - 2, argv + 2, &opts);
+    return cmd_watch(&opts);
   }
 
   die("unknown command: %s", argv[1]);
