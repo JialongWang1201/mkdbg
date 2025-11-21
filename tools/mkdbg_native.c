@@ -163,10 +163,43 @@ static void trim_in_place(char *s)
 
 static void copy_string(char *dst, size_t dst_size, const char *src)
 {
+  size_t len;
+  const char *value = (src != NULL) ? src : "";
   if (dst_size == 0U) {
     return;
   }
-  snprintf(dst, dst_size, "%s", src != NULL ? src : "");
+  len = strlen(value);
+  if (len >= dst_size) {
+    len = dst_size - 1U;
+  }
+  if (len > 0U) {
+    memcpy(dst, value, len);
+  }
+  dst[len] = '\0';
+}
+
+static void append_string(char *dst, size_t dst_size, const char *src)
+{
+  size_t used;
+  size_t len;
+  const char *value = (src != NULL) ? src : "";
+
+  if (dst_size == 0U) {
+    return;
+  }
+  used = strlen(dst);
+  if (used >= dst_size - 1U) {
+    dst[dst_size - 1U] = '\0';
+    return;
+  }
+  len = strlen(value);
+  if (len > dst_size - used - 1U) {
+    len = dst_size - used - 1U;
+  }
+  if (len > 0U) {
+    memcpy(dst + used, value, len);
+  }
+  dst[used + len] = '\0';
 }
 
 static const char *path_basename(const char *path)
@@ -1128,7 +1161,14 @@ static int cmd_incident_open(const IncidentOpenOptions *opts)
   }
 
   sanitize_slug(opts->name != NULL ? opts->name : repo_name, slug, sizeof(slug));
-  snprintf(incident_id, sizeof(incident_id), "%ld-%s", (long)time(NULL), slug);
+  incident_id[0] = '\0';
+  {
+    char tsbuf[32];
+    snprintf(tsbuf, sizeof(tsbuf), "%ld", (long)time(NULL));
+    copy_string(incident_id, sizeof(incident_id), tsbuf);
+  }
+  append_string(incident_id, sizeof(incident_id), "-");
+  append_string(incident_id, sizeof(incident_id), slug);
   join_path(incidents_root, incident_id, incident_dir, sizeof(incident_dir));
   if (ensure_dir(incident_dir) != 0) {
     die("failed to create incident directory: %s", incident_dir);
