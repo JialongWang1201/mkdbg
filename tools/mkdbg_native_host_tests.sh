@@ -21,6 +21,10 @@ WATCH_DRY_OUT="${TMP_DIR}/watch-dry.out"
 WATCH_RENDER_OUT="${TMP_DIR}/watch-render.out"
 ATTACH_DRY_OUT="${TMP_DIR}/attach-dry.out"
 ATTACH_ERR_OUT="${TMP_DIR}/attach.err"
+PROBE_HALT_OUT="${TMP_DIR}/probe-halt.out"
+PROBE_FLASH_OUT="${TMP_DIR}/probe-flash.out"
+PROBE_READ32_OUT="${TMP_DIR}/probe-read32.out"
+PROBE_WRITE32_OUT="${TMP_DIR}/probe-write32.out"
 CONFIG_PATH="${TMP_DIR}/.mkdbg.toml"
 
 cleanup() {
@@ -411,6 +415,69 @@ text = Path(sys.argv[1]).read_text(encoding="utf-8")
 needle = "attach_cmd cannot be combined with --break, --command, or --batch"
 if needle not in text:
     raise SystemExit(f"missing expected attach error text: {needle}")
+PY
+
+PATH="${BIN_DIR}:${PATH}" "${ROOT_DIR}/build/mkdbg-native" probe halt --target microkernel --dry-run > "${PROBE_HALT_OUT}"
+python3 - "${PROBE_HALT_OUT}" <<'PY'
+import sys
+from pathlib import Path
+
+text = Path(sys.argv[1]).read_text(encoding="utf-8")
+checks = [
+    "[mkdbg] cwd=",
+    "[mkdbg] cmd=openocd -f ",
+    "reset halt; shutdown",
+]
+for item in checks:
+    if item not in text:
+        raise SystemExit(f"missing expected probe halt output: {item}")
+PY
+
+PATH="${BIN_DIR}:${PATH}" "${ROOT_DIR}/build/mkdbg-native" probe flash --target microkernel --dry-run > "${PROBE_FLASH_OUT}"
+python3 - "${PROBE_FLASH_OUT}" <<'PY'
+import sys
+from pathlib import Path
+
+text = Path(sys.argv[1]).read_text(encoding="utf-8")
+checks = [
+    "[mkdbg] cmd=openocd -f ",
+    "program /",
+    "MicroKernel_MPU.elf",
+    "verify reset exit",
+]
+for item in checks:
+    if item not in text:
+        raise SystemExit(f"missing expected probe flash output: {item}")
+PY
+
+PATH="${BIN_DIR}:${PATH}" "${ROOT_DIR}/build/mkdbg-native" probe read32 --target microkernel --dry-run 0xE000ED28 > "${PROBE_READ32_OUT}"
+python3 - "${PROBE_READ32_OUT}" <<'PY'
+import sys
+from pathlib import Path
+
+text = Path(sys.argv[1]).read_text(encoding="utf-8")
+checks = [
+    "mdw 0xe000ed28",
+    "shutdown",
+]
+for item in checks:
+    if item not in text:
+        raise SystemExit(f"missing expected probe read32 output: {item}")
+PY
+
+PATH="${BIN_DIR}:${PATH}" "${ROOT_DIR}/build/mkdbg-native" probe write32 --target microkernel --dry-run 0xE000ED24 0x700 > "${PROBE_WRITE32_OUT}"
+python3 - "${PROBE_WRITE32_OUT}" <<'PY'
+import sys
+from pathlib import Path
+
+text = Path(sys.argv[1]).read_text(encoding="utf-8")
+checks = [
+    "mww 0xe000ed24 0x00000700",
+    "shutdown",
+]
+for item in checks:
+    if item not in text:
+        raise SystemExit(f"missing expected probe write32 output: {item}")
 PY
 
 popd >/dev/null

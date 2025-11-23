@@ -27,6 +27,7 @@
 #define MAX_VALUE 1024
 #define MAX_ATTACH_BREAKPOINTS 16
 #define MAX_ATTACH_COMMANDS 16
+#define MAX_U32_TEXT 16
 
 typedef struct {
   char name[MAX_NAME];
@@ -137,6 +138,15 @@ typedef struct {
 } AttachOptions;
 
 typedef struct {
+  const char *repo;
+  const char *target;
+  const char *port;
+  const char *address;
+  const char *value;
+  int dry_run;
+} ProbeOptions;
+
+typedef struct {
   char id[MAX_NAME];
   char name[MAX_NAME];
   char status[MAX_NAME];
@@ -216,6 +226,22 @@ static void append_string(char *dst, size_t dst_size, const char *src)
     memcpy(dst + used, value, len);
   }
   dst[used + len] = '\0';
+}
+
+static void format_u32_hex(const char *input, const char *label, char *out, size_t out_size)
+{
+  unsigned long value;
+  char *end = NULL;
+
+  errno = 0;
+  value = strtoul(input, &end, 0);
+  if (input == NULL || input[0] == '\0' || end == NULL || *end != '\0' || errno != 0) {
+    die("invalid %s: %s", label, input != NULL ? input : "");
+  }
+  if (value > 0xFFFFFFFFUL) {
+    die("%s out of range: %s", label, input);
+  }
+  snprintf(out, out_size, "0x%08lx", value);
 }
 
 static const char *path_basename(const char *path)
@@ -988,7 +1014,7 @@ static int command_available(const char *command)
 static void usage(void)
 {
   printf("mkdbg-native %s\n", MKDBG_NATIVE_VERSION);
-  printf("usage: mkdbg-native [--version] <init|doctor|repo|target|incident|capture|watch|attach> [options]\n");
+  printf("usage: mkdbg-native [--version] <init|doctor|repo|target|incident|capture|watch|attach|probe> [options]\n");
 }
 
 static void init_default_repo_name(char *out, size_t out_size)
@@ -1672,6 +1698,120 @@ static int cmd_attach(const AttachOptions *opts)
   return rc;
 }
 
+static int cmd_probe_action(const ProbeOptions *opts, const char *command)
+{
+  char config_path[PATH_MAX];
+  char repo_root[PATH_MAX];
+  char openocd_cfg[PATH_MAX];
+  const char *repo_name;
+  const RepoConfig *repo;
+  MkdbgConfig config;
+  char *argv[6];
+  int argc = 0;
+
+  if (find_config_upward(config_path, sizeof(config_path)) != 0) {
+    die("missing %s; run `mkdbg init` first", CONFIG_NAME);
+  }
+  if (load_config_file(config_path, &config) != 0) {
+    die("invalid config: %s", config_path);
+  }
+  resolve_repo_name(&config, opts->repo, opts->target, &repo_name);
+  repo = find_repo_const(&config, repo_name);
+  if (repo == NULL) {
+    die("repo `%s` not found in %s", repo_name, config_path);
+  }
+  if (repo->openocd_cfg[0] == '\0') {
+    die("repo `%s` has no `openocd_cfg` configured", repo_name);
+  }
+
+  resolve_repo_root(config_path, repo, repo_root, sizeof(repo_root));
+  resolve_repo_file(config_path, repo, repo->openocd_cfg, openocd_cfg, sizeof(openocd_cfg));
+  if (!opts->dry_run && !path_exists(openocd_cfg)) {
+    die("repo `%s` is missing openocd_cfg: %s", repo_name, openocd_cfg);
+  }
+
+  argv[argc++] = "openocd";
+  argv[argc++] = "-f";
+  argv[argc++] = openocd_cfg;
+  argv[argc++] = "-c";
+  argv[argc++] = (char *)command;
+  argv[argc] = NULL;
+  return run_process(argv, repo_root, opts->dry_run);
+}
+
+static int cmd_probe_flash(const ProbeOptions *opts)
+{
+  char config_path[PATH_MAX];
+  char repo_root[PATH_MAX];
+  char openocd_cfg[PATH_MAX];
+  char elf_path[PATH_MAX];
+  char command[MAX_VALUE];
+  const char *repo_name;
+  const RepoConfig *repo;
+  MkdbgConfig config;
+  char *argv[6];
+  int argc = 0;
+
+  if (find_config_upward(config_path, sizeof(config_path)) != 0) {
+    die("missing %s; run `mkdbg init` first", CONFIG_NAME);
+  }
+  if (load_config_file(config_path, &config) != 0) {
+    die("invalid config: %s", config_path);
+  }
+  resolve_repo_name(&config, opts->repo, opts->target, &repo_name);
+  repo = find_repo_const(&config, repo_name);
+  if (repo == NULL) {
+    die("repo `%s` not found in %s", repo_name, config_path);
+  }
+  if (repo->openocd_cfg[0] == '\0') {
+    die("repo `%s` has no `openocd_cfg` configured", repo_name);
+  }
+  if (repo->elf_path[0] == '\0') {
+    die("repo `%s` has no `elf_path` configured", repo_name);
+  }
+
+  resolve_repo_root(config_path, repo, repo_root, sizeof(repo_root));
+  resolve_repo_file(config_path, repo, repo->openocd_cfg, openocd_cfg, sizeof(openocd_cfg));
+  resolve_repo_file(config_path, repo, repo->elf_path, elf_path, sizeof(elf_path));
+  if (!opts->dry_run && !path_exists(openocd_cfg)) {
+    die("repo `%s` is missing openocd_cfg: %s", repo_name, openocd_cfg);
+  }
+  if (!opts->dry_run && !path_exists(elf_path)) {
+    die("repo `%s` is missing elf_path: %s", repo_name, elf_path);
+  }
+
+  snprintf(command, sizeof(command), "program %s verify reset exit", elf_path);
+  argv[argc++] = "openocd";
+  argv[argc++] = "-f";
+  argv[argc++] = openocd_cfg;
+  argv[argc++] = "-c";
+  argv[argc++] = command;
+  argv[argc] = NULL;
+  return run_process(argv, repo_root, opts->dry_run);
+}
+
+static int cmd_probe_read32(const ProbeOptions *opts)
+{
+  char address[MAX_U32_TEXT];
+  char command[MAX_VALUE];
+
+  format_u32_hex(opts->address, "address", address, sizeof(address));
+  snprintf(command, sizeof(command), "init; mdw %s; shutdown", address);
+  return cmd_probe_action(opts, command);
+}
+
+static int cmd_probe_write32(const ProbeOptions *opts)
+{
+  char address[MAX_U32_TEXT];
+  char value[MAX_U32_TEXT];
+  char command[MAX_VALUE];
+
+  format_u32_hex(opts->address, "address", address, sizeof(address));
+  format_u32_hex(opts->value, "value", value, sizeof(value));
+  snprintf(command, sizeof(command), "init; mww %s %s; shutdown", address, value);
+  return cmd_probe_action(opts, command);
+}
+
 static int parse_init_args(int argc, char **argv, InitOptions *opts)
 {
   int i;
@@ -1958,6 +2098,35 @@ static int parse_attach_args(int argc, char **argv, AttachOptions *opts)
   return 0;
 }
 
+static int parse_probe_args(int argc, char **argv, ProbeOptions *opts)
+{
+  int i;
+  memset(opts, 0, sizeof(*opts));
+
+  for (i = 0; i < argc; ++i) {
+    if (strcmp(argv[i], "--target") == 0) {
+      if (i + 1 >= argc) {
+        die("missing value for --target");
+      }
+      opts->target = argv[++i];
+    } else if (strcmp(argv[i], "--port") == 0) {
+      if (i + 1 >= argc) {
+        die("missing value for --port");
+      }
+      opts->port = argv[++i];
+    } else if (strcmp(argv[i], "--dry-run") == 0) {
+      opts->dry_run = 1;
+    } else if (argv[i][0] == '-') {
+      die("unknown probe argument: %s", argv[i]);
+    } else if (opts->repo == NULL) {
+      opts->repo = argv[i];
+    } else {
+      die("probe accepts at most one repo name");
+    }
+  }
+  return 0;
+}
+
 int main(int argc, char **argv)
 {
   if (argc == 2 && strcmp(argv[1], "--version") == 0) {
@@ -2047,6 +2216,47 @@ int main(int argc, char **argv)
     AttachOptions opts;
     parse_attach_args(argc - 2, argv + 2, &opts);
     return cmd_attach(&opts);
+  }
+
+  if (strcmp(argv[1], "probe") == 0) {
+    ProbeOptions opts;
+    if (argc < 3) {
+      die("probe requires a subcommand");
+    }
+    if (strcmp(argv[2], "reset") == 0) {
+      parse_probe_args(argc - 3, argv + 3, &opts);
+      return cmd_probe_action(&opts, "init; reset run; shutdown");
+    }
+    if (strcmp(argv[2], "halt") == 0) {
+      parse_probe_args(argc - 3, argv + 3, &opts);
+      return cmd_probe_action(&opts, "init; reset halt; shutdown");
+    }
+    if (strcmp(argv[2], "resume") == 0) {
+      parse_probe_args(argc - 3, argv + 3, &opts);
+      return cmd_probe_action(&opts, "init; resume; shutdown");
+    }
+    if (strcmp(argv[2], "flash") == 0) {
+      parse_probe_args(argc - 3, argv + 3, &opts);
+      return cmd_probe_flash(&opts);
+    }
+    if (strcmp(argv[2], "read32") == 0) {
+      if (argc < 5) {
+        die("probe read32 requires an address");
+      }
+      parse_probe_args(argc - 4, argv + 3, &opts);
+      opts.address = argv[argc - 1];
+      return cmd_probe_read32(&opts);
+    }
+    if (strcmp(argv[2], "write32") == 0) {
+      if (argc < 6) {
+        die("probe write32 requires an address and value");
+      }
+      parse_probe_args(argc - 5, argv + 3, &opts);
+      opts.address = argv[argc - 2];
+      opts.value = argv[argc - 1];
+      return cmd_probe_write32(&opts);
+    }
+    die("unknown probe subcommand: %s", argv[2]);
   }
 
   die("unknown command: %s", argv[1]);
