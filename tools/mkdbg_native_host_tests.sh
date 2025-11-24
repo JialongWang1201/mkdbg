@@ -26,6 +26,10 @@ PROBE_FLASH_OUT="${TMP_DIR}/probe-flash.out"
 PROBE_READ32_OUT="${TMP_DIR}/probe-read32.out"
 PROBE_WRITE32_OUT="${TMP_DIR}/probe-write32.out"
 RUN_OUT="${TMP_DIR}/run.out"
+BUILD_ACTION_OUT="${TMP_DIR}/build-action.out"
+FLASH_ACTION_OUT="${TMP_DIR}/flash-action.out"
+HIL_ACTION_OUT="${TMP_DIR}/hil-action.out"
+SNAPSHOT_ACTION_OUT="${TMP_DIR}/snapshot-action.out"
 CONFIG_PATH="${TMP_DIR}/.mkdbg.toml"
 
 cleanup() {
@@ -494,6 +498,67 @@ checks = [
 for item in checks:
     if item not in text:
         raise SystemExit(f"missing expected run output: {item}")
+PY
+
+PATH="${BIN_DIR}:${PATH}" "${ROOT_DIR}/build/mkdbg-native" build --target microkernel --dry-run > "${BUILD_ACTION_OUT}"
+python3 - "${BUILD_ACTION_OUT}" <<'PY'
+import sys
+from pathlib import Path
+
+text = Path(sys.argv[1]).read_text(encoding="utf-8")
+checks = [
+    "[mkdbg] cwd=",
+    "[mkdbg] cmd=/bin/sh -lc 'bash tools/build.sh'",
+]
+for item in checks:
+    if item not in text:
+        raise SystemExit(f"missing expected build action output: {item}")
+PY
+
+PATH="${BIN_DIR}:${PATH}" "${ROOT_DIR}/build/mkdbg-native" flash --target microkernel --dry-run > "${FLASH_ACTION_OUT}"
+python3 - "${FLASH_ACTION_OUT}" <<'PY'
+import sys
+from pathlib import Path
+
+text = Path(sys.argv[1]).read_text(encoding="utf-8")
+checks = [
+    "[mkdbg] cwd=",
+    "[mkdbg] cmd=/bin/sh -lc 'bash tools/flash.sh'",
+]
+for item in checks:
+    if item not in text:
+        raise SystemExit(f"missing expected flash action output: {item}")
+PY
+
+PATH="${BIN_DIR}:${PATH}" "${ROOT_DIR}/build/mkdbg-native" hil --target microkernel --dry-run > "${HIL_ACTION_OUT}"
+python3 - "${HIL_ACTION_OUT}" <<'PY'
+import sys
+from pathlib import Path
+
+text = Path(sys.argv[1]).read_text(encoding="utf-8")
+checks = [
+    "[mkdbg] cwd=",
+    "bash tools/hil_gate.sh --port /dev/ttyACM0",
+]
+for item in checks:
+    if item not in text:
+        raise SystemExit(f"missing expected hil action output: {item}")
+PY
+
+PATH="${BIN_DIR}:${PATH}" "${ROOT_DIR}/build/mkdbg-native" snapshot --target microkernel --dry-run > "${SNAPSHOT_ACTION_OUT}"
+python3 - "${SNAPSHOT_ACTION_OUT}" <<'PY'
+import sys
+from pathlib import Path
+
+text = Path(sys.argv[1]).read_text(encoding="utf-8")
+checks = [
+    "[mkdbg] cwd=",
+    "python3 tools/triage_bundle.py --port /dev/ttyACM0 --output ",
+    "build/mkdbg.bundle.json",
+]
+for item in checks:
+    if item not in text:
+        raise SystemExit(f"missing expected snapshot action output: {item}")
 PY
 
 popd >/dev/null
