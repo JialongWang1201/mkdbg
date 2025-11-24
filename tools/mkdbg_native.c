@@ -147,6 +147,15 @@ typedef struct {
 } ProbeOptions;
 
 typedef struct {
+  const char *repo;
+  const char *target;
+  const char *port;
+  char **command;
+  int command_argc;
+  int dry_run;
+} RunOptions;
+
+typedef struct {
   char id[MAX_NAME];
   char name[MAX_NAME];
   char status[MAX_NAME];
@@ -1014,7 +1023,7 @@ static int command_available(const char *command)
 static void usage(void)
 {
   printf("mkdbg-native %s\n", MKDBG_NATIVE_VERSION);
-  printf("usage: mkdbg-native [--version] <init|doctor|repo|target|incident|capture|watch|attach|probe> [options]\n");
+  printf("usage: mkdbg-native [--version] <init|doctor|repo|target|incident|capture|watch|attach|probe|run> [options]\n");
 }
 
 static void init_default_repo_name(char *out, size_t out_size)
@@ -1812,6 +1821,42 @@ static int cmd_probe_write32(const ProbeOptions *opts)
   return cmd_probe_action(opts, command);
 }
 
+static int cmd_run(const RunOptions *opts)
+{
+  char config_path[PATH_MAX];
+  char repo_root[PATH_MAX];
+  const char *repo_name;
+  const RepoConfig *repo;
+  MkdbgConfig config;
+  char *argv[256];
+  int i;
+
+  if (find_config_upward(config_path, sizeof(config_path)) != 0) {
+    die("missing %s; run `mkdbg init` first", CONFIG_NAME);
+  }
+  if (load_config_file(config_path, &config) != 0) {
+    die("invalid config: %s", config_path);
+  }
+  resolve_repo_name(&config, opts->repo, opts->target, &repo_name);
+  repo = find_repo_const(&config, repo_name);
+  if (repo == NULL) {
+    die("repo `%s` not found in %s", repo_name, config_path);
+  }
+  if (opts->command_argc <= 0 || opts->command == NULL) {
+    die("run requires a command after `--`");
+  }
+  if (opts->command_argc >= (int)(sizeof(argv) / sizeof(argv[0]))) {
+    die("run command too long");
+  }
+
+  resolve_repo_root(config_path, repo, repo_root, sizeof(repo_root));
+  for (i = 0; i < opts->command_argc; ++i) {
+    argv[i] = opts->command[i];
+  }
+  argv[opts->command_argc] = NULL;
+  return run_process(argv, repo_root, opts->dry_run);
+}
+
 static int parse_init_args(int argc, char **argv, InitOptions *opts)
 {
   int i;
@@ -2127,6 +2172,46 @@ static int parse_probe_args(int argc, char **argv, ProbeOptions *opts)
   return 0;
 }
 
+static int parse_run_args(int argc, char **argv, RunOptions *opts)
+{
+  int i;
+  int command_index = -1;
+
+  memset(opts, 0, sizeof(*opts));
+  for (i = 0; i < argc; ++i) {
+    if (strcmp(argv[i], "--") == 0) {
+      command_index = i + 1;
+      break;
+    }
+    if (strcmp(argv[i], "--target") == 0) {
+      if (i + 1 >= argc) {
+        die("missing value for --target");
+      }
+      opts->target = argv[++i];
+    } else if (strcmp(argv[i], "--port") == 0) {
+      if (i + 1 >= argc) {
+        die("missing value for --port");
+      }
+      opts->port = argv[++i];
+    } else if (strcmp(argv[i], "--dry-run") == 0) {
+      opts->dry_run = 1;
+    } else if (argv[i][0] == '-') {
+      die("unknown run argument: %s", argv[i]);
+    } else if (opts->repo == NULL) {
+      opts->repo = argv[i];
+    } else {
+      die("run requires a command after `--`");
+    }
+  }
+
+  if (command_index < 0 || command_index >= argc) {
+    die("run requires a command after `--`");
+  }
+  opts->command = argv + command_index;
+  opts->command_argc = argc - command_index;
+  return 0;
+}
+
 int main(int argc, char **argv)
 {
   if (argc == 2 && strcmp(argv[1], "--version") == 0) {
@@ -2257,6 +2342,12 @@ int main(int argc, char **argv)
       return cmd_probe_write32(&opts);
     }
     die("unknown probe subcommand: %s", argv[2]);
+  }
+
+  if (strcmp(argv[1], "run") == 0) {
+    RunOptions opts;
+    parse_run_args(argc - 2, argv + 2, &opts);
+    return cmd_run(&opts);
   }
 
   die("unknown command: %s", argv[1]);

@@ -25,6 +25,7 @@ PROBE_HALT_OUT="${TMP_DIR}/probe-halt.out"
 PROBE_FLASH_OUT="${TMP_DIR}/probe-flash.out"
 PROBE_READ32_OUT="${TMP_DIR}/probe-read32.out"
 PROBE_WRITE32_OUT="${TMP_DIR}/probe-write32.out"
+RUN_OUT="${TMP_DIR}/run.out"
 CONFIG_PATH="${TMP_DIR}/.mkdbg.toml"
 
 cleanup() {
@@ -478,6 +479,21 @@ checks = [
 for item in checks:
     if item not in text:
         raise SystemExit(f"missing expected probe write32 output: {item}")
+PY
+
+PATH="${BIN_DIR}:${PATH}" "${ROOT_DIR}/build/mkdbg-native" run --target rootfixture --dry-run -- echo smoke > "${RUN_OUT}"
+python3 - "${RUN_OUT}" <<'PY'
+import sys
+from pathlib import Path
+
+text = Path(sys.argv[1]).read_text(encoding="utf-8")
+checks = [
+    "[mkdbg] cwd=",
+    "[mkdbg] cmd=echo smoke",
+]
+for item in checks:
+    if item not in text:
+        raise SystemExit(f"missing expected run output: {item}")
 PY
 
 popd >/dev/null
