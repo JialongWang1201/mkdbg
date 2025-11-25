@@ -1706,7 +1706,8 @@ static int cmd_attach(const AttachOptions *opts)
   if (opts->batch) {
     gdb_argv[gdb_argc++] = "-batch";
   }
-  snprintf(target_command, sizeof(target_command), "target extended-remote %s", gdb_target);
+  copy_string(target_command, sizeof(target_command), "target extended-remote ");
+  append_string(target_command, sizeof(target_command), gdb_target);
   gdb_argv[gdb_argc++] = "-ex";
   gdb_argv[gdb_argc++] = target_command;
   for (i = 0U; i < opts->breakpoint_count; ++i) {
@@ -1830,7 +1831,9 @@ static int cmd_probe_flash(const ProbeOptions *opts)
     die("repo `%s` is missing elf_path: %s", repo_name, elf_path);
   }
 
-  snprintf(command, sizeof(command), "program %s verify reset exit", elf_path);
+  copy_string(command, sizeof(command), "program ");
+  append_string(command, sizeof(command), elf_path);
+  append_string(command, sizeof(command), " verify reset exit");
   argv[argc++] = "openocd";
   argv[argc++] = "-f";
   argv[argc++] = openocd_cfg;
