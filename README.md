@@ -79,7 +79,9 @@ curl -fsSL https://raw.githubusercontent.com/JialongWang1201/MicroKernel-MPU/mai
 
 Remote native install currently builds from source and requires `curl` and `cc`.
 If `MKDBG_INSTALL_BINARY_URL` is set, the installer downloads a prebuilt native
-binary instead and skips the compiler requirement.
+binary instead and skips the compiler requirement. If
+`MKDBG_INSTALL_BINARY_BASE_URL` is set, the installer auto-selects
+`mkdbg-native-<os>-<arch>` from that location.
 
 Typical flow:
 

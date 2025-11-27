@@ -8,6 +8,7 @@ LOCAL_NATIVE_SOURCE="${SCRIPT_DIR}/mkdbg_native.c"
 LOCAL_PYTHON_SOURCE="${SCRIPT_DIR}/mkdbg"
 NATIVE_BINARY_PATH="${MKDBG_INSTALL_BINARY_PATH:-}"
 NATIVE_BINARY_URL="${MKDBG_INSTALL_BINARY_URL:-}"
+NATIVE_BINARY_BASE_URL="${MKDBG_INSTALL_BINARY_BASE_URL:-}"
 REPO_SLUG="${MKDBG_REPO_SLUG:-JialongWang1201/MicroKernel-MPU}"
 REPO_REF="${MKDBG_REF:-main}"
 INSTALL_FLAVOR="${MKDBG_INSTALL_FLAVOR:-native}"
@@ -58,12 +59,47 @@ install_native_binary_url() {
   mv "${tmp_target}" "${TARGET}"
 }
 
+detect_host_os() {
+  case "$(uname -s)" in
+    Linux) printf '%s\n' "linux" ;;
+    Darwin) printf '%s\n' "darwin" ;;
+    *)
+      echo "error: unsupported host OS: $(uname -s)" >&2
+      exit 2
+      ;;
+  esac
+}
+
+detect_host_arch() {
+  case "$(uname -m)" in
+    x86_64|amd64) printf '%s\n' "x86_64" ;;
+    arm64|aarch64) printf '%s\n' "arm64" ;;
+    *)
+      echo "error: unsupported host arch: $(uname -m)" >&2
+      exit 2
+      ;;
+  esac
+}
+
+resolve_native_binary_url() {
+  local base_url="$1"
+  local host_os
+  local host_arch
+
+  host_os="$(detect_host_os)"
+  host_arch="$(detect_host_arch)"
+  printf '%s/%s\n' "${base_url%/}" "mkdbg-native-${host_os}-${host_arch}"
+}
+
 mkdir -p "${INSTALL_DIR}"
 
 case "${INSTALL_FLAVOR}" in
   native)
     if [[ -n "${NATIVE_BINARY_PATH}" ]]; then
       install_native_binary_path "${NATIVE_BINARY_PATH}"
+      INSTALL_MODE="native-binary"
+    elif [[ -n "${NATIVE_BINARY_BASE_URL}" ]]; then
+      install_native_binary_url "$(resolve_native_binary_url "${NATIVE_BINARY_BASE_URL}")"
       INSTALL_MODE="native-binary"
     elif [[ -n "${NATIVE_BINARY_URL}" ]]; then
       install_native_binary_url "${NATIVE_BINARY_URL}"

@@ -7,6 +7,36 @@ on:
     branches: ["main"]
 
 jobs:
+  native-host-artifacts:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            host_os: linux
+            host_arch: x86_64
+          - runner: macos-14
+            host_os: darwin
+            host_arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build native mkdbg host binary
+        run: |
+          set -euxo pipefail
+          MKDBG_NATIVE_HOST_OS="${{ matrix.host_os }}" \
+          MKDBG_NATIVE_HOST_ARCH="${{ matrix.host_arch }}" \
+          bash tools/build_mkdbg_native.sh
+
+      - name: Upload Native Host Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mkdbg-native-${{ matrix.host_os }}-${{ matrix.host_arch }}-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: error
+          path: |
+            build/mkdbg-native-${{ matrix.host_os }}-${{ matrix.host_arch }}
+
   build:
     runs-on: ubuntu-latest
     steps:
