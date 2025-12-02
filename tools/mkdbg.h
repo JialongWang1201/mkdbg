@@ -265,4 +265,20 @@ int cmd_incident_open(const IncidentOpenOptions *opts);
 int cmd_incident_status(const IncidentStatusOptions *opts);
 int cmd_incident_close(void);
 
+/* ---- parse.c ---- */
+int parse_init_args(int argc, char **argv, InitOptions *opts);
+int parse_doctor_args(int argc, char **argv, DoctorOptions *opts);
+int parse_repo_add_args(int argc, char **argv, RepoAddOptions *opts);
+int parse_name_command_args(int argc, char **argv, NameCommandOptions *opts, const char *label);
+int parse_incident_open_args(int argc, char **argv, IncidentOpenOptions *opts);
+int parse_incident_status_args(int argc, char **argv, IncidentStatusOptions *opts);
+int parse_capture_bundle_args(int argc, char **argv, CaptureBundleOptions *opts);
+int parse_watch_args(int argc, char **argv, WatchOptions *opts);
+int parse_attach_args(int argc, char **argv, AttachOptions *opts);
+int parse_probe_args(int argc, char **argv, ProbeOptions *opts);
+int parse_run_args(int argc, char **argv, RunOptions *opts);
+int parse_action_args(int argc, char **argv, ActionOptions *opts);
+int parse_git_args(int argc, char **argv, GitOptions *opts);
+int parse_serial_args(int argc, char **argv, SerialOptions *opts);
+
 #endif /* MKDBG_H */
