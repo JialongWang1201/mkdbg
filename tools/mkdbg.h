@@ -281,4 +281,16 @@ int parse_action_args(int argc, char **argv, ActionOptions *opts);
 int parse_git_args(int argc, char **argv, GitOptions *opts);
 int parse_serial_args(int argc, char **argv, SerialOptions *opts);
 
+/* ---- git.c ---- */
+void git_resolve_repo_root(const GitOptions *opts,
+                           char *config_path,
+                           size_t config_path_size,
+                           char *repo_root,
+                           size_t repo_root_size);
+int cmd_git_status(const GitOptions *opts);
+int cmd_git_rev(const GitOptions *opts);
+int cmd_git_new_branch(const GitOptions *opts);
+int cmd_git_worktree(const GitOptions *opts);
+int cmd_git_push_current(const GitOptions *opts);
+
 #endif /* MKDBG_H */

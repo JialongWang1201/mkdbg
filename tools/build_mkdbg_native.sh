@@ -43,7 +43,8 @@ cc -std=c99 -Wall -Wextra -Werror -O2 \
   "${ROOT_DIR}/tools/mkdbg_process.c" \
   "${ROOT_DIR}/tools/mkdbg_config.c" \
   "${ROOT_DIR}/tools/mkdbg_incident.c" \
-  "${ROOT_DIR}/tools/mkdbg_parse.c"
+  "${ROOT_DIR}/tools/mkdbg_parse.c" \
+  "${ROOT_DIR}/tools/mkdbg_git.c"
 
 if [[ "${OUT_ARTIFACT}" != "${OUT}" ]]; then
   cp "${OUT}" "${OUT_ARTIFACT}"
