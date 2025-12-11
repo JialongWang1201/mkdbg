@@ -5,6 +5,7 @@
 #include "task.h"
 #include <string.h>
 #include <stdio.h>
+#include "seam_agent.h"
 
 #ifndef APP_FAULT_VERBOSE
 #define APP_FAULT_VERBOSE 0
@@ -410,6 +411,16 @@ void fault_report_cpu(FaultCpuType type, uint32_t *stacked, uint32_t exc_return)
   fault_copy_task(r.task, sizeof(r.task));
   fault_capture_mpu_region(&r);
   fault_store_retained_cpu(&r);
+
+  /* seam: emit MPU violation event if MMFAR is valid */
+  if (r.cfsr & SCB_CFSR_MMARVALID_Msk) {
+    seam_emit(CFL_LAYER_HW, CFL_EV_MPU_VIOLATION,
+              r.mpu_region, 1U /* write */, r.mmfar, 0);
+  }
+  /* seam: emit fault anchor and dump causal bundle */
+  seam_emit(CFL_LAYER_HW, CFL_EV_FAULT_ENTRY, r.cfsr, r.mmfar, r.pc, r.lr);
+  seam_dump_bundle(_seam_seq - 1U);
+
   fault_dispatch(&r);
 }
 
