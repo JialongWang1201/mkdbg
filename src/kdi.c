@@ -1,4 +1,5 @@
 #include "kdi.h"
+#include "seam_agent.h"
 
 #include <string.h>
 
@@ -1289,6 +1290,9 @@ int kdi_irq_enter(KdiDriverId driver, KdiCapToken token)
     kdi_irq_throttled[driver] = 1U;
     kdi_irq_stats.irq_throttle_total++;
     kdi_irq_driver_counters[driver].irq_throttle_total++;
+    /* seam: IRQ throttle hit — record driver_id and remaining budget */
+    seam_emit(CFL_LAYER_KDI, CFL_EV_KDI_THROTTLE,
+              (uint32_t)driver, kdi_irq_budget_per_sec[driver], 0U, 0U);
     return kdi_finish(driver, KDI_REQ_IRQ, KDI_ERR_LIMIT, count, cooldown_ms);
   }
 
