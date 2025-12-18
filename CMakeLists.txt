@@ -4,6 +4,9 @@ project(MicroKernel_MPU C ASM)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
+# ── Host-only targets (skipped when cross-compiling for ARM) ─────────────────
+if(NOT CMAKE_CROSSCOMPILING)
+
 # ── seam_lib: shared host-side analysis sources ──────────────────────────────
 add_library(seam_lib OBJECT
   tools/seam/src/seam_analyze.c
@@ -75,6 +78,8 @@ add_test(
 set_tests_properties(seam_analyze_kdi_cascade PROPERTIES
   PASS_REGULAR_EXPRESSION "VERDICT:"
 )
+
+endif() # NOT CMAKE_CROSSCOMPILING
 
 set(VM32_MEM_SIZE "4096" CACHE STRING "VM32 memory size in bytes (256/1024/4096)")
 set(BOARD_UART_PORT "2" CACHE STRING "UART port for VCP (1/2/3)")
