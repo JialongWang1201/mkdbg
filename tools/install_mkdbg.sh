@@ -19,17 +19,25 @@ INSTALL_MODE="${INSTALL_FLAVOR}"
 
 compile_native() {
   local source_path="$1"
-  local tmp_target="${TARGET}.tmp"
+  local src_dir
+  src_dir="$(cd "$(dirname "${source_path}")" && pwd)"
 
+  # Use the project build script when in a local checkout (multi-file build)
+  if [[ -x "${src_dir}/build_mkdbg_native.sh" ]]; then
+    MKDBG_NATIVE_OUTPUT="${TARGET}" bash "${src_dir}/build_mkdbg_native.sh" >/dev/null
+    return
+  fi
+
+  # Single-source fallback for remote/standalone installs
   if ! command -v "${CC_BIN}" >/dev/null 2>&1; then
     echo "error: ${CC_BIN} is required to build the native mkdbg installer target" >&2
     exit 2
   fi
 
   "${CC_BIN}" -std=c99 -Wall -Wextra -Werror -O2 \
-    -o "${tmp_target}" \
+    -o "${TARGET}.tmp" \
     "${source_path}"
-  mv "${tmp_target}" "${TARGET}"
+  mv "${TARGET}.tmp" "${TARGET}"
 }
 
 require_curl() {

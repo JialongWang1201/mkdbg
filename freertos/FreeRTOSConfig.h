@@ -83,4 +83,24 @@ STATIC_ASSERT((configMAX_SYSCALL_INTERRUPT_PRIORITY & ((1U << configPRIO_SHIFT) 
 #define traceISR_EXIT()
 #define traceISR_EXIT_TO_SCHEDULER()
 
+/* ── seam RTOS instrumentation ───────────────────────────────────────────── */
+/* seam_agent.h has no FreeRTOS dependency so there is no circular include.  */
+/* The macros below are identical to seam_freertos.h; they are inlined here  */
+/* because seam_freertos.h includes FreeRTOS.h which would be circular.      */
+/* Macros expand at use-site (tasks.c / queue.c) where task.h is in scope.   */
+#include "seam_agent.h"
+
+#define traceTASK_SWITCHED_IN() \
+    seam_emit(CFL_LAYER_RTOS, CFL_EV_TASK_SWITCH, \
+              (uint32_t)(uintptr_t)xTaskGetCurrentTaskHandle(), 0, 0, 0)
+
+#define traceBLOCKED_ON_QUEUE_PEEK_FROM_ISR() \
+    seam_emit(CFL_LAYER_RTOS, CFL_EV_TASK_BLOCK, \
+              (uint32_t)(uintptr_t)xTaskGetCurrentTaskHandle(), 0, 0, 0)
+
+#define traceQUEUE_SEND_FAILED(pxQueue) \
+    seam_emit(CFL_LAYER_RTOS, CFL_EV_QUEUE_FULL, \
+              (uint32_t)(uintptr_t)(pxQueue), \
+              (uint32_t)(uintptr_t)xTaskGetCurrentTaskHandle(), 0, 0)
+
 #endif

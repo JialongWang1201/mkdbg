@@ -2,6 +2,7 @@
 import argparse
 import json
 import re
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -592,6 +593,29 @@ def write_replay_artifact(bundle_path: Path, bundle: dict[str, Any]) -> dict[str
     }
 
 
+def _run_seam_analyze(cfl_path: str) -> str:
+    """Run 'mkdbg seam analyze <cfl_path>' and return stdout, or '' on failure."""
+    try:
+        result = subprocess.run(
+            ["mkdbg", "seam", "analyze", cfl_path],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            return result.stdout
+        print(
+            f"[seam] causal analysis unavailable — mkdbg seam analyze returned {result.returncode}",
+            file=sys.stderr,
+        )
+        return ""
+    except FileNotFoundError:
+        print(
+            "[seam] causal analysis unavailable — install mkdbg and ensure it is on PATH",
+            file=sys.stderr,
+        )
+        return ""
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description=(
@@ -611,6 +635,11 @@ def main() -> int:
     ap.add_argument("--target-driver", help="override dependency target driver")
     ap.add_argument("--output", help="output JSON path (default: logs/triage_bundle_<ts>.json)")
     ap.add_argument("--json", action="store_true", help="print machine-readable summary")
+    ap.add_argument(
+        "--seam-cfl",
+        metavar="FILE",
+        help="path to .cfl seam capture; appends CAUSAL CHAIN section to bundle output",
+    )
     ns = ap.parse_args()
 
     if (ns.port is None and ns.source_log is None) or (ns.port is not None and ns.source_log is not None):
@@ -652,6 +681,12 @@ def main() -> int:
     bundle["bundle_path"] = str(bundle_path)
     bundle["artifact_logs"] = write_bundle_artifacts(bundle_path, raw)
     bundle["replay_artifact"] = write_replay_artifact(bundle_path, bundle)
+
+    if ns.seam_cfl:
+        bundle["seam_causal_chain"] = _run_seam_analyze(ns.seam_cfl)
+    else:
+        bundle["seam_causal_chain"] = ""
+
     bundle_path.write_text(json.dumps(bundle, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
 
     if ns.json:
@@ -675,6 +710,11 @@ def main() -> int:
         print(f"fault_slices: {len(bundle['snapshot'].get('fault_slices', []))}")
         print(f"target_driver: {bundle['dependency']['target_driver']}")
         print(f"overall: {'PASS' if bundle['ok'] else 'FAIL'}")
+        if bundle["seam_causal_chain"]:
+            print()
+            print("CAUSAL CHAIN")
+            print("------------")
+            print(bundle["seam_causal_chain"].rstrip())
     return 0 if bundle["ok"] else 1
 
 

@@ -1,0 +1,3 @@
+[submodule "tools/seam"]
+	path = tools/seam
+	url = https://github.com/JialongWang1201/seam.git

@@ -349,4 +349,7 @@ int cmd_capture_bundle(const CaptureBundleOptions *opts);
 int cmd_watch(const WatchOptions *opts);
 int cmd_attach(const AttachOptions *opts);
 
+/* seam analyze subcommand — argv already shifted past "seam" */
+int mkdbg_cmd_seam(int argc, char *argv[]);
+
 #endif /* MKDBG_H */

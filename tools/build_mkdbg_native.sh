@@ -36,7 +36,19 @@ OUT_ARTIFACT="${MKDBG_NATIVE_ARTIFACT_OUTPUT:-${BUILD_DIR}/${ARTIFACT_BASENAME}}
 
 mkdir -p "${BUILD_DIR}"
 
-cc -std=c99 -Wall -Wextra -Werror -O2 \
+# Compile seam library without -Werror (we don't own that code)
+cc -std=c11 -Wall -Wextra -O2 \
+  -I"${ROOT_DIR}/tools/seam/include" \
+  -c -o "${BUILD_DIR}/seam_analyze.o"  "${ROOT_DIR}/tools/seam/src/seam_analyze.c"
+cc -std=c11 -Wall -Wextra -O2 \
+  -I"${ROOT_DIR}/tools/seam/include" \
+  -c -o "${BUILD_DIR}/seam_rules.o"    "${ROOT_DIR}/tools/seam/src/seam_rules.c"
+cc -std=c11 -Wall -Wextra -O2 \
+  -I"${ROOT_DIR}/tools/seam/include" \
+  -c -o "${BUILD_DIR}/seam_print.o"    "${ROOT_DIR}/tools/seam/src/seam_print.c"
+
+cc -std=c11 -Wall -Wextra -Werror -O2 \
+  -I"${ROOT_DIR}/tools/seam/include" \
   -o "${OUT}" \
   "${ROOT_DIR}/tools/mkdbg_native.c" \
   "${ROOT_DIR}/tools/mkdbg_util.c" \
@@ -49,7 +61,11 @@ cc -std=c99 -Wall -Wextra -Werror -O2 \
   "${ROOT_DIR}/tools/mkdbg_git.c" \
   "${ROOT_DIR}/tools/mkdbg_probe.c" \
   "${ROOT_DIR}/tools/mkdbg_action.c" \
-  "${ROOT_DIR}/tools/mkdbg_serial.c"
+  "${ROOT_DIR}/tools/mkdbg_serial.c" \
+  "${ROOT_DIR}/tools/mkdbg_seam.c" \
+  "${BUILD_DIR}/seam_analyze.o" \
+  "${BUILD_DIR}/seam_rules.o" \
+  "${BUILD_DIR}/seam_print.o"
 
 if [[ "${OUT_ARTIFACT}" != "${OUT}" ]]; then
   cp "${OUT}" "${OUT_ARTIFACT}"

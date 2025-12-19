@@ -1,5 +1,6 @@
 #include "vm32.h"
 #include "board.h"
+#include "seam_agent.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -663,6 +664,7 @@ Vm32Result vm32_step(Vm32 *vm)
           !vm32_mig_check_io(vm, addr + 1U, 0U) ||
           !vm32_mig_check_io(vm, addr + 2U, 0U) ||
           !vm32_mig_check_io(vm, addr + 3U, 0U)) {
+        seam_emit(CFL_LAYER_VM, CFL_EV_VM_POLICY_FAIL, addr, 0U /*LOAD*/, 0, 0);
         return VM32_ERR_POLICY;
       }
       uint32_t v = 0;
@@ -684,6 +686,7 @@ Vm32Result vm32_step(Vm32 *vm)
           !vm32_mig_check_io(vm, addr + 1U, 1U) ||
           !vm32_mig_check_io(vm, addr + 2U, 1U) ||
           !vm32_mig_check_io(vm, addr + 3U, 1U)) {
+        seam_emit(CFL_LAYER_VM, CFL_EV_VM_POLICY_FAIL, addr, 1U /*STORE*/, 0, 0);
         return VM32_ERR_POLICY;
       }
       vm32_write8(vm, addr, (uint8_t)(v & 0xFFU));
@@ -698,6 +701,7 @@ Vm32Result vm32_step(Vm32 *vm)
         return VM32_ERR_STACK;
       }
       if (!vm32_mig_check_io(vm, addr, 0U)) {
+        seam_emit(CFL_LAYER_VM, CFL_EV_VM_POLICY_FAIL, addr, 2U /*IN*/, 0, 0);
         return VM32_ERR_POLICY;
       }
       uint32_t v = vm32_read8(vm, addr);
@@ -712,6 +716,7 @@ Vm32Result vm32_step(Vm32 *vm)
         return VM32_ERR_STACK;
       }
       if (!vm32_mig_check_io(vm, addr, 1U)) {
+        seam_emit(CFL_LAYER_VM, CFL_EV_VM_POLICY_FAIL, addr, 3U /*OUT*/, 0, 0);
         return VM32_ERR_POLICY;
       }
       vm32_write8(vm, addr, (uint8_t)(v & 0xFFU));

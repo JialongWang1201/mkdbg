@@ -26,6 +26,7 @@ CLI.
 - KDI driver lifecycle and containment modeling
 - snapshot and event-slice RCA with evidence IDs and replayable host artifacts
 - VM32 runtime with bounded execution and policy control
+- seam causal fault analysis: on-device event ring emitted over UART as a COBS-framed `.cfl` bundle; `mkdbg seam analyze` reconstructs the causal chain from the binary dump
 - host tooling for `mkdbg`, terminal dashboard, triage bundles, and HIL gates
 
 ## Building
@@ -94,6 +95,7 @@ mkdbg probe halt
 mkdbg incident open --name irq-timeout
 mkdbg incident status
 mkdbg capture bundle --port /dev/cu.usbmodemXXXX
+mkdbg seam analyze /path/to/capture.cfl
 mkdbg attach --break main --command continue --command bt --batch
 mkdbg snapshot --port /dev/cu.usbmodemXXXX
 mkdbg watch --target microkernel

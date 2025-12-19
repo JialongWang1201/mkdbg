@@ -3,7 +3,7 @@
 static void usage(void)
 {
   printf("mkdbg-native %s\n", MKDBG_NATIVE_VERSION);
-  printf("usage: mkdbg-native [--version] <init|doctor|repo|target|incident|build|flash|hil|snapshot|watch|attach|probe|serial|git|run|capture> [options]\n");
+  printf("usage: mkdbg-native [--version] <init|doctor|repo|target|incident|build|flash|hil|snapshot|watch|attach|probe|serial|git|run|capture|seam> [options]\n");
 }
 
 int main(int argc, char **argv)
@@ -222,6 +222,13 @@ int main(int argc, char **argv)
     RunOptions opts;
     parse_run_args(argc - 2, argv + 2, &opts);
     return cmd_run(&opts);
+  }
+
+  if (strcmp(argv[1], "seam") == 0) {
+    if (argc < 3) {
+      die("seam requires a subcommand: analyze");
+    }
+    return mkdbg_cmd_seam(argc - 2, argv + 2);
   }
 
   die("unknown command: %s", argv[1]);
