@@ -26,8 +26,40 @@ CLI.
 - KDI driver lifecycle and containment modeling
 - snapshot and event-slice RCA with evidence IDs and replayable host artifacts
 - VM32 runtime with bounded execution and policy control
-- seam causal fault analysis: on-device event ring emitted over UART as a COBS-framed `.cfl` bundle; `mkdbg seam analyze` reconstructs the causal chain from the binary dump
+- **seam** causal fault analysis: on-device event ring emitted over UART as a COBS-framed `.cfl` bundle; `mkdbg seam analyze` reconstructs the causal chain from the binary dump
+- **wire** live GDB debugging over UART: on crash the firmware halts and waits for `arm-none-eabi-gdb` — no JTAG, no OpenOCD, no Python
 - host tooling for `mkdbg`, terminal dashboard, triage bundles, and HIL gates
+
+## Support Repos
+
+Two focused C99 libraries ship as git submodules at `tools/`:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                   MicroKernel-MPU                        │
+│   fault.c  kdi.c  vm32.c  FreeRTOS  bsp/               │
+│                                                          │
+│   tools/seam/          tools/wire/                       │
+│   seam_agent.h         wire.h                           │
+│   (event ring)         (GDB RSP stub)                   │
+└──────────┬──────────────────┬───────────────────────────┘
+           │  .cfl bundle     │  raw RSP over UART
+           ▼                  ▼
+    seam-analyze           wire-host
+    causal chain           TCP↔UART proxy
+    (post-mortem)          (live GDB session)
+```
+
+| Repo | Role | When to use |
+|------|------|-------------|
+| [seam](https://github.com/JialongWang1201/seam) | Post-mortem causal chain reconstruction from the fault event ring | After a crash: `mkdbg seam analyze capture.cfl` |
+| [wire](https://github.com/JialongWang1201/wire) | Live GDB debugging over UART — halts on fault, waits for GDB | During development: `wire-host --port /dev/ttyUSB0 --baud 115200` |
+
+Both are zero-dependency C99 libraries. Add both at once:
+
+```bash
+git submodule update --init --recursive
+```
 
 ## Building
 
@@ -108,6 +140,41 @@ tools/vm32 bringup-ui --bundle-json tests/fixtures/triage/sample_bundle.json --r
 tools/vm32 triage-bundle --port /dev/cu.usbmodemXXXX
 tools/vm32 triage-replay build --bundle-json tests/fixtures/triage/sample_bundle.json --output build/sample.replay.json
 bash tools/hil_gate.sh --port /dev/cu.usbmodemXXXX
+```
+
+## Live GDB Debugging (wire)
+
+When the firmware crashes, `wire` halts the CPU and waits for a GDB connection
+over the same UART used by `mkdbg`. No JTAG probe or OpenOCD required.
+
+Build the host proxy:
+
+```bash
+bash tools/wire/build_wire_host.sh
+# → tools/wire/build/wire-host
+```
+
+On crash, open two terminals:
+
+```bash
+# Terminal 1 — bridge UART to TCP port 3333
+wire-host --port /dev/cu.usbmodemXXXX --baud 115200
+
+# Terminal 2 — connect GDB
+arm-none-eabi-gdb build/MicroKernel_MPU.elf
+(gdb) target remote :3333
+(gdb) bt          # call stack at fault site
+(gdb) info reg    # register state
+(gdb) x/16xw $sp  # stack contents
+(gdb) continue    # resume execution
+```
+
+For QEMU:
+
+```bash
+qemu-system-arm -M mps2-an385 -kernel build/MicroKernel_MPU.elf -serial pty
+# QEMU prints: char device redirected to /dev/pts/3
+wire-host --port /dev/pts/3 --baud 0
 ```
 
 ## Documentation
