@@ -7,6 +7,26 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 # ── Host-only targets (skipped when cross-compiling for ARM) ─────────────────
 if(NOT CMAKE_CROSSCOMPILING)
 
+# ── libgit2: minimal static build (no HTTPS, no SSH, no TLS) ─────────────────
+# Used by mkdbg_native_host for local git operations without requiring a git CLI.
+# Network operations (push/fetch) fall back to the git CLI subprocess path.
+set(BUILD_SHARED_LIBS    OFF CACHE BOOL   "" FORCE)
+set(BUILD_TESTS          OFF CACHE BOOL   "" FORCE)
+set(BUILD_CLI            OFF CACHE BOOL   "" FORCE)
+set(USE_HTTPS            OFF CACHE BOOL   "" FORCE)
+set(USE_SSH              OFF CACHE BOOL   "" FORCE)
+set(USE_GSSAPI           OFF CACHE BOOL   "" FORCE)
+set(USE_NTLMCLIENT       OFF CACHE BOOL   "" FORCE)
+set(REGEX_BACKEND        builtin CACHE STRING "" FORCE)
+set(SONAME               OFF CACHE BOOL   "" FORCE)
+if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/tools/libgit2/CMakeLists.txt")
+  add_subdirectory(tools/libgit2 libgit2_build EXCLUDE_FROM_ALL)
+  set(MKDBG_HAS_LG2 ON)
+else()
+  message(STATUS "tools/libgit2 submodule not initialised — building mkdbg without libgit2")
+  set(MKDBG_HAS_LG2 OFF)
+endif()
+
 # ── wire: GDB RSP stub (host proxy) ──────────────────────────────────────────
 add_executable(wire_host
   tools/wire/host/wire_host.c
@@ -58,6 +78,13 @@ target_compile_options(mkdbg_native_host PRIVATE
 target_include_directories(mkdbg_native_host PRIVATE
   ${CMAKE_CURRENT_LIST_DIR}/tools/seam/include
 )
+if(MKDBG_HAS_LG2)
+  target_compile_definitions(mkdbg_native_host PRIVATE MKDBG_USE_LG2=1)
+  target_include_directories(mkdbg_native_host PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/tools/libgit2/include
+  )
+  target_link_libraries(mkdbg_native_host PRIVATE libgit2package)
+endif()
 
 # ── seam-analyze: standalone thin shim over mkdbg_cmd_seam ───────────────────
 add_executable(seam_analyze_host
