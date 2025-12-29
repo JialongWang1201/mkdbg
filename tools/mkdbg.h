@@ -197,6 +197,14 @@ typedef struct {
 } SerialOptions;
 
 typedef struct {
+  const char *repo;
+  const char *target;
+  const char *port;
+  int baud;
+  int dry_run;
+} DashboardOptions;
+
+typedef struct {
   char id[MAX_NAME];
   char name[MAX_NAME];
   char status[MAX_NAME];
@@ -326,6 +334,10 @@ void format_action_command(const char *template,
                            size_t out_size);
 int cmd_run(const RunOptions *opts);
 int cmd_configured_action(const ActionOptions *opts, const char *field, int needs_port);
+
+/* ---- dashboard.c ---- */
+int parse_dashboard_args(int argc, char **argv, DashboardOptions *opts);
+int cmd_dashboard(const DashboardOptions *opts);
 
 /* ---- serial.c ---- */
 speed_t baud_to_speed(int baud);

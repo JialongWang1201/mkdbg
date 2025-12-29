@@ -443,3 +443,34 @@ int parse_serial_args(int argc, char **argv, SerialOptions *opts)
   }
   return 0;
 }
+
+int parse_dashboard_args(int argc, char **argv, DashboardOptions *opts)
+{
+  int i;
+  memset(opts, 0, sizeof(*opts));
+
+  for (i = 0; i < argc; ++i) {
+    if (strcmp(argv[i], "--repo") == 0 || strcmp(argv[i], "-r") == 0) {
+      if (i + 1 >= argc) die("missing value for --repo");
+      opts->repo = argv[++i];
+    } else if (strcmp(argv[i], "--target") == 0) {
+      if (i + 1 >= argc) die("missing value for --target");
+      opts->target = argv[++i];
+    } else if (strcmp(argv[i], "--port") == 0) {
+      if (i + 1 >= argc) die("missing value for --port");
+      opts->port = argv[++i];
+    } else if (strcmp(argv[i], "--baud") == 0) {
+      if (i + 1 >= argc) die("missing value for --baud");
+      opts->baud = atoi(argv[++i]);
+    } else if (strcmp(argv[i], "--dry-run") == 0) {
+      opts->dry_run = 1;
+    } else if (argv[i][0] == '-') {
+      die("unknown dashboard argument: %s", argv[i]);
+    } else if (opts->repo == NULL) {
+      opts->repo = argv[i];
+    } else {
+      die("dashboard accepts at most one repo name");
+    }
+  }
+  return 0;
+}

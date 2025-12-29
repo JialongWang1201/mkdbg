@@ -3,7 +3,7 @@
 static void usage(void)
 {
   printf("mkdbg-native %s\n", MKDBG_NATIVE_VERSION);
-  printf("usage: mkdbg-native [--version] <init|doctor|repo|target|incident|build|flash|hil|snapshot|watch|attach|probe|serial|git|run|capture|seam> [options]\n");
+  printf("usage: mkdbg-native [--version] <init|doctor|repo|target|incident|build|flash|hil|snapshot|dashboard|watch|attach|probe|serial|git|run|capture|seam> [options]\n");
 }
 
 int main(int argc, char **argv)
@@ -107,6 +107,12 @@ int main(int argc, char **argv)
       return cmd_capture_bundle(&opts);
     }
     die("unknown capture subcommand: %s", argv[2]);
+  }
+
+  if (strcmp(argv[1], "dashboard") == 0) {
+    DashboardOptions opts;
+    parse_dashboard_args(argc - 2, argv + 2, &opts);
+    return cmd_dashboard(&opts);
   }
 
   if (strcmp(argv[1], "watch") == 0) {

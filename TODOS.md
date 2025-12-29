@@ -17,7 +17,7 @@
 
 ## Phase 4 — Dashboard（可并行开发）
 
-- [ ] **Dashboard stub — `mkdbg dashboard` 子命令骨架** — 添加 `mkdbg dashboard` 子命令，显示串口输出 + 探针状态 stub（"no probe connected"）+ git 状态（Phase 2 后真实数据）+ 构建状态。使用 termbox2（单文件 MIT C 库，~2000 行）作为终端 TUI 底层。
+- [x] **Dashboard stub — `mkdbg dashboard` 子命令骨架** — 添加 `mkdbg dashboard` 子命令，显示串口输出 + 探针状态 stub（"no probe connected"）+ git 状态（Phase 2 后真实数据）+ 构建状态。使用 termbox2（单文件 MIT C 库，~2000 行）作为终端 TUI 底层。**Completed: Phase 4 stub (2026-03-21)**
   - **Why:** Dashboard 是 mkdbg 的差异化 UX 核心；通过 stub 接口可以在 Phase 2/3 完成前先行开发，不被探针协议阻塞。
   - **Pros:** 提前建立 Dashboard 架构；serial 面板可立即真实显示数据；用户体验差异化关键。
   - **Cons:** termbox2 需要 vendor；终端 raw mode + SIGWINCH + atexit 恢复需要仔细处理。
@@ -28,5 +28,6 @@
 
 ## Completed
 
+- [x] **Phase 4 stub — Dashboard TUI** — `mkdbg dashboard` 子命令，termbox2 TUI，串口环形缓冲区，libgit2 git 状态面板，探针 stub，构建 stub，单线程 poll 主循环。**Completed: Phase 4 stub (2026-03-21)**
 - [x] **Phase 1a — seam 集成** — seam causal fault analysis 作为 git submodule 集成到 MicroKernel-MPU，`mkdbg seam analyze` 子命令，firmware instrumentation，triage bridge。**Completed:** Phase 1a (2026-03-20)
 - [x] **Phase 1b — wire 集成** — wire GDB RSP stub 作为 git submodule 集成，bsp/wire_port.c，wire_init() 调用，wire-host 构建/安装集成，QEMU CI 测试。**Completed:** Phase 1b (2026-03-21)
