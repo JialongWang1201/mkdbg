@@ -36,6 +36,7 @@
 #define DASH_STATUS_W_MAX     40   /* maximum status panel width        */
 #define DASH_GIT_REFRESH_S    10   /* git auto-refresh interval (s)     */
 #define DASH_POLL_MS          80   /* event poll timeout (ms)           */
+#define DASH_PROBE_INTERVAL_MS 500 /* wire-host --dump poll interval    */
 
 /* ── serial ring buffer ─────────────────────────────────────────────────── */
 
@@ -220,6 +221,76 @@ static void refresh_git(GitState *gs, const char *root)
   gs->refreshed = time(NULL);
 }
 
+/* ── probe state ─────────────────────────────────────────────────────────── */
+
+typedef struct {
+  WireCrashReport report;
+  int             has_crash;     /* 1 if a crash was detected          */
+  pid_t           subprocess;    /* -1 = none running                  */
+  int             pipe_fd;       /* read end of subprocess stdout pipe  */
+  uint64_t        last_spawn_ms; /* time of last spawn (ms since epoch) */
+} ProbeState;
+
+static void probe_state_init(ProbeState *ps)
+{
+  memset(ps, 0, sizeof(*ps));
+  ps->subprocess = -1;
+  ps->pipe_fd    = -1;
+}
+
+static uint64_t now_ms(void)
+{
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (uint64_t)ts.tv_sec * 1000 + (uint64_t)(ts.tv_nsec / 1000000);
+}
+
+/*
+ * Called once per main loop tick when a port is configured.
+ * Spawns wire-host --dump every DASH_PROBE_INTERVAL_MS; skips if one is
+ * already running; parses result when the subprocess finishes.
+ * Returns 1 if the probe state changed (needs redraw), 0 otherwise.
+ */
+static int probe_tick(ProbeState *ps, const char *port, const char *baud)
+{
+  if (!port) return 0;
+
+  uint64_t now = now_ms();
+
+  /* If a subprocess is running, poll it */
+  if (ps->subprocess > 0) {
+    WireCrashReport tmp;
+    int done = wire_probe_poll(ps->subprocess, ps->pipe_fd, &tmp);
+    if (done > 0) {
+      close(ps->pipe_fd);
+      ps->pipe_fd    = -1;
+      ps->subprocess = -1;
+      if (tmp.halt_signal > 0 && !tmp.timeout) {
+        ps->report    = tmp;
+        ps->has_crash = 1;
+        return 1;
+      }
+    } else if (done < 0) {
+      close(ps->pipe_fd);
+      ps->pipe_fd    = -1;
+      ps->subprocess = -1;
+    }
+    return 0;
+  }
+
+  /* Spawn a new subprocess if the interval has elapsed */
+  if (now - ps->last_spawn_ms < DASH_PROBE_INTERVAL_MS) return 0;
+  ps->last_spawn_ms = now;
+
+  int pipe_fd = -1;
+  pid_t pid = wire_probe_start(port, baud, &pipe_fd);
+  if (pid > 0) {
+    ps->subprocess = pid;
+    ps->pipe_fd    = pipe_fd;
+  }
+  return 0;
+}
+
 /* ── drawing ────────────────────────────────────────────────────────────── */
 
 static void hline(int y, int x0, int x1, uintattr_t fg)
@@ -258,6 +329,7 @@ static void pclip(int x, int y, uintattr_t fg, uintattr_t bg,
 }
 
 static void do_redraw(const SerialRing *ring, const GitState *gs,
+                      const ProbeState *ps,
                       const char *port_label, int baud)
 {
   int W = tb_width();
@@ -361,9 +433,44 @@ static void do_redraw(const SerialRing *ring, const GitState *gs,
       tb_print(sx, sy, TB_YELLOW | TB_BOLD, TB_DEFAULT, "PROBE");
       sy++;
     }
-    if (sy < bot_y - 1) {
-      pclip(sx, sy, TB_DEFAULT, TB_DEFAULT, "no probe connected", sw2);
-      sy++;
+    if (ps && ps->has_crash) {
+      const WireCrashReport *r = &ps->report;
+      if (sy < bot_y - 1) {
+        char tmp[64];
+        snprintf(tmp, sizeof(tmp), "CRASH  signal %d", r->halt_signal);
+        pclip(sx, sy, TB_RED | TB_BOLD, TB_DEFAULT, tmp, sw2);
+        sy++;
+      }
+      if (sy < bot_y - 1) {
+        char tmp[64];
+        snprintf(tmp, sizeof(tmp), "PC  %s", r->regs[15]);
+        pclip(sx, sy, TB_RED, TB_DEFAULT, tmp, sw2);
+        sy++;
+      }
+      if (sy < bot_y - 1 && r->cfsr_decoded[0]) {
+        pclip(sx, sy, TB_YELLOW, TB_DEFAULT, r->cfsr_decoded, sw2);
+        sy++;
+      }
+      if (sy < bot_y - 1 && r->nframes > 0) {
+        char tmp[128] = "frames:";
+        for (int i = 0; i < r->nframes && i < 3; i++) {
+          char f[16];
+          snprintf(f, sizeof(f), " %s", r->stack_frames[i]);
+          append_string(tmp, sizeof(tmp), f);
+        }
+        pclip(sx, sy, TB_WHITE, TB_DEFAULT, tmp, sw2);
+        sy++;
+      }
+    } else if (ps && ps->subprocess > 0) {
+      if (sy < bot_y - 1) {
+        pclip(sx, sy, TB_DEFAULT, TB_DEFAULT, "probing...", sw2);
+        sy++;
+      }
+    } else {
+      if (sy < bot_y - 1) {
+        pclip(sx, sy, TB_DEFAULT, TB_DEFAULT, "no crash detected", sw2);
+        sy++;
+      }
     }
     sy++; /* spacer */
 
@@ -393,6 +500,7 @@ int cmd_dashboard(const DashboardOptions *opts)
 {
   SerialRing ring;
   GitState   gs;
+  ProbeState ps;
   char       config_path[PATH_MAX] = {0};
   char       repo_root[PATH_MAX]   = {0};
   const char *port = NULL;
@@ -401,6 +509,7 @@ int cmd_dashboard(const DashboardOptions *opts)
 
   ring_init(&ring);
   git_state_init(&gs);
+  probe_state_init(&ps);
 
   /* ── resolve config → repo root and default port ── */
   {
@@ -422,6 +531,8 @@ int cmd_dashboard(const DashboardOptions *opts)
   /* --port flag overrides config */
   if (opts->port) port = opts->port;
   baud = opts->baud > 0 ? opts->baud : DEFAULT_BAUD;
+  char baud_str[16];
+  snprintf(baud_str, sizeof(baud_str), "%d", baud);
 
   if (opts->dry_run) {
     printf("[dry-run] dashboard port=%s baud=%d repo=%s\n",
@@ -458,7 +569,7 @@ int cmd_dashboard(const DashboardOptions *opts)
   atexit(tb_shutdown_atexit);
 
   /* initial draw */
-  do_redraw(&ring, &gs, port, baud);
+  do_redraw(&ring, &gs, &ps, port, baud);
 
   /* ── main event loop ── */
   char rbuf[512];
@@ -468,7 +579,7 @@ int cmd_dashboard(const DashboardOptions *opts)
       ssize_t n = read(serial_fd, rbuf, sizeof(rbuf));
       if (n > 0) {
         ring_feed(&ring, rbuf, (int)n);
-        do_redraw(&ring, &gs, port, baud);
+        do_redraw(&ring, &gs, &ps, port, baud);
       } else if (n == 0) {
         /* device disconnected */
         close(serial_fd);
@@ -503,11 +614,19 @@ int cmd_dashboard(const DashboardOptions *opts)
       need_redraw = 1;
     }
 
+    /* probe tick: spawn/poll wire-host --dump every DASH_PROBE_INTERVAL_MS */
+    if (port && probe_tick(&ps, port, baud_str))
+      need_redraw = 1;
+
     if (need_redraw)
-      do_redraw(&ring, &gs, port, baud);
+      do_redraw(&ring, &gs, &ps, port, baud);
   }
 
   tb_shutdown();
   if (serial_fd >= 0) close(serial_fd);
+  if (ps.subprocess > 0) {
+    terminate_pid(ps.subprocess);
+    close(ps.pipe_fd);
+  }
   return 0;
 }

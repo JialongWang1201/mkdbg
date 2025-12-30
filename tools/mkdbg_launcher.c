@@ -178,6 +178,46 @@ int cmd_attach(const AttachOptions *opts)
   }
   resolve_repo_root(config_path, repo, repo_root, sizeof(repo_root));
 
+  /* wire-host --dump path: triggered by --port flag (direct UART attach) */
+  if (opts->port != NULL) {
+    if (opts->breakpoint_count > 0U || opts->gdb_command_count > 0U || opts->batch) {
+      die("--port (wire dump mode) cannot be combined with --break, --command, or --batch");
+    }
+    if (opts->dry_run) {
+      printf("[dry-run] wire-host --dump --port %s --baud %s\n",
+             opts->port, opts->baud ? opts->baud : "115200");
+      return 0;
+    }
+    WireCrashReport report;
+    int rc = wire_probe_dump(opts->port, opts->baud, &report);
+    if (rc < 0) {
+      fprintf(stderr, "mkdbg: failed to run wire-host --dump\n");
+      return 1;
+    }
+    if (report.timeout || report.halt_signal == 0) {
+      printf("PROBE: no crash detected (timeout)\n");
+      return 1;
+    }
+    /* Human-readable crash report */
+    printf("PROBE: crash detected — %s (signal %d) at %s\n",
+           report.regs[15][0] ? report.regs[15] : "unknown PC",
+           report.halt_signal,
+           report.timestamp);
+    printf("  PC  = %s\n", report.regs[15]);
+    printf("  LR  = %s\n", report.regs[14]);
+    printf("  SP  = %s\n", report.regs[13]);
+    if (report.nframes > 0) {
+      printf("  Stack frames:");
+      for (int i = 0; i < report.nframes; i++)
+        printf(" %s", report.stack_frames[i]);
+      printf("\n");
+    }
+    printf("  CFSR = %s (%s)\n",
+           report.cfsr[0] ? report.cfsr : "0x00000000",
+           report.cfsr_decoded[0] ? report.cfsr_decoded : "no faults");
+    return 0;
+  }
+
   if (repo->attach_cmd[0] != '\0') {
     if (opts->breakpoint_count > 0U || opts->gdb_command_count > 0U || opts->batch) {
       die("attach_cmd cannot be combined with --break, --command, or --batch");

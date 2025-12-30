@@ -246,6 +246,11 @@ int parse_attach_args(int argc, char **argv, AttachOptions *opts)
         die("missing value for --port");
       }
       opts->port = argv[++i];
+    } else if (strcmp(argv[i], "--baud") == 0) {
+      if (i + 1 >= argc) {
+        die("missing value for --baud");
+      }
+      opts->baud = argv[++i];
     } else if (strcmp(argv[i], "--break") == 0) {
       if (i + 1 >= argc) {
         die("missing value for --break");

@@ -144,6 +144,7 @@ typedef struct {
   const char *repo;
   const char *target;
   const char *port;
+  const char *baud;
   const char *breakpoints[MAX_ATTACH_BREAKPOINTS];
   size_t breakpoint_count;
   const char *gdb_commands[MAX_ATTACH_COMMANDS];
@@ -212,6 +213,37 @@ typedef struct {
   char port[MAX_VALUE];
   long opened_at;
 } IncidentMetadata;
+
+/* ---- wire probe (mkdbg_wire.c) ---- */
+
+#define WIRE_MAX_FRAMES   8
+#define WIRE_REG_HEX_LEN 12   /* "0x" + 8 hex digits + NUL */
+#define WIRE_NREGS       17
+
+typedef struct {
+  int  halt_signal;                          /* 0 = no halt / timeout  */
+  int  timeout;                              /* 1 = no response        */
+  char regs[WIRE_NREGS][WIRE_REG_HEX_LEN];  /* "0x%08x" per reg       */
+  char cfsr[WIRE_REG_HEX_LEN];
+  char cfsr_decoded[256];
+  char stack_frames[WIRE_MAX_FRAMES][WIRE_REG_HEX_LEN];
+  int  nframes;
+  char timestamp[32];
+} WireCrashReport;
+
+/* Blocking: run wire-host --dump, parse JSON into *report.
+ * Returns 0 on success (halt_signal > 0), 1 on timeout, -1 on error. */
+int wire_probe_dump(const char *port, const char *baud,
+                    WireCrashReport *report);
+
+/* Non-blocking start: fork wire-host --dump, returns subprocess pid
+ * and pipe fd for stdout.  Returns -1 on fork error. */
+pid_t wire_probe_start(const char *port, const char *baud, int *pipe_fd_out);
+
+/* Non-blocking poll: try to read from pipe_fd; if subprocess has exited
+ * and all output was collected, parse JSON into *report and return 1.
+ * Returns 0 if still running, -1 on error. */
+int wire_probe_poll(pid_t pid, int pipe_fd, WireCrashReport *report);
 
 /* ---- util.c ---- */
 void die(const char *fmt, ...);

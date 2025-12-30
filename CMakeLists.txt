@@ -64,6 +64,7 @@ add_executable(mkdbg_native_host
   tools/mkdbg_serial.c
   tools/mkdbg_seam.c
   tools/mkdbg_dashboard.c
+  tools/mkdbg_wire.c
   $<TARGET_OBJECTS:seam_lib>
 )
 set_target_properties(mkdbg_native_host PROPERTIES
