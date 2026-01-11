@@ -22,9 +22,15 @@ compile_native() {
   local src_dir
   src_dir="$(cd "$(dirname "${source_path}")" && pwd)"
 
-  # Use the project build script when in a local checkout (multi-file build)
-  if [[ -x "${src_dir}/build_mkdbg_native.sh" ]]; then
-    MKDBG_NATIVE_OUTPUT="${TARGET}" bash "${src_dir}/build_mkdbg_native.sh" >/dev/null
+  # Use CMake when in a local checkout (multi-file build)
+  if [[ -f "${src_dir}/../CMakeLists.txt" ]] && command -v cmake >/dev/null 2>&1; then
+    local repo_root
+    repo_root="$(cd "${src_dir}/.." && pwd)"
+    local build_dir="${repo_root}/build_install_tmp"
+    cmake -S "${repo_root}" -B "${build_dir}" -DCMAKE_BUILD_TYPE=Release >/dev/null
+    cmake --build "${build_dir}" --target mkdbg_native_host >/dev/null
+    cp "${build_dir}/mkdbg-native" "${TARGET}"
+    rm -rf "${build_dir}"
     return
   fi
 
@@ -141,7 +147,7 @@ esac
 chmod +x "${TARGET}"
 
 # ── wire-host: install alongside mkdbg when built from a local checkout ──────
-WIRE_HOST_BUILD="${SCRIPT_DIR}/../build/wire-host"
+WIRE_HOST_BUILD="${SCRIPT_DIR}/../build_host/wire-host"
 WIRE_HOST_TARGET="${INSTALL_DIR}/wire-host"
 if [[ -f "${WIRE_HOST_BUILD}" ]]; then
   cp "${WIRE_HOST_BUILD}" "${WIRE_HOST_TARGET}"

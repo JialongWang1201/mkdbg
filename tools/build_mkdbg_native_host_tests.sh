@@ -3,28 +3,26 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP_DIR="$(mktemp -d)"
-DEFAULT_OUT="${ROOT_DIR}/build/mkdbg-native"
-CUSTOM_OUT="${TMP_DIR}/mkdbg-native-custom"
-CUSTOM_ARTIFACT="${TMP_DIR}/mkdbg-native-test-linux-x86_64"
+BUILD_DIR="${TMP_DIR}/cmake-build"
+DEFAULT_OUT="${BUILD_DIR}/mkdbg-native"
+CUSTOM_BUILD="${TMP_DIR}/cmake-custom"
+CUSTOM_OUT="${CUSTOM_BUILD}/mkdbg-native"
 
 cleanup() {
   rm -rf "${TMP_DIR}"
 }
 trap cleanup EXIT
 
-bash "${ROOT_DIR}/tools/build_mkdbg_native.sh" > /dev/null
+# Default build: cmake to a temp directory (mirrors what install_mkdbg.sh does)
+cmake -S "${ROOT_DIR}" -B "${BUILD_DIR}" -DCMAKE_BUILD_TYPE=Release > /dev/null
+cmake --build "${BUILD_DIR}" --target mkdbg_native_host --parallel > /dev/null
 test -x "${DEFAULT_OUT}"
 "${DEFAULT_OUT}" --version > /dev/null
 
-MKDBG_NATIVE_HOST_OS=linux \
-MKDBG_NATIVE_HOST_ARCH=x86_64 \
-MKDBG_NATIVE_OUTPUT="${CUSTOM_OUT}" \
-MKDBG_NATIVE_ARTIFACT_OUTPUT="${CUSTOM_ARTIFACT}" \
-  bash "${ROOT_DIR}/tools/build_mkdbg_native.sh" > /dev/null
-
+# Second build to a different output directory (verifies cmake works with arbitrary -B paths)
+cmake -S "${ROOT_DIR}" -B "${CUSTOM_BUILD}" -DCMAKE_BUILD_TYPE=Release > /dev/null
+cmake --build "${CUSTOM_BUILD}" --target mkdbg_native_host --parallel > /dev/null
 test -x "${CUSTOM_OUT}"
-test -x "${CUSTOM_ARTIFACT}"
 "${CUSTOM_OUT}" --version > /dev/null
-"${CUSTOM_ARTIFACT}" --version > /dev/null
 
 echo "build_mkdbg_native_host_tests: OK"
