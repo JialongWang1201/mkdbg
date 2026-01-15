@@ -10,14 +10,14 @@
   - **Effort:** M human (~1 周) → S with CC (~45 分钟)
   - **Priority:** P1 — 阻塞 Dashboard PROBE 真实数据 + mkdbg "零依赖调试" 成功标准
   - **Depends on:** Phase 2 libgit2（✓）、Phase 4 stub（✓）
-- [ ] **Phase 3b — wire 嵌入 mkdbg（迁移）** — 把 `wire_rsp_client.c` + `wire_crash.c` 直接编译进 `mkdbg_native_host`（像 seam_lib 一样作为 OBJECT library），去掉 wire-host 子进程依赖。wire-host 变为可选的 GDB bridge 工具。
+- [x] **Phase 3b — wire 嵌入 mkdbg（迁移）** — 把 `wire_rsp_client.c` + `wire_crash.c` + `wire_serial.c` 直接编译进 `mkdbg_native_host`（`wire_crash_lib` OBJECT library），去掉 wire-host 子进程依赖。wire-host 变为可选的 GDB bridge 工具。**Completed: Phase 3b (2026-03-22)**
   - **Why:** 最终目标：mkdbg attach 不需要 wire-host 二进制在 PATH 中；真正自包含。
   - **Pros:** 消除 subprocess 开销；更健壮（不依赖外部 binary）；符合"单一二进制"设计目标。
   - **Cons:** 需要 wire_rsp_client.c/wire_crash.c 先在 Phase 3a 中稳定；host/firmware 分离变模糊（wire 代码进 mkdbg）。
-  - **Context:** Phase 3a 的代码直接迁移过来——不会白费。迁移路径：把 wire/host/ 中的 .c 文件改为 OBJECT library，CMakeLists.txt 类似 seam_lib 写法。
+  - **Context:** Phase 3a 的代码直接迁移过来——不会白费。迁移路径：把 wire/host/ 中的 .c 文件改为 OBJECT library，CMakeLists.txt 类似 seam_lib 写法。wire_crash.c 新增 wire_dump_crash_to_fp() + wire_dump_crash_to_buf() 供 mkdbg 直接调用。dashboard PROBE 面板用 fork-without-exec 保持非阻塞。
   - **Effort:** S human (~3 天) → XS with CC (~20 分钟)
   - **Priority:** P2 — 依赖 Phase 3a 稳定
-  - **Depends on:** Phase 3a（未完成）
+  - **Depends on:** Phase 3a（✓）
 
 ## Phase 2 后清理
 
@@ -47,6 +47,7 @@
 
 ## Completed
 
+- [x] **Phase 3b — wire 嵌入 mkdbg（迁移）** — wire_crash_lib OBJECT library (wire_rsp_client.c + wire_crash.c + wire_serial.c) embedded into mkdbg_native_host. wire_dump_crash_to_buf() added for in-process JSON capture. wire-host subprocess eliminated; dashboard PROBE uses fork-without-exec. **Completed: Phase 3b (2026-03-22)**
 - [x] **Phase 3a — wire-host --dump 模式** — wire_rsp_client.c (RSP client + NAK/retransmit), wire_crash.c (CFSR decode + heuristic backtrace + JSON output), wire-host --dump flag, mkdbg_wire.c (WireCrashReport + wire_probe_dump/start/poll), mkdbg attach --port/--baud wire path, Dashboard PROBE panel (non-blocking subprocess polling). tools/build_mkdbg_native.sh removed. **Completed: Phase 3a (2026-03-21)**
 - [x] **移除 tools/build_mkdbg_native.sh** — Deleted in Phase 3a PR. **Completed: Phase 3a (2026-03-21)**
 - [x] **Phase 4 stub — Dashboard TUI** — `mkdbg dashboard` 子命令，termbox2 TUI，串口环形缓冲区，libgit2 git 状态面板，探针 stub，构建 stub，单线程 poll 主循环。**Completed: Phase 4 stub (2026-03-21)**
