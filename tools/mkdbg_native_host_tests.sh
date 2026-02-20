@@ -46,8 +46,11 @@ cleanup() {
 }
 trap cleanup EXIT
 
-bash "${ROOT_DIR}/tools/build_mkdbg_native.sh" > "${BUILD_OUT}"
-test -x "${ROOT_DIR}/build/mkdbg-native"
+NATIVE_BUILD_DIR="${TMP_DIR}/cmake-build"
+NATIVE_BIN="${NATIVE_BUILD_DIR}/mkdbg-native"
+cmake -S "${ROOT_DIR}" -B "${NATIVE_BUILD_DIR}" -DCMAKE_BUILD_TYPE=Release > "${BUILD_OUT}"
+cmake --build "${NATIVE_BUILD_DIR}" --target mkdbg_native_host --parallel >> "${BUILD_OUT}"
+test -x "${NATIVE_BIN}"
 
 mkdir -p "${BIN_DIR}"
 cat > "${BIN_DIR}/openocd" <<'EOF'
@@ -65,7 +68,7 @@ mkdir -p alt build tools
 : > build/MicroKernel_MPU.elf
 : > tools/openocd.cfg
 
-PATH="${BIN_DIR}:${PATH}" "${ROOT_DIR}/build/mkdbg-native" --version > "${VERSION_OUT}"
+PATH="${BIN_DIR}:${PATH}" "${NATIVE_BIN}" --version > "${VERSION_OUT}"
 python3 - "${VERSION_OUT}" <<'PY'
 import sys
 from pathlib import Path
@@ -75,7 +78,7 @@ if "mkdbg-native 0.1.0" not in text:
     raise SystemExit(f"missing native version output: {text!r}")
 PY
 
-PATH="${BIN_DIR}:${PATH}" "${ROOT_DIR}/build/mkdbg-native" init \
+PATH="${BIN_DIR}:${PATH}" "${NATIVE_BIN}" init \
   --name microkernel \
   --port /dev/ttyACM0 >/dev/null
 test -f "${CONFIG_PATH}"
@@ -96,7 +99,7 @@ for item in checks:
         raise SystemExit(f"missing expected config line: {item}")
 PY
 
-PATH="${BIN_DIR}:${PATH}" "${ROOT_DIR}/build/mkdbg-native" doctor --target microkernel > "${DOCTOR_OUT}"
+PATH="${BIN_DIR}:${PATH}" "${NATIVE_BIN}" doctor --target microkernel > "${DOCTOR_OUT}"
 python3 - "${DOCTOR_OUT}" <<'PY'
 import sys
 from pathlib import Path
@@ -121,7 +124,7 @@ for item in checks:
         raise SystemExit(f"missing expected native doctor output: {item}")
 PY
 
-PATH="${BIN_DIR}:${PATH}" "${ROOT_DIR}/build/mkdbg-native" repo add lab \
+PATH="${BIN_DIR}:${PATH}" "${NATIVE_BIN}" repo add lab \
   --path ./alt \
   --preset generic \
   --port /dev/ttyUSB1 \
@@ -147,12 +150,12 @@ for item in checks:
         raise SystemExit(f"missing expected repo config line: {item}")
 PY
 
-PATH="${BIN_DIR}:${PATH}" "${ROOT_DIR}/build/mkdbg-native" repo add rootfixture \
+PATH="${BIN_DIR}:${PATH}" "${NATIVE_BIN}" repo add rootfixture \
   --path "${ROOT_DIR}" \
   --preset microkernel-mpu >/dev/null
 
-PATH="${BIN_DIR}:${PATH}" "${ROOT_DIR}/build/mkdbg-native" repo list > "${REPO_LIST_OUT}"
-PATH="${BIN_DIR}:${PATH}" "${ROOT_DIR}/build/mkdbg-native" target list > "${TARGET_LIST_OUT}"
+PATH="${BIN_DIR}:${PATH}" "${NATIVE_BIN}" repo list > "${REPO_LIST_OUT}"
+PATH="${BIN_DIR}:${PATH}" "${NATIVE_BIN}" target list > "${TARGET_LIST_OUT}"
 python3 - "${REPO_LIST_OUT}" "${TARGET_LIST_OUT}" <<'PY'
 import sys
 from pathlib import Path
@@ -170,7 +173,7 @@ if repo_text != target_text:
     raise SystemExit("target list should match repo list output")
 PY
 
-PATH="${BIN_DIR}:${PATH}" "${ROOT_DIR}/build/mkdbg-native" target use microkernel >/dev/null
+PATH="${BIN_DIR}:${PATH}" "${NATIVE_BIN}" target use microkernel >/dev/null
 python3 - "${CONFIG_PATH}" <<'PY'
 import sys
 from pathlib import Path
@@ -180,12 +183,12 @@ if 'default_repo = "microkernel"' not in text:
     raise SystemExit("target use did not restore default repo")
 PY
 
-PATH="${BIN_DIR}:${PATH}" "${ROOT_DIR}/build/mkdbg-native" incident open \
+PATH="${BIN_DIR}:${PATH}" "${NATIVE_BIN}" incident open \
   --target microkernel \
   --name "IRQ Timeout" \
   --port /dev/ttyTEST0 > "${INCIDENT_OPEN_OUT}"
-PATH="${BIN_DIR}:${PATH}" "${ROOT_DIR}/build/mkdbg-native" incident status > "${INCIDENT_STATUS_OUT}"
-PATH="${BIN_DIR}:${PATH}" "${ROOT_DIR}/build/mkdbg-native" incident status --json > "${INCIDENT_STATUS_JSON_OUT}"
+PATH="${BIN_DIR}:${PATH}" "${NATIVE_BIN}" incident status > "${INCIDENT_STATUS_OUT}"
+PATH="${BIN_DIR}:${PATH}" "${NATIVE_BIN}" incident status --json > "${INCIDENT_STATUS_JSON_OUT}"
 
 python3 - "${INCIDENT_OPEN_OUT}" "${INCIDENT_STATUS_OUT}" "${INCIDENT_STATUS_JSON_OUT}" <<'PY'
 import json
@@ -223,7 +226,7 @@ if status_json.get("port") != "/dev/ttyTEST0":
     raise SystemExit(f"incident port mismatch: {status_json}")
 PY
 
-PATH="${BIN_DIR}:${PATH}" "${ROOT_DIR}/build/mkdbg-native" incident close > "${INCIDENT_CLOSE_OUT}"
+PATH="${BIN_DIR}:${PATH}" "${NATIVE_BIN}" incident close > "${INCIDENT_CLOSE_OUT}"
 python3 - "${INCIDENT_CLOSE_OUT}" "${INCIDENT_STATUS_JSON_OUT}" <<'PY'
 import json
 import re
@@ -255,7 +258,7 @@ if "closed_at" not in meta:
     raise SystemExit(f"incident metadata missing closed_at: {meta}")
 PY
 
-PATH="${BIN_DIR}:${PATH}" "${ROOT_DIR}/build/mkdbg-native" incident status --json > "${INCIDENT_STATUS_JSON_OUT}"
+PATH="${BIN_DIR}:${PATH}" "${NATIVE_BIN}" incident status --json > "${INCIDENT_STATUS_JSON_OUT}"
 python3 - "${INCIDENT_STATUS_JSON_OUT}" <<'PY'
 import json
 import sys
@@ -266,7 +269,7 @@ if payload != {"ok": True, "active": False}:
     raise SystemExit(f"expected inactive incident json, got: {payload}")
 PY
 
-PATH="${BIN_DIR}:${PATH}" "${ROOT_DIR}/build/mkdbg-native" capture bundle --target microkernel \
+PATH="${BIN_DIR}:${PATH}" "${NATIVE_BIN}" capture bundle --target microkernel \
   --dry-run > "${CAPTURE_DRY_OUT}"
 python3 - "${CAPTURE_DRY_OUT}" <<'PY'
 import sys
@@ -286,7 +289,7 @@ for item in checks:
         raise SystemExit(f"missing expected capture dry-run output: {item}")
 PY
 
-PATH="${BIN_DIR}:${PATH}" "${ROOT_DIR}/build/mkdbg-native" capture bundle --target rootfixture \
+PATH="${BIN_DIR}:${PATH}" "${NATIVE_BIN}" capture bundle --target rootfixture \
   --source-log tests/fixtures/triage/sample_snapshot.log \
   --output "${CAPTURE_JSON_OUT}" \
   --json > "${CAPTURE_STDOUT}"
@@ -313,10 +316,10 @@ if bundle.get("dependency", {}).get("target_driver") != "sensor":
     raise SystemExit("expected capture target driver sensor")
 PY
 
-PATH="${BIN_DIR}:${PATH}" "${ROOT_DIR}/build/mkdbg-native" incident open \
+PATH="${BIN_DIR}:${PATH}" "${NATIVE_BIN}" incident open \
   --target rootfixture \
   --name "Capture Incident" > "${INCIDENT_OPEN_OUT}"
-PATH="${BIN_DIR}:${PATH}" "${ROOT_DIR}/build/mkdbg-native" capture bundle --target rootfixture \
+PATH="${BIN_DIR}:${PATH}" "${NATIVE_BIN}" capture bundle --target rootfixture \
   --source-log tests/fixtures/triage/sample_snapshot.log \
   --json > "${CAPTURE_INCIDENT_STDOUT}"
 python3 - "${CAPTURE_INCIDENT_STDOUT}" <<'PY'
@@ -338,9 +341,9 @@ if not bundle_path.exists():
     raise SystemExit("expected incident bundle file to exist")
 PY
 
-PATH="${BIN_DIR}:${PATH}" "${ROOT_DIR}/build/mkdbg-native" incident close > "${INCIDENT_CLOSE_OUT}"
+PATH="${BIN_DIR}:${PATH}" "${NATIVE_BIN}" incident close > "${INCIDENT_CLOSE_OUT}"
 
-PATH="${BIN_DIR}:${PATH}" "${ROOT_DIR}/build/mkdbg-native" watch --target microkernel \
+PATH="${BIN_DIR}:${PATH}" "${NATIVE_BIN}" watch --target microkernel \
   --dry-run > "${WATCH_DRY_OUT}"
 python3 - "${WATCH_DRY_OUT}" <<'PY'
 import sys
@@ -360,7 +363,7 @@ for item in checks:
         raise SystemExit(f"missing expected watch dry-run output: {item}")
 PY
 
-PATH="${BIN_DIR}:${PATH}" "${ROOT_DIR}/build/mkdbg-native" watch --target rootfixture \
+PATH="${BIN_DIR}:${PATH}" "${NATIVE_BIN}" watch --target rootfixture \
   --bundle-json tests/fixtures/triage/sample_bundle.json \
   --render-once \
   --auto-refresh-s 5 \
@@ -387,7 +390,7 @@ for item in checks:
         raise SystemExit(f"missing expected watch render text: {item}")
 PY
 
-PATH="${BIN_DIR}:${PATH}" "${ROOT_DIR}/build/mkdbg-native" attach --target microkernel \
+PATH="${BIN_DIR}:${PATH}" "${NATIVE_BIN}" attach --target microkernel \
   --break main \
   --command continue \
   --command bt \
@@ -414,10 +417,10 @@ for item in checks:
         raise SystemExit(f"missing expected attach dry-run output: {item}")
 PY
 
-PATH="${BIN_DIR}:${PATH}" "${ROOT_DIR}/build/mkdbg-native" target add tahoe \
+PATH="${BIN_DIR}:${PATH}" "${NATIVE_BIN}" target add tahoe \
   --path . \
   --attach-cmd "gdb build/tahoe.elf" >/dev/null
-if PATH="${BIN_DIR}:${PATH}" "${ROOT_DIR}/build/mkdbg-native" attach tahoe --dry-run --break main > /dev/null 2> "${ATTACH_ERR_OUT}"; then
+if PATH="${BIN_DIR}:${PATH}" "${NATIVE_BIN}" attach tahoe --dry-run --break main > /dev/null 2> "${ATTACH_ERR_OUT}"; then
   echo "mkdbg_native_host_tests: expected attach_cmd override to reject scripted flags" >&2
   exit 1
 fi
@@ -431,7 +434,7 @@ if needle not in text:
     raise SystemExit(f"missing expected attach error text: {needle}")
 PY
 
-PATH="${BIN_DIR}:${PATH}" "${ROOT_DIR}/build/mkdbg-native" probe halt --target microkernel --dry-run > "${PROBE_HALT_OUT}"
+PATH="${BIN_DIR}:${PATH}" "${NATIVE_BIN}" probe halt --target microkernel --dry-run > "${PROBE_HALT_OUT}"
 python3 - "${PROBE_HALT_OUT}" <<'PY'
 import sys
 from pathlib import Path
@@ -447,7 +450,7 @@ for item in checks:
         raise SystemExit(f"missing expected probe halt output: {item}")
 PY
 
-PATH="${BIN_DIR}:${PATH}" "${ROOT_DIR}/build/mkdbg-native" probe flash --target microkernel --dry-run > "${PROBE_FLASH_OUT}"
+PATH="${BIN_DIR}:${PATH}" "${NATIVE_BIN}" probe flash --target microkernel --dry-run > "${PROBE_FLASH_OUT}"
 python3 - "${PROBE_FLASH_OUT}" <<'PY'
 import sys
 from pathlib import Path
@@ -464,7 +467,7 @@ for item in checks:
         raise SystemExit(f"missing expected probe flash output: {item}")
 PY
 
-PATH="${BIN_DIR}:${PATH}" "${ROOT_DIR}/build/mkdbg-native" probe read32 --target microkernel --dry-run 0xE000ED28 > "${PROBE_READ32_OUT}"
+PATH="${BIN_DIR}:${PATH}" "${NATIVE_BIN}" probe read32 --target microkernel --dry-run 0xE000ED28 > "${PROBE_READ32_OUT}"
 python3 - "${PROBE_READ32_OUT}" <<'PY'
 import sys
 from pathlib import Path
@@ -479,7 +482,7 @@ for item in checks:
         raise SystemExit(f"missing expected probe read32 output: {item}")
 PY
 
-PATH="${BIN_DIR}:${PATH}" "${ROOT_DIR}/build/mkdbg-native" probe write32 --target microkernel --dry-run 0xE000ED24 0x700 > "${PROBE_WRITE32_OUT}"
+PATH="${BIN_DIR}:${PATH}" "${NATIVE_BIN}" probe write32 --target microkernel --dry-run 0xE000ED24 0x700 > "${PROBE_WRITE32_OUT}"
 python3 - "${PROBE_WRITE32_OUT}" <<'PY'
 import sys
 from pathlib import Path
@@ -494,7 +497,7 @@ for item in checks:
         raise SystemExit(f"missing expected probe write32 output: {item}")
 PY
 
-PATH="${BIN_DIR}:${PATH}" "${ROOT_DIR}/build/mkdbg-native" run --target rootfixture --dry-run -- echo smoke > "${RUN_OUT}"
+PATH="${BIN_DIR}:${PATH}" "${NATIVE_BIN}" run --target rootfixture --dry-run -- echo smoke > "${RUN_OUT}"
 python3 - "${RUN_OUT}" <<'PY'
 import sys
 from pathlib import Path
@@ -509,7 +512,7 @@ for item in checks:
         raise SystemExit(f"missing expected run output: {item}")
 PY
 
-PATH="${BIN_DIR}:${PATH}" "${ROOT_DIR}/build/mkdbg-native" build --target microkernel --dry-run > "${BUILD_ACTION_OUT}"
+PATH="${BIN_DIR}:${PATH}" "${NATIVE_BIN}" build --target microkernel --dry-run > "${BUILD_ACTION_OUT}"
 python3 - "${BUILD_ACTION_OUT}" <<'PY'
 import sys
 from pathlib import Path
@@ -524,7 +527,7 @@ for item in checks:
         raise SystemExit(f"missing expected build action output: {item}")
 PY
 
-PATH="${BIN_DIR}:${PATH}" "${ROOT_DIR}/build/mkdbg-native" flash --target microkernel --dry-run > "${FLASH_ACTION_OUT}"
+PATH="${BIN_DIR}:${PATH}" "${NATIVE_BIN}" flash --target microkernel --dry-run > "${FLASH_ACTION_OUT}"
 python3 - "${FLASH_ACTION_OUT}" <<'PY'
 import sys
 from pathlib import Path
@@ -539,7 +542,7 @@ for item in checks:
         raise SystemExit(f"missing expected flash action output: {item}")
 PY
 
-PATH="${BIN_DIR}:${PATH}" "${ROOT_DIR}/build/mkdbg-native" hil --target microkernel --dry-run > "${HIL_ACTION_OUT}"
+PATH="${BIN_DIR}:${PATH}" "${NATIVE_BIN}" hil --target microkernel --dry-run > "${HIL_ACTION_OUT}"
 python3 - "${HIL_ACTION_OUT}" <<'PY'
 import sys
 from pathlib import Path
@@ -554,7 +557,7 @@ for item in checks:
         raise SystemExit(f"missing expected hil action output: {item}")
 PY
 
-PATH="${BIN_DIR}:${PATH}" "${ROOT_DIR}/build/mkdbg-native" snapshot --target microkernel --dry-run > "${SNAPSHOT_ACTION_OUT}"
+PATH="${BIN_DIR}:${PATH}" "${NATIVE_BIN}" snapshot --target microkernel --dry-run > "${SNAPSHOT_ACTION_OUT}"
 python3 - "${SNAPSHOT_ACTION_OUT}" <<'PY'
 import sys
 from pathlib import Path
@@ -570,43 +573,43 @@ for item in checks:
         raise SystemExit(f"missing expected snapshot action output: {item}")
 PY
 
-PATH="${BIN_DIR}:${PATH}" "${ROOT_DIR}/build/mkdbg-native" git status --dry-run > "${GIT_STATUS_OUT}"
+PATH="${BIN_DIR}:${PATH}" "${NATIVE_BIN}" git status --dry-run > "${GIT_STATUS_OUT}"
 python3 - "${GIT_STATUS_OUT}" <<'PY'
 import sys
 from pathlib import Path
 
 text = Path(sys.argv[1]).read_text(encoding="utf-8")
-checks = ["[mkdbg] cwd=", "[mkdbg] cmd=git status"]
+checks = ["[dry-run] git status in "]
 for item in checks:
     if item not in text:
         raise SystemExit(f"missing expected git status output: {item}")
 PY
 
-PATH="${BIN_DIR}:${PATH}" "${ROOT_DIR}/build/mkdbg-native" git rev --dry-run > "${GIT_REV_OUT}"
+PATH="${BIN_DIR}:${PATH}" "${NATIVE_BIN}" git rev --dry-run > "${GIT_REV_OUT}"
 python3 - "${GIT_REV_OUT}" <<'PY'
 import sys
 from pathlib import Path
 
 text = Path(sys.argv[1]).read_text(encoding="utf-8")
-checks = ["[mkdbg] cmd=git rev-parse HEAD"]
+checks = ["[dry-run] git rev-parse HEAD in "]
 for item in checks:
     if item not in text:
         raise SystemExit(f"missing expected git rev output: {item}")
 PY
 
-PATH="${BIN_DIR}:${PATH}" "${ROOT_DIR}/build/mkdbg-native" git new-branch --dry-run feature/test-branch > "${GIT_NEWBRANCH_OUT}"
+PATH="${BIN_DIR}:${PATH}" "${NATIVE_BIN}" git new-branch --dry-run feature/test-branch > "${GIT_NEWBRANCH_OUT}"
 python3 - "${GIT_NEWBRANCH_OUT}" <<'PY'
 import sys
 from pathlib import Path
 
 text = Path(sys.argv[1]).read_text(encoding="utf-8")
-checks = ["[mkdbg] cmd=git checkout -b feature/test-branch"]
+checks = ["[dry-run] git checkout -b feature/test-branch in "]
 for item in checks:
     if item not in text:
         raise SystemExit(f"missing expected git new-branch output: {item}")
 PY
 
-PATH="${BIN_DIR}:${PATH}" "${ROOT_DIR}/build/mkdbg-native" git worktree --dry-run /tmp/wt-test > "${GIT_WORKTREE_OUT}"
+PATH="${BIN_DIR}:${PATH}" "${NATIVE_BIN}" git worktree --dry-run /tmp/wt-test > "${GIT_WORKTREE_OUT}"
 python3 - "${GIT_WORKTREE_OUT}" <<'PY'
 import sys
 from pathlib import Path
@@ -618,7 +621,7 @@ for item in checks:
         raise SystemExit(f"missing expected git worktree output: {item}")
 PY
 
-PATH="${BIN_DIR}:${PATH}" "${ROOT_DIR}/build/mkdbg-native" git push-current --dry-run > "${GIT_PUSH_OUT}"
+PATH="${BIN_DIR}:${PATH}" "${NATIVE_BIN}" git push-current --dry-run > "${GIT_PUSH_OUT}"
 python3 - "${GIT_PUSH_OUT}" <<'PY'
 import sys
 from pathlib import Path
@@ -630,12 +633,12 @@ for item in checks:
         raise SystemExit(f"missing expected git push-current output: {item}")
 PY
 
-if PATH="${BIN_DIR}:${PATH}" "${ROOT_DIR}/build/mkdbg-native" git 2>"${GIT_ERR_OUT}"; then
+if PATH="${BIN_DIR}:${PATH}" "${NATIVE_BIN}" git 2>"${GIT_ERR_OUT}"; then
   echo "git with no subcommand should fail" >&2; exit 1
 fi
 grep -q "git requires a subcommand" "${GIT_ERR_OUT}"
 
-PATH="${BIN_DIR}:${PATH}" "${ROOT_DIR}/build/mkdbg-native" serial tail --port /dev/ttyUSB0 --baud 9600 --dry-run > "${SERIAL_TAIL_OUT}"
+PATH="${BIN_DIR}:${PATH}" "${NATIVE_BIN}" serial tail --port /dev/ttyUSB0 --baud 9600 --dry-run > "${SERIAL_TAIL_OUT}"
 python3 - "${SERIAL_TAIL_OUT}" <<'PY'
 import sys
 from pathlib import Path
@@ -649,7 +652,7 @@ for item in checks:
         raise SystemExit(f"missing expected serial tail output: {item}")
 PY
 
-PATH="${BIN_DIR}:${PATH}" "${ROOT_DIR}/build/mkdbg-native" serial send --port /dev/ttyUSB0 --baud 115200 --dry-run "hello board" > "${SERIAL_SEND_OUT}"
+PATH="${BIN_DIR}:${PATH}" "${NATIVE_BIN}" serial send --port /dev/ttyUSB0 --baud 115200 --dry-run "hello board" > "${SERIAL_SEND_OUT}"
 python3 - "${SERIAL_SEND_OUT}" <<'PY'
 import sys
 from pathlib import Path
@@ -663,12 +666,12 @@ for item in checks:
         raise SystemExit(f"missing expected serial send output: {item}")
 PY
 
-if PATH="${BIN_DIR}:${PATH}" "${ROOT_DIR}/build/mkdbg-native" serial 2>"${SERIAL_ERR_OUT}"; then
+if PATH="${BIN_DIR}:${PATH}" "${NATIVE_BIN}" serial 2>"${SERIAL_ERR_OUT}"; then
   echo "serial with no subcommand should fail" >&2; exit 1
 fi
 grep -q "serial requires a subcommand" "${SERIAL_ERR_OUT}"
 
-PATH="${BIN_DIR}:${PATH}" "${ROOT_DIR}/build/mkdbg-native" serial tail --dry-run > "${SERIAL_TAIL_OUT}"
+PATH="${BIN_DIR}:${PATH}" "${NATIVE_BIN}" serial tail --dry-run > "${SERIAL_TAIL_OUT}"
 python3 - "${SERIAL_TAIL_OUT}" <<'PY'
 import sys
 from pathlib import Path

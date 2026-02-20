@@ -1,46 +1,27 @@
-/* mkdbg_wire.c — wire-host --dump integration for mkdbg
+/* mkdbg_wire.c — native wire crash-dump integration for mkdbg (Phase 3b)
+ *
+ * Phase 3b replaces the Phase 3a fork+exec approach with a direct call to
+ * the embedded wire host library.  wire_serial_open() + wire_dump_crash_to_buf()
+ * run in-process for wire_probe_dump(), eliminating the wire-host subprocess.
+ *
+ * For the dashboard non-blocking probe (wire_probe_start / wire_probe_poll),
+ * we still fork() so the UART read does not block the TUI event loop — but we
+ * no longer exec() a separate binary.  The child calls wire_serial_open() +
+ * wire_dump_crash() (writing JSON to stdout) and exits; the parent reads via
+ * the pipe as before.
  *
  * Provides:
  *   wire_probe_dump()   — blocking crash dump (used by cmd_attach wire path)
  *   wire_probe_start()  — non-blocking start (used by dashboard PROBE panel)
  *   wire_probe_poll()   — non-blocking poll  (used by dashboard tick loop)
  *
- * wire-host --dump outputs JSON to stdout.  We fork+exec it, capture stdout
- * via a pipe, and parse the JSON with simple string scanning (no library
- * dependency — we control the JSON format).
- *
- * wire-host binary lookup order:
- *   1. Same directory as the running mkdbg-native binary (argv[0])
- *   2. $PATH via execvp
- *
  * SPDX-License-Identifier: MIT
  */
 
 #include "mkdbg.h"
+#include "wire_host.h"
 
 #include <sys/wait.h>
-
-/* ── find wire-host binary ───────────────────────────────────────────────── */
-
-static void find_wire_host(char *out, size_t out_size)
-{
-    /* Try same directory as this binary */
-    char self[PATH_MAX];
-    ssize_t n = readlink("/proc/self/exe", self, sizeof(self) - 1);
-    if (n > 0) {
-        self[n] = '\0';
-        char dir[PATH_MAX];
-        path_dirname(self, dir, sizeof(dir));
-        char candidate[PATH_MAX];
-        join_path(dir, "wire-host", candidate, sizeof(candidate));
-        if (path_executable(candidate)) {
-            copy_string(out, out_size, candidate);
-            return;
-        }
-    }
-    /* Fall back to PATH lookup (let execvp find it) */
-    copy_string(out, out_size, "wire-host");
-}
 
 /* ── JSON parsing helpers ────────────────────────────────────────────────── */
 
@@ -136,7 +117,7 @@ static void parse_registers(const char *buf, WireCrashReport *r)
         json_find_string(tmp, reg_names[i], r->regs[i], WIRE_REG_HEX_LEN);
 }
 
-/* Fill WireCrashReport from a wire-host --dump JSON output buffer. */
+/* Fill WireCrashReport from a wire_dump_crash JSON output buffer. */
 static void parse_json(const char *json, WireCrashReport *r)
 {
     memset(r, 0, sizeof(*r));
@@ -151,15 +132,29 @@ static void parse_json(const char *json, WireCrashReport *r)
     parse_stack_frames(json, r);
 }
 
-/* ── subprocess helpers ──────────────────────────────────────────────────── */
+/* ── public API ──────────────────────────────────────────────────────────── */
 
-/*
- * Fork wire-host --dump and return pid + read end of stdout pipe.
- * Returns -1 on error.
- */
-static pid_t start_dump_process(const char *wire_host_bin,
-                                const char *port, const char *baud,
-                                int *pipe_fd_out)
+int wire_probe_dump(const char *port, const char *baud,
+                    WireCrashReport *report)
+{
+    int baud_int = atoi(baud ? baud : "115200");
+    int uart_fd = wire_serial_open(port, baud_int);
+    if (uart_fd < 0) return -1;
+
+    char json[8192];
+    int rc = wire_dump_crash_to_buf(uart_fd, json, sizeof(json));
+    close(uart_fd);
+
+    if (rc < 0) return -1;
+
+    parse_json(json, report);
+
+    if (report->timeout) return 1;
+    if (report->halt_signal == 0) return 1;
+    return 0;
+}
+
+pid_t wire_probe_start(const char *port, const char *baud, int *pipe_fd_out)
 {
     int pipefd[2];
     if (pipe(pipefd) != 0) return -1;
@@ -172,76 +167,24 @@ static pid_t start_dump_process(const char *wire_host_bin,
     }
 
     if (pid == 0) {
-        /* child: redirect stdout to pipe write end */
+        /* child: redirect stdout to pipe write end, then run dump in-process */
         close(pipefd[0]);
         dup2(pipefd[1], STDOUT_FILENO);
         close(pipefd[1]);
 
-        char *argv[9];
-        int   argc = 0;
-        argv[argc++] = (char *)wire_host_bin;
-        argv[argc++] = "--port";
-        argv[argc++] = (char *)port;
-        argv[argc++] = "--baud";
-        argv[argc++] = (char *)(baud ? baud : "115200");
-        argv[argc++] = "--dump";
-        argv[argc]   = NULL;
-        execvp(wire_host_bin, argv);
-        /* execvp failed */
-        fprintf(stderr, "mkdbg: failed to exec wire-host: %s\n", wire_host_bin);
-        _exit(1);
+        int baud_int = atoi(baud ? baud : "115200");
+        int uart_fd = wire_serial_open(port, baud_int);
+        if (uart_fd < 0) _exit(1);
+        wire_dump_crash(uart_fd);  /* writes JSON to stdout (→ pipe) */
+        close(uart_fd);
+        _exit(0);
     }
 
-    /* parent: close write end, return read end */
+    /* parent: close write end, make read end non-blocking */
     close(pipefd[1]);
+    int flags = fcntl(pipefd[0], F_GETFL, 0);
+    if (flags >= 0) fcntl(pipefd[0], F_SETFL, flags | O_NONBLOCK);
     *pipe_fd_out = pipefd[0];
-    return pid;
-}
-
-/* ── public API ──────────────────────────────────────────────────────────── */
-
-int wire_probe_dump(const char *port, const char *baud,
-                    WireCrashReport *report)
-{
-    char wire_host[PATH_MAX];
-    find_wire_host(wire_host, sizeof(wire_host));
-
-    int  pipe_fd = -1;
-    pid_t pid = start_dump_process(wire_host, port, baud, &pipe_fd);
-    if (pid < 0) return -1;
-
-    /* Read all output */
-    char   json[8192];
-    size_t total = 0;
-    for (;;) {
-        ssize_t n = read(pipe_fd, json + total, sizeof(json) - total - 1);
-        if (n <= 0) break;
-        total += (size_t)n;
-        if (total + 1 >= sizeof(json)) break;
-    }
-    json[total] = '\0';
-    close(pipe_fd);
-
-    int status = 0;
-    waitpid(pid, &status, 0);
-
-    parse_json(json, report);
-
-    if (report->timeout) return 1;
-    if (report->halt_signal == 0) return 1;
-    return 0;
-}
-
-pid_t wire_probe_start(const char *port, const char *baud, int *pipe_fd_out)
-{
-    char wire_host[PATH_MAX];
-    find_wire_host(wire_host, sizeof(wire_host));
-    pid_t pid = start_dump_process(wire_host, port, baud, pipe_fd_out);
-    if (pid > 0 && *pipe_fd_out >= 0) {
-        /* Make read end non-blocking for dashboard tick loop */
-        int flags = fcntl(*pipe_fd_out, F_GETFL, 0);
-        if (flags >= 0) fcntl(*pipe_fd_out, F_SETFL, flags | O_NONBLOCK);
-    }
     return pid;
 }
 

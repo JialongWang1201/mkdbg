@@ -27,7 +27,7 @@ CLI.
 - snapshot and event-slice RCA with evidence IDs and replayable host artifacts
 - VM32 runtime with bounded execution and policy control
 - **seam** causal fault analysis: on-device event ring emitted over UART as a COBS-framed `.cfl` bundle; `mkdbg seam analyze` reconstructs the causal chain from the binary dump
-- **wire** crash diagnostics over UART: on crash the firmware halts and exposes state over UART — `mkdbg attach --port` reads registers, CFSR, and a heuristic backtrace in under a second with no GDB, no JTAG, no OpenOCD; `wire-host` also bridges to GDB for full interactive sessions
+- **wire** crash diagnostics over UART: on crash the firmware halts and exposes state over UART — `mkdbg attach --port` reads registers, CFSR, and a heuristic backtrace in under a second with no GDB, no JTAG, no OpenOCD (wire crash diagnostics are built directly into `mkdbg-native`; `wire-host` is only needed for full GDB bridge sessions)
 - host tooling for `mkdbg`, terminal dashboard, triage bundles, and HIL gates
 
 ## Support Repos
@@ -45,9 +45,9 @@ Two focused C99 libraries ship as git submodules at `tools/`:
 └──────────┬──────────────────┬───────────────────────────┘
            │  .cfl bundle     │  raw RSP over UART
            ▼                  ▼
-    seam-analyze           wire-host
-    causal chain        --dump: crash report JSON
-    (post-mortem)       --port:  TCP↔UART bridge (GDB)
+    seam-analyze           mkdbg-native (wire embedded)
+    causal chain        attach: crash report (in-process)
+    (post-mortem)       wire-host: TCP↔UART bridge (GDB)
 ```
 
 | Repo | Role | When to use |
@@ -152,24 +152,24 @@ bash tools/hil_gate.sh --port /dev/cu.usbmodemXXXX
 When the firmware crashes, `wire` halts the CPU and exposes the fault state over
 the same UART used by `mkdbg`. No JTAG probe or OpenOCD required.
 
-Build the host tools (wire-host is built alongside mkdbg-native):
+Build the host tools:
 
 ```bash
 cmake -S . -B build_host && cmake --build build_host
-# → build_host/wire-host, build_host/mkdbg-native
+# → build_host/mkdbg-native, build_host/wire-host
 ```
 
-### Zero-dependency crash readout (--dump)
+`mkdbg-native` now embeds the wire crash diagnostics library directly (Phase 3b).
+`wire-host` is still built but only needed for full GDB bridge sessions.
 
-Read crash state without GDB — outputs JSON with registers, CFSR, and heuristic
-backtrace in under a second:
+### Zero-dependency crash readout
+
+Read crash state without GDB — outputs registers, CFSR, and a heuristic backtrace
+in under a second. No `wire-host` subprocess required:
 
 ```bash
-# Direct: read crash report, print human-readable summary
+# Read crash report, print human-readable summary
 mkdbg attach --port /dev/cu.usbmodemXXXX --baud 115200
-
-# Or call wire-host directly for raw JSON
-wire-host --port /dev/cu.usbmodemXXXX --baud 115200 --dump
 ```
 
 The dashboard (`mkdbg dashboard`) polls this automatically and shows crash state

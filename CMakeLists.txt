@@ -49,6 +49,20 @@ target_include_directories(seam_lib PUBLIC
 )
 target_compile_options(seam_lib PRIVATE -Wall -Wextra -O2)
 
+# ── wire_crash_lib: wire host-side crash diagnostics (embedded in mkdbg) ─────
+# Phase 3b: embed wire RSP client + crash dump + serial directly into
+# mkdbg_native_host so no wire-host subprocess is required at runtime.
+add_library(wire_crash_lib OBJECT
+  tools/wire/host/wire_rsp_client.c
+  tools/wire/host/wire_crash.c
+  tools/wire/host/wire_serial.c
+)
+target_include_directories(wire_crash_lib PUBLIC
+  ${CMAKE_CURRENT_LIST_DIR}/tools/wire/include
+  ${CMAKE_CURRENT_LIST_DIR}/tools/wire/host
+)
+target_compile_options(wire_crash_lib PRIVATE -Wall -Wextra -O2)
+
 add_executable(mkdbg_native_host
   tools/mkdbg_native.c
   tools/mkdbg_util.c
@@ -66,6 +80,7 @@ add_executable(mkdbg_native_host
   tools/mkdbg_dashboard.c
   tools/mkdbg_wire.c
   $<TARGET_OBJECTS:seam_lib>
+  $<TARGET_OBJECTS:wire_crash_lib>
 )
 set_target_properties(mkdbg_native_host PROPERTIES
   OUTPUT_NAME mkdbg-native
@@ -79,6 +94,8 @@ target_compile_options(mkdbg_native_host PRIVATE
 )
 target_include_directories(mkdbg_native_host PRIVATE
   ${CMAKE_CURRENT_LIST_DIR}/tools/seam/include
+  ${CMAKE_CURRENT_LIST_DIR}/tools/wire/include
+  ${CMAKE_CURRENT_LIST_DIR}/tools/wire/host
 )
 if(MKDBG_HAS_LG2)
   target_compile_definitions(mkdbg_native_host PRIVATE MKDBG_USE_LG2=1)
@@ -130,7 +147,10 @@ add_library(wire_firmware OBJECT
 target_include_directories(wire_firmware PUBLIC
   ${CMAKE_CURRENT_LIST_DIR}/tools/wire/include
 )
-target_compile_options(wire_firmware PRIVATE -Wall -Wextra -O2)
+target_compile_options(wire_firmware PRIVATE
+  -mcpu=cortex-m4 -mthumb -mfpu=fpv4-sp-d16 -mfloat-abi=hard
+  -Wall -Wextra -O2
+)
 
 set(VM32_MEM_SIZE "4096" CACHE STRING "VM32 memory size in bytes (256/1024/4096)")
 set(BOARD_UART_PORT "2" CACHE STRING "UART port for VCP (1/2/3)")
