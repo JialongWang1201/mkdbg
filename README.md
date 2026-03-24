@@ -1,17 +1,18 @@
-# MicroKernel-MPU
+# mkdbg
 
 ```text
-+----------------------------------------------------------------------------------+
-|  __  __ _                  _  __                    _   __  __ ____  _   _       |
-| |  \/  (_) ___ _ __ ___   | |/ /___ _ __ _ __   ___| | |  \/  |  _ \| | | |      |
-| | |\/| | |/ __| '__/ _ \  | ' // _ \ '__| '_ \ / _ \ | | |\/| | |_) | | | |      |
-| | |  | | | (__| | | (_) | | . \  __/ |  | | | |  __/ | | |  | |  __/| |_| |      |
-| |_|  |_|_|\___|_|  \___/  |_|\_\___|_|  |_| |_|\___|_| |_|  |_|_|    \___/       |
-|                      hardware-first bringup and fault triage                      |
-+----------------------------------------------------------------------------------+
++----------------------------------------------------------+
+|                                                          |
+|  _ __ ___ | | _____| | |__   __ _                        |
+| | '_ ` _ \| |/ / _` | '_ \ / _` |                       |
+| | | | | | |   < (_| | |_) | (_| |                        |
+| |_| |_| |_|_|\_\__,_|_.__/ \__, |                        |
+|                              |___/                        |
+|         hardware-first bringup and fault triage           |
++----------------------------------------------------------+
 ```
 
-MicroKernel-MPU is a fault-containment-first STM32F446 platform built on
+mkdbg is a fault-containment-first STM32F446 platform built on
 FreeRTOS MPU. It combines staged bring-up, KDI-style driver isolation, VM32
 workloads, unified fault telemetry, and repo-aware host tooling so boot and
 runtime failures can be explained quickly.
@@ -35,19 +36,19 @@ CLI.
 Two focused C99 libraries ship as git submodules at `tools/`:
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                   MicroKernel-MPU                        │
-│   fault.c  kdi.c  vm32.c  FreeRTOS  bsp/               │
-│                                                          │
-│   tools/seam/          tools/wire/                       │
-│   seam_agent.h         wire.h                           │
-│   (event ring)         (GDB RSP stub)                   │
-└──────────┬──────────────────┬───────────────────────────┘
-           │  .cfl bundle     │  raw RSP over UART
-           ▼                  ▼
++-----------------------------------------------------+
+|                       mkdbg                          |
+|   fault.c  kdi.c  vm32.c  FreeRTOS  bsp/            |
+|                                                      |
+|   tools/seam/          tools/wire/                   |
+|   seam_agent.h         wire.h                        |
+|   (event ring)         (GDB RSP stub)                |
++----------+------------------+------------------------+
+           |  .cfl bundle     |  raw RSP over UART
+           v                  v
     seam-analyze           mkdbg-native (wire embedded)
     causal chain        attach: crash report (in-process)
-    (post-mortem)       wire-host: TCP↔UART bridge (GDB)
+    (post-mortem)       wire-host: TCP<->UART bridge (GDB)
 ```
 
 | Repo | Role | When to use |
@@ -89,7 +90,7 @@ The boot banner emits firmware identity on UART so host tooling can confirm the
 exact image running on the board:
 
 ```text
-MicroKernel-MPU boot
+mkdbg boot
 Build id=0x1A2B3C4D git=1a2b3c4d clean profile=debug board=Nucleo-F446RE uart=USART2
 ```
 
@@ -111,7 +112,7 @@ cmake -S . -B build_host && cmake --build build_host --target mkdbg_native_host
 Or install it remotely:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/JialongWang1201/MicroKernel-MPU/main/tools/install_mkdbg.sh | sh
+curl -fsSL https://raw.githubusercontent.com/JialongWang1201/mkdbg/main/tools/install_mkdbg.sh | sh
 ```
 
 Remote native install currently builds from source and requires `curl` and `cc`.
@@ -123,7 +124,7 @@ binary instead and skips the compiler requirement. If
 Typical flow:
 
 ```bash
-mkdbg init --name microkernel --port /dev/cu.usbmodemXXXX
+mkdbg init --name mkdbg --port /dev/cu.usbmodemXXXX
 mkdbg doctor
 mkdbg build
 mkdbg flash
@@ -135,7 +136,7 @@ mkdbg seam analyze /path/to/capture.cfl
 mkdbg attach --port /dev/cu.usbmodemXXXX          # zero-dependency crash report (no GDB)
 mkdbg attach --break main --command continue --command bt --batch  # GDB session
 mkdbg snapshot --port /dev/cu.usbmodemXXXX
-mkdbg watch --target microkernel
+mkdbg watch --target mkdbg
 ```
 
 Repo-local tools remain available when you are working inside this checkout:
@@ -156,10 +157,10 @@ Build the host tools:
 
 ```bash
 cmake -S . -B build_host && cmake --build build_host
-# → build_host/mkdbg-native, build_host/wire-host
+# -> build_host/mkdbg-native, build_host/wire-host
 ```
 
-`mkdbg-native` now embeds the wire crash diagnostics library directly (Phase 3b).
+`mkdbg-native` embeds the wire crash diagnostics library directly.
 `wire-host` is still built but only needed for full GDB bridge sessions.
 
 ### Zero-dependency crash readout
@@ -185,7 +186,7 @@ connect without OpenOCD:
 wire-host --port /dev/cu.usbmodemXXXX --baud 115200
 
 # Terminal 2 — connect GDB
-arm-none-eabi-gdb build/MicroKernel_MPU.elf
+arm-none-eabi-gdb build/mkdbg.elf
 (gdb) target remote :3333
 (gdb) bt          # call stack at fault site
 (gdb) info reg    # register state
@@ -196,7 +197,7 @@ arm-none-eabi-gdb build/MicroKernel_MPU.elf
 For QEMU:
 
 ```bash
-qemu-system-arm -M mps2-an385 -kernel build/MicroKernel_MPU.elf -serial pty
+qemu-system-arm -M mps2-an385 -kernel build/mkdbg.elf -serial pty
 # QEMU prints: char device redirected to /dev/pts/3
 wire-host --port /dev/pts/3 --baud 0
 ```
