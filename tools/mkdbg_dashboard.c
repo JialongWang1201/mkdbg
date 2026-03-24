@@ -320,6 +320,92 @@ static void refresh_git(GitState *gs, const char *root)
   gs->refreshed = time(NULL);
 }
 
+/* ── build state ─────────────────────────────────────────────────────────── */
+
+typedef struct {
+  int    elf_exists;   /* 1 if ELF file was found on last check       */
+  int    elf_age_s;    /* seconds since ELF mtime (-1 = not found)    */
+  int    running;      /* 1 if a build subprocess is in progress      */
+  int    last_ok;      /* 1=ok 0=fail -1=unknown (last completed run) */
+  pid_t  build_pid;
+  int    build_pipe;   /* read end; -1 if not running                 */
+} BuildState;
+
+static void build_state_init(BuildState *bs)
+{
+  memset(bs, 0, sizeof(*bs));
+  bs->elf_age_s  = -1;
+  bs->last_ok    = -1;
+  bs->build_pid  = -1;
+  bs->build_pipe = -1;
+}
+
+/* Stat the ELF file and update age. Call at startup and after a build. */
+static void refresh_build(BuildState *bs, const char *elf_path)
+{
+  if (!elf_path || !elf_path[0]) { bs->elf_exists = 0; bs->elf_age_s = -1; return; }
+  struct stat st;
+  if (stat(elf_path, &st) != 0) { bs->elf_exists = 0; bs->elf_age_s = -1; return; }
+  bs->elf_exists = 1;
+  bs->elf_age_s  = (int)(time(NULL) - st.st_mtime);
+  if (bs->elf_age_s < 0) bs->elf_age_s = 0;
+}
+
+/* Fork build.sh in the background; returns 1 if started, 0 if already running. */
+static int build_start(BuildState *bs, const char *repo_root)
+{
+  if (bs->running) return 0;
+  int pipefd[2];
+  if (pipe(pipefd) != 0) return 0;
+  /* Set read end non-blocking */
+  int flags = fcntl(pipefd[0], F_GETFL, 0);
+  if (flags >= 0) fcntl(pipefd[0], F_SETFL, flags | O_NONBLOCK);
+
+  pid_t pid = fork();
+  if (pid < 0) { close(pipefd[0]); close(pipefd[1]); return 0; }
+  if (pid == 0) {
+    /* child */
+    close(pipefd[0]);
+    dup2(pipefd[1], STDOUT_FILENO);
+    dup2(pipefd[1], STDERR_FILENO);
+    close(pipefd[1]);
+    char script[PATH_MAX];
+    snprintf(script, sizeof(script), "%s/tools/build.sh", repo_root);
+    execl("/bin/sh", "/bin/sh", script, (char *)NULL);
+    _exit(127);
+  }
+  close(pipefd[1]);
+  bs->build_pid  = pid;
+  bs->build_pipe = pipefd[0];
+  bs->running    = 1;
+  return 1;
+}
+
+/*
+ * Poll an in-progress build; drain pipe output (discarded — we only care about
+ * exit status). Returns 1 when the build completes (bs->last_ok updated).
+ */
+static int build_poll(BuildState *bs, const char *elf_path)
+{
+  if (!bs->running || bs->build_pid <= 0) return 0;
+
+  /* drain any pipe output */
+  char tmp[256];
+  while (read(bs->build_pipe, tmp, sizeof(tmp)) > 0) {}
+
+  int status = 0;
+  pid_t r = waitpid(bs->build_pid, &status, WNOHANG);
+  if (r == 0) return 0;  /* still running */
+
+  close(bs->build_pipe);
+  bs->build_pipe = -1;
+  bs->build_pid  = -1;
+  bs->running    = 0;
+  bs->last_ok    = (r > 0 && WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 1 : 0;
+  refresh_build(bs, elf_path);
+  return 1;
+}
+
 /* ── probe state ─────────────────────────────────────────────────────────── */
 
 typedef struct {
@@ -428,7 +514,7 @@ static void pclip(int x, int y, uintattr_t fg, uintattr_t bg,
 }
 
 static void do_redraw(const SerialRing *ring, const GitState *gs,
-                      const ProbeState *ps,
+                      const ProbeState *ps, const BuildState *bs,
                       const char *port_label, int baud)
 {
   int W = tb_width();
@@ -600,8 +686,39 @@ static void do_redraw(const SerialRing *ring, const GitState *gs,
       tb_print(sx, sy, TB_MAGENTA | TB_BOLD, TB_DEFAULT, "BUILD");
       sy++;
     }
-    if (sy < bot_y - 1) {
-      pclip(sx, sy, TB_DEFAULT, TB_DEFAULT, "--", sw2);
+    if (bs && bs->running) {
+      if (sy < bot_y - 1) {
+        pclip(sx, sy, TB_YELLOW, TB_DEFAULT, "building...", sw2);
+        sy++;
+      }
+    } else if (bs) {
+      /* ELF age line */
+      if (sy < bot_y - 1) {
+        if (!bs->elf_exists) {
+          pclip(sx, sy, TB_DEFAULT, TB_DEFAULT, "no ELF found", sw2);
+        } else {
+          char tmp[48];
+          int age = bs->elf_age_s;
+          if (age < 60)       snprintf(tmp, sizeof(tmp), "ELF: %ds old", age);
+          else if (age < 3600) snprintf(tmp, sizeof(tmp), "ELF: %dm old", age / 60);
+          else                snprintf(tmp, sizeof(tmp), "ELF: %dh old", age / 3600);
+          uintattr_t fg = age < 300 ? TB_GREEN : age < 3600 ? TB_YELLOW : TB_RED;
+          pclip(sx, sy, fg, TB_DEFAULT, tmp, sw2);
+        }
+        sy++;
+      }
+      /* Last build result */
+      if (sy < bot_y - 1 && bs->last_ok >= 0) {
+        if (bs->last_ok) {
+          pclip(sx, sy, TB_GREEN, TB_DEFAULT, "last: ok", sw2);
+        } else {
+          pclip(sx, sy, TB_RED, TB_DEFAULT, "last: FAIL", sw2);
+        }
+        sy++;
+      }
+      if (sy < bot_y - 1) {
+        pclip(sx, sy, TB_DEFAULT, TB_DEFAULT, "[b] build now", sw2);
+      }
     }
   }
 
@@ -619,18 +736,21 @@ static void tb_shutdown_atexit(void)
 
 int cmd_dashboard(const DashboardOptions *opts)
 {
-  SerialRing ring;
-  GitState   gs;
-  ProbeState ps;
-  char       config_path[PATH_MAX] = {0};
-  char       repo_root[PATH_MAX]   = {0};
+  SerialRing  ring;
+  GitState    gs;
+  ProbeState  ps;
+  BuildState  bs;
+  char        config_path[PATH_MAX] = {0};
+  char        repo_root[PATH_MAX]   = {0};
+  char        elf_path[PATH_MAX]    = {0};
   const char *port = NULL;
-  int        serial_fd = -1;
-  int        baud;
+  int         serial_fd = -1;
+  int         baud;
 
   ring_init(&ring);
   git_state_init(&gs);
   probe_state_init(&ps);
+  build_state_init(&bs);
 
   /* ── resolve config → repo root and default port ── */
   {
@@ -652,6 +772,10 @@ int cmd_dashboard(const DashboardOptions *opts)
   /* --port flag overrides config */
   if (opts->port) port = opts->port;
   baud = opts->baud > 0 ? opts->baud : DEFAULT_BAUD;
+
+  /* ── resolve ELF path ── */
+  if (repo_root[0])
+    snprintf(elf_path, sizeof(elf_path), "%s/build/mkdbg.elf", repo_root);
   char baud_str[16];
   snprintf(baud_str, sizeof(baud_str), "%d", baud);
 
@@ -677,9 +801,11 @@ int cmd_dashboard(const DashboardOptions *opts)
     /* Not fatal — dashboard still shows git / probe panels without serial */
   }
 
-  /* ── initial git refresh ── */
-  if (repo_root[0])
+  /* ── initial git + build refresh ── */
+  if (repo_root[0]) {
     refresh_git(&gs, repo_root);
+    refresh_build(&bs, elf_path);
+  }
 
   /* ── init termbox2 ── */
   if (tb_init() != TB_OK) {
@@ -690,7 +816,7 @@ int cmd_dashboard(const DashboardOptions *opts)
   atexit(tb_shutdown_atexit);
 
   /* initial draw */
-  do_redraw(&ring, &gs, &ps, port, baud);
+  do_redraw(&ring, &gs, &ps, &bs, port, baud);
 
   /* ── main event loop ── */
   char rbuf[512];
@@ -700,7 +826,7 @@ int cmd_dashboard(const DashboardOptions *opts)
       ssize_t n = read(serial_fd, rbuf, sizeof(rbuf));
       if (n > 0) {
         ring_feed(&ring, rbuf, (int)n);
-        do_redraw(&ring, &gs, &ps, port, baud);
+        do_redraw(&ring, &gs, &ps, &bs, port, baud);
       } else if (n == 0) {
         /* device disconnected */
         close(serial_fd);
@@ -718,6 +844,10 @@ int cmd_dashboard(const DashboardOptions *opts)
           break;
         if (ev.ch == 'r') {
           if (repo_root[0]) refresh_git(&gs, repo_root);
+          need_redraw = 1;
+        }
+        if (ev.ch == 'b') {
+          if (repo_root[0]) build_start(&bs, repo_root);
           need_redraw = 1;
         }
         if (ev.ch == 'c') {
@@ -739,8 +869,12 @@ int cmd_dashboard(const DashboardOptions *opts)
     if (port && probe_tick(&ps, port, baud_str))
       need_redraw = 1;
 
+    /* build poll: collect exit status of background build */
+    if (elf_path[0] && build_poll(&bs, elf_path))
+      need_redraw = 1;
+
     if (need_redraw)
-      do_redraw(&ring, &gs, &ps, port, baud);
+      do_redraw(&ring, &gs, &ps, &bs, port, baud);
   }
 
   tb_shutdown();
@@ -749,5 +883,6 @@ int cmd_dashboard(const DashboardOptions *opts)
     terminate_pid(ps.subprocess);
     close(ps.pipe_fd);
   }
+  if (bs.build_pipe >= 0) close(bs.build_pipe);
   return 0;
 }
