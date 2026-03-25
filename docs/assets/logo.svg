@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 160" width="480" height="160">
+  <defs>
+    <style>
+      .bg     { fill: #0d1117; }
+      .border { fill: none; stroke: #30363d; stroke-width: 1.5; }
+      .name   { font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+                font-size: 52px; font-weight: 700; fill: #e6edf3; letter-spacing: -1px; }
+      .tag    { font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+                font-size: 13px; font-weight: 400; fill: #8b949e; letter-spacing: 0.5px; }
+      .uart   { fill: none; stroke: #3fb950; stroke-width: 2; stroke-linecap: square; }
+      .dot    { fill: #3fb950; }
+      .prompt { fill: #3fb950;
+                font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+                font-size: 13px; font-weight: 400; }
+    </style>
+  </defs>
+
+  <!-- Background -->
+  <rect width="480" height="160" rx="8" class="bg"/>
+  <rect width="480" height="160" rx="8" class="border"/>
+
+  <!-- UART waveform (left accent) -->
+  <polyline class="uart" points="
+    20,55  20,40
+    32,40  32,55
+    44,55  44,40
+    56,40  56,55
+    62,55  62,40
+    80,40  80,55
+    92,55
+  "/>
+  <!-- RX dot -->
+  <circle cx="20" cy="55" r="2.5" class="dot"/>
+
+  <!-- mkdbg wordmark -->
+  <text x="104" y="95" class="name">mkdbg</text>
+
+  <!-- Tagline -->
+  <text x="104" y="120" class="tag">UART-only crash diagnostics · no JTAG required</text>
+
+  <!-- Prompt line bottom right -->
+  <text x="316" y="148" class="prompt">$ mkdbg attach --port /dev/ttyUSB0</text>
+</svg>
