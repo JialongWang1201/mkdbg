@@ -5,16 +5,18 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_DIR="${ROOT_DIR}/build"
 HEADER_PATH="${BUILD_DIR}/generated/build_info.h"
 
-bash "${ROOT_DIR}/tools/build_identity_host_tests.sh"
-bash "${ROOT_DIR}/tools/build_mkdbg_native_host_tests.sh"
-bash "${ROOT_DIR}/tools/mkdbg_native_cmake_host_tests.sh"
-bash "${ROOT_DIR}/tools/mkdbg_host_tests.sh"
-bash "${ROOT_DIR}/tools/mkdbg_native_host_tests.sh"
-bash "${ROOT_DIR}/tools/install_mkdbg_host_tests.sh"
-bash "${ROOT_DIR}/tools/ovwatch_host_tests.sh"
+SCRIPTS="${ROOT_DIR}/examples/stm32f446/scripts"
+
+bash "${SCRIPTS}/build_identity_host_tests.sh"
+bash "${SCRIPTS}/build_mkdbg_native_host_tests.sh"
+bash "${SCRIPTS}/mkdbg_native_cmake_host_tests.sh"
+bash "${SCRIPTS}/mkdbg_host_tests.sh"
+bash "${SCRIPTS}/mkdbg_native_host_tests.sh"
+bash "${SCRIPTS}/install_mkdbg_host_tests.sh"
+bash "${SCRIPTS}/ovwatch_host_tests.sh"
 
 BUILD_PROFILE=ci-smoke BOARD_UART_PORT=3 VM32_MEM_SIZE=1024 \
-  bash "${ROOT_DIR}/tools/build.sh"
+  bash "${SCRIPTS}/build.sh"
 
 python3 - "${HEADER_PATH}" \
   "${BUILD_DIR}/MicroKernel_MPU.elf" \

@@ -62,10 +62,10 @@ jobs:
           submodules: recursive
 
       - name: Install toolchain
-        run: bash tools/ci_install_arm_toolchain_ubuntu.sh
+        run: bash examples/stm32f446/scripts/ci_install_arm_toolchain_ubuntu.sh
 
       - name: Build
-        run: bash tools/build.sh
+        run: bash examples/stm32f446/scripts/build.sh
 
   smoke:
     runs-on: ubuntu-latest
@@ -76,7 +76,7 @@ jobs:
           submodules: recursive
 
       - name: Install toolchain
-        run: bash tools/ci_install_arm_toolchain_ubuntu.sh
+        run: bash examples/stm32f446/scripts/ci_install_arm_toolchain_ubuntu.sh
 
       - name: Run CI smoke
         run: bash scripts/ci_smoke.sh
@@ -110,15 +110,15 @@ jobs:
       - name: Run host unit tests
         run: |
           set -euxo pipefail
-          bash tools/vm32_host_tests.sh
-          bash tools/kdi_host_tests.sh
-          bash tools/sonic_lite_host_tests.sh
-          bash tools/bringup_host_tests.sh
-          bash tools/semantic_telemetry_host_tests.sh
-          bash tools/dependency_graph_host_tests.sh
-          bash tools/bringup_compile_host_tests.sh
-          bash tools/bringup_ui_host_tests.sh
-          bash tools/analysis_engine_host_tests.sh
+          bash examples/stm32f446/scripts/vm32_host_tests.sh
+          bash examples/stm32f446/scripts/kdi_host_tests.sh
+          bash examples/stm32f446/scripts/sonic_lite_host_tests.sh
+          bash examples/stm32f446/scripts/bringup_host_tests.sh
+          bash examples/stm32f446/scripts/semantic_telemetry_host_tests.sh
+          bash examples/stm32f446/scripts/dependency_graph_host_tests.sh
+          bash examples/stm32f446/scripts/bringup_compile_host_tests.sh
+          bash examples/stm32f446/scripts/bringup_ui_host_tests.sh
+          bash examples/stm32f446/scripts/analysis_engine_host_tests.sh
 
   host-regress:
     runs-on: ubuntu-latest
@@ -130,11 +130,11 @@ jobs:
       - name: Run host regression and tooling checks
         run: |
           set -euxo pipefail
-          bash tools/vm32_ci.sh
-          bash tools/profile_compare_host_regress.sh
-          bash tools/triage_bundle_host_tests.sh
-          bash tools/triage_replay_host_tests.sh
-          bash tools/regression_summary_host_tests.sh
+          bash examples/stm32f446/scripts/vm32_ci.sh
+          bash examples/stm32f446/scripts/profile_compare_host_regress.sh
+          bash examples/stm32f446/scripts/triage_bundle_host_tests.sh
+          bash examples/stm32f446/scripts/triage_replay_host_tests.sh
+          bash examples/stm32f446/scripts/regression_summary_host_tests.sh
 
       - name: Upload Host Regression Summary
         if: always()
