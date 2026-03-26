@@ -50,21 +50,21 @@ target_compile_options(wire_crash_lib PRIVATE -Wall -Wextra -O2)
 
 # ── mkdbg-native: main CLI ────────────────────────────────────────────────────
 add_executable(mkdbg-native
-  host/main.c
-  host/util.c
-  host/process.c
-  host/config.c
-  host/incident.c
-  host/parse.c
-  host/core.c
-  host/launcher.c
-  host/git.c
-  host/probe.c
-  host/action.c
-  host/serial.c
-  host/seam.c
-  host/dashboard.c
-  host/wire.c
+  src/main.c
+  src/util.c
+  src/process.c
+  src/config.c
+  src/incident.c
+  src/parse.c
+  src/core.c
+  src/launcher.c
+  src/git.c
+  src/probe.c
+  src/action.c
+  src/serial.c
+  src/seam.c
+  src/dashboard.c
+  src/wire.c
   $<TARGET_OBJECTS:seam_lib>
   $<TARGET_OBJECTS:wire_crash_lib>
 )
@@ -89,8 +89,8 @@ set_target_properties(mkdbg-native PROPERTIES
 
 # ── seam-analyze: standalone causal-chain analysis tool ──────────────────────
 add_executable(seam-analyze
-  host/seam_main.c
-  host/seam.c
+  src/seam_main.c
+  src/seam.c
   $<TARGET_OBJECTS:seam_lib>
 )
 target_compile_options(seam-analyze PRIVATE -Wall -Wextra -Werror -O2)
