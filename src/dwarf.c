@@ -60,6 +60,11 @@ struct DwarfDBI {
     char    **files;       /* heap-allocated resolved paths */
     size_t    nfiles;
     size_t    files_cap;
+    /* ELF symbol table (.symtab + .strtab) — pointers into elf_data */
+    const uint8_t *sym_data;   /* NULL if .symtab absent or stripped */
+    size_t         sym_count;  /* number of Elf32_Sym entries (16 bytes each) */
+    const uint8_t *str_data;   /* .strtab string table */
+    size_t         str_size;
 };
 
 /* ── Little-endian readers ───────────────────────────────────────────────── */
@@ -502,6 +507,19 @@ DwarfDBI *dwarf_open(const char *elf_path)
     if (dbi->nrows > 0)
         qsort(dbi->rows, dbi->nrows, sizeof(DwarfRow), row_cmp);
 
+    /* Optional: ELF symbol table for name→address lookups (e.g. break main).
+     * Failure here is non-fatal — dwarf_sym_to_addr() will return -1. */
+    const uint8_t *sym_p = NULL; size_t sym_sz = 0;
+    const uint8_t *str_p = NULL; size_t str_sz = 0;
+    if (find_elf_section(data, size, ".symtab", &sym_p, &sym_sz) == 0 &&
+        find_elf_section(data, size, ".strtab", &str_p, &str_sz) == 0 &&
+        sym_sz % 16 == 0) {
+        dbi->sym_data  = sym_p;
+        dbi->sym_count = sym_sz / 16;
+        dbi->str_data  = str_p;
+        dbi->str_size  = str_sz;
+    }
+
     return dbi;
 }
 
@@ -538,4 +556,30 @@ int dwarf_pc_to_location(DwarfDBI *dbi, uint32_t pc, DwarfLocation *out)
     out->line   = dbi->rows[idx].line;
     out->column = dbi->rows[idx].column;
     return 0;
+}
+
+int dwarf_sym_to_addr(DwarfDBI *dbi, const char *name, uint32_t *addr)
+{
+    if (!dbi || !dbi->sym_data || !name || !addr) return -1;
+    /* Walk Elf32_Sym entries (16 bytes each):
+     *   offset  0: st_name  (uint32_t) — index into .strtab
+     *   offset  4: st_value (uint32_t) — symbol address
+     *   offset  8: st_size  (uint32_t)
+     *   offset 12: st_info  (uint8_t)  — bits[3:0]=type; STT_FUNC=2
+     *   offset 13: st_other (uint8_t)
+     *   offset 14: st_shndx (uint16_t)
+     */
+    for (size_t i = 0; i < dbi->sym_count; i++) {
+        const uint8_t *e      = dbi->sym_data + i * 16;
+        uint32_t       st_nm  = le32(e + 0);
+        uint32_t       st_val = le32(e + 4);
+        uint8_t        st_inf = e[12];
+        if ((st_inf & 0xfu) != 2u) continue;           /* not STT_FUNC */
+        if (st_nm >= (uint32_t)dbi->str_size) continue;
+        if (strcmp((const char *)dbi->str_data + st_nm, name) == 0) {
+            *addr = st_val;
+            return 0;
+        }
+    }
+    return -1;
 }

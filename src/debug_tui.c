@@ -444,11 +444,17 @@ int debug_tui_run(DebugSession *s, DwarfDBI *dbi)
             redraw(s, dbi);
 
         } else if (ev.ch == 'b') {
-            char inp[32] = "";
-            if (tui_prompt(y_hint, w, "break addr> 0x", inp, sizeof(inp)) == 0
+            char inp[64] = "";
+            if (tui_prompt(y_hint, w, "break> ", inp, sizeof(inp)) == 0
                     && inp[0]) {
-                uint32_t addr = (uint32_t)strtoul(inp, NULL, 16);
-                tui_bp_add(s, addr);
+                uint32_t addr = 0;
+                if ((inp[0] == '0' && (inp[1] == 'x' || inp[1] == 'X')) ||
+                    (inp[0] >= '0' && inp[0] <= '9')) {
+                    addr = (uint32_t)strtoul(inp, NULL, 16);
+                } else if (dbi) {
+                    dwarf_sym_to_addr(dbi, inp, &addr);
+                }
+                if (addr) tui_bp_add(s, addr);
             }
             redraw(s, dbi);
 

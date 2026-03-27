@@ -34,4 +34,10 @@ void dwarf_close(DwarfDBI *dbi);
  *         -1  on internal error. */
 int dwarf_pc_to_location(DwarfDBI *dbi, uint32_t pc, DwarfLocation *out);
 
+/* Look up a function symbol by name in the ELF .symtab.
+ * Requires a non-stripped ELF (normal for firmware .elf files).
+ * Returns  0  and fills *addr on success,
+ *         -1  if not found or no symbol table present. */
+int dwarf_sym_to_addr(DwarfDBI *dbi, const char *name, uint32_t *addr);
+
 #endif /* DWARF_H */

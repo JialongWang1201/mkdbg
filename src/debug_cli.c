@@ -126,9 +126,18 @@ static void trim_eol(char *s)
 
 static void do_break(DebugSession *s, const char *args)
 {
-    if (!*args) { printf("usage: break 0x<addr>\n"); return; }
+    if (!*args) { printf("usage: break 0x<addr> | break <symbol>\n"); return; }
 
-    uint32_t addr = parse_addr(args);
+    uint32_t addr;
+    if (args[0] == '0' && (args[1] == 'x' || args[1] == 'X')) {
+        addr = parse_addr(args);
+    } else if (s_dbi && dwarf_sym_to_addr(s_dbi, args, &addr) == 0) {
+        printf("(symbol '%s' = 0x%08x)\n", args, addr);
+    } else if (!s_dbi) {
+        printf("error: pass --elf to use symbol names\n"); return;
+    } else {
+        printf("error: symbol '%s' not found in ELF\n", args); return;
+    }
     if (debug_session_set_hw_breakpoint(s, addr) != WIRE_OK) {
         printf("error: could not set breakpoint (no free FPB comparator?)\n");
         return;
@@ -210,6 +219,7 @@ static void print_help(void)
     printf(
         "Commands:\n"
         "  break 0x<addr>      set hardware breakpoint (FPBv1)\n"
+        "  break <symbol>      set breakpoint at named function (requires --elf)\n"
         "  clear <id>          clear breakpoint by number\n"
         "  continue  (c)       resume execution; wait for next halt\n"
         "  step      (s)       single-step one instruction\n"
