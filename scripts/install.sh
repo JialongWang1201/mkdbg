@@ -54,6 +54,35 @@ require_curl() {
   fi
 }
 
+require_git() {
+  if ! command -v git >/dev/null 2>&1; then
+    echo "error: git is required for remote installation (used to clone source + submodules)" >&2
+    exit 2
+  fi
+}
+
+require_cmake() {
+  if ! command -v cmake >/dev/null 2>&1; then
+    echo "error: cmake is required to build mkdbg from source" >&2
+    exit 2
+  fi
+}
+
+clone_and_build() {
+  local tmp_dir="$1"
+  echo "Cloning mkdbg (${REPO_SLUG}@${REPO_REF})..."
+  git clone --recurse-submodules --depth 1 --shallow-submodules \
+    --branch "${REPO_REF}" \
+    "https://github.com/${REPO_SLUG}.git" \
+    "${tmp_dir}/mkdbg" >/dev/null 2>&1
+  echo "Building mkdbg-native..."
+  local build_dir="${tmp_dir}/build"
+  cmake -S "${tmp_dir}/mkdbg" -B "${build_dir}" \
+    -DCMAKE_BUILD_TYPE=Release >/dev/null 2>&1
+  cmake --build "${build_dir}" --target mkdbg-native >/dev/null 2>&1
+  cp "${build_dir}/mkdbg-native" "${TARGET}"
+}
+
 install_native_binary_path() {
   local binary_path="$1"
 
@@ -123,11 +152,11 @@ case "${INSTALL_FLAVOR}" in
       compile_native "${LOCAL_NATIVE_SOURCE}"
       INSTALL_MODE="native-source"
     else
-      require_curl
+      require_git
+      require_cmake
       TMP_DIR="$(mktemp -d)"
       trap 'rm -rf "${TMP_DIR}"' EXIT
-      curl -fsSL "${REMOTE_NATIVE_URL}" -o "${TMP_DIR}/mkdbg_native.c"
-      compile_native "${TMP_DIR}/mkdbg_native.c"
+      clone_and_build "${TMP_DIR}"
       INSTALL_MODE="native-source"
     fi
     ;;
