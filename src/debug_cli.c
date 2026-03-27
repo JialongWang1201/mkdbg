@@ -25,6 +25,9 @@
 
 static DwarfDBI *s_dbi = NULL;
 
+/* pcTaskName byte offset in TCB (default 52 per FreeRTOS 10.x standard config) */
+static int s_freertos_offset = 52;
+
 /* ── Breakpoint list ─────────────────────────────────────────────────────── */
 
 #define BP_MAX 8  /* FPBv1 hardware limit */
@@ -108,7 +111,32 @@ static const char *signal_name(int sig)
     }
 }
 
-/* reg_name is now delegated to debug_session_reg_name(s, i) at call sites */
+/* ── FreeRTOS helpers ────────────────────────────────────────────────────── */
+
+/* Read the current FreeRTOS task name into name_out (max sz bytes).
+ * Returns 1 on success, 0 if FreeRTOS not detected or read failed. */
+static int read_freertos_task(DebugSession *s, char *name_out, size_t sz)
+{
+    if (!s_dbi) return 0;
+
+    uint32_t sym_addr;
+    if (dwarf_sym_to_addr(s_dbi, "pxCurrentTCB", &sym_addr) != 0) return 0;
+
+    uint8_t ptr_buf[4];
+    if (debug_session_read_mem(s, sym_addr, 4, ptr_buf) != WIRE_OK) return 0;
+    uint32_t tcb = (uint32_t)ptr_buf[0]
+                 | (uint32_t)ptr_buf[1] << 8
+                 | (uint32_t)ptr_buf[2] << 16
+                 | (uint32_t)ptr_buf[3] << 24;
+    if (tcb == 0) return 0;
+
+    uint8_t name_buf[16];
+    if (debug_session_read_mem(s, tcb + (uint32_t)s_freertos_offset, 15, name_buf) != WIRE_OK)
+        return 0;
+    name_buf[15] = '\0';
+    snprintf(name_out, sz, "%s", (char *)name_buf);
+    return 1;
+}
 
 static void print_halt(DebugSession *s)
 {
@@ -124,6 +152,9 @@ static void print_halt(DebugSession *s)
                 printf("  %s:%d", loc.file, loc.line);
         }
     }
+    char task_name[32] = "";
+    if (read_freertos_task(s, task_name, sizeof(task_name)))
+        printf("  task=%s", task_name);
     printf("\n");
 }
 
@@ -328,6 +359,7 @@ static void print_help(void)
         "  info breakpoints         list active breakpoints\n"
         "  info watchpoints         list active DWT watchpoints\n"
         "  info display             list memory display addresses\n"
+        "  freertos current         show current FreeRTOS task name (requires --elf)\n"
         "  tui                      TUI mode\n"
         "  quit      (q)            resume MCU and exit\n"
     );
@@ -365,6 +397,10 @@ int cmd_debug(const DebugOptions *opts)
     }
 
     printf("Type 'help' for commands.\n\n");
+
+    /* Override default TCB offset if user supplied --freertos-tcb-offset */
+    if (opts->freertos_name_offset != 0)
+        s_freertos_offset = opts->freertos_name_offset;
 
     /* Reset state for this session */
     s_bp_count  = 0;
@@ -427,6 +463,14 @@ int cmd_debug(const DebugOptions *opts)
                 else for (int i = 0; i < s_ndisplay; i++)
                     printf("%d: 0x%08x\n", i + 1, s_display[i]);
             } else printf("info: unknown subcommand '%s'\n", sub);
+        } else if (strcmp(cmd, "freertos") == 0) {
+            char task_name[32] = "";
+            if (read_freertos_task(s, task_name, sizeof(task_name)))
+                printf("current task: %s\n", task_name);
+            else if (!s_dbi)
+                printf("error: pass --elf to use FreeRTOS awareness\n");
+            else
+                printf("(pxCurrentTCB not found — not a FreeRTOS build?)\n");
         } else if (strcmp(cmd, "tui") == 0) {
             int ret = debug_tui_run(s, s_dbi);
             if (ret == TUI_QUIT) {

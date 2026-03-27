@@ -57,6 +57,8 @@ static int      s_ndisplay = 0;
 static uint32_t s_regs[DEBUG_SESSION_MAX_REGS];
 static int      s_regs_ok  = 0;
 
+static char     s_task_name[32] = "";
+
 static uint32_t s_pc       = 0;
 
 /* ── Box-drawing helpers ─────────────────────────────────────────────────── */
@@ -86,8 +88,14 @@ static void draw_source(int y0, int src_h, int w, DwarfDBI *dbi, uint32_t pc)
     if (has_loc) {
         const char *base = strrchr(loc.file, '/');
         base = base ? base + 1 : loc.file;
-        char hdr[128];
-        int hdr_len = snprintf(hdr, sizeof(hdr), "\xe2\x94\x80 Source: %s:%d ",
+        char hdr[160];
+        int hdr_len;
+        if (s_task_name[0])
+            hdr_len = snprintf(hdr, sizeof(hdr),
+                               "\xe2\x94\x80 Source: %s:%d  [task: %s] ",
+                               base, loc.line, s_task_name);
+        else
+            hdr_len = snprintf(hdr, sizeof(hdr), "\xe2\x94\x80 Source: %s:%d ",
                                base, loc.line);
         tb_print(1, y0, TB_CYAN, TB_DEFAULT, hdr);
         hline(y0, 1 + hdr_len, w - 1);
@@ -397,6 +405,30 @@ static int tui_bp_del(DebugSession *s, int id)
     return -1;
 }
 
+/* ── FreeRTOS task name helper ───────────────────────────────────────────── */
+
+static void tui_update_task(DebugSession *s, DwarfDBI *dbi)
+{
+    s_task_name[0] = '\0';
+    if (!dbi) return;
+
+    uint32_t sym_addr;
+    if (dwarf_sym_to_addr(dbi, "pxCurrentTCB", &sym_addr) != 0) return;
+
+    uint8_t ptr_buf[4];
+    if (debug_session_read_mem(s, sym_addr, 4, ptr_buf) != WIRE_OK) return;
+    uint32_t tcb = (uint32_t)ptr_buf[0]
+                 | (uint32_t)ptr_buf[1] << 8
+                 | (uint32_t)ptr_buf[2] << 16
+                 | (uint32_t)ptr_buf[3] << 24;
+    if (tcb == 0) return;
+
+    uint8_t name_buf[16];
+    if (debug_session_read_mem(s, tcb + 52u, 15, name_buf) != WIRE_OK) return;
+    name_buf[15] = '\0';
+    snprintf(s_task_name, sizeof(s_task_name), "%s", (char *)name_buf);
+}
+
 /* ── Entry point ─────────────────────────────────────────────────────────── */
 
 int debug_tui_run(DebugSession *s, DwarfDBI *dbi)
@@ -414,6 +446,7 @@ int debug_tui_run(DebugSession *s, DwarfDBI *dbi)
     s_ndisplay = 0;
     s_regs_ok  = 0;
     s_pc       = 0;
+    s_task_name[0] = '\0';
 
     /* Read initial register state */
     if (debug_session_read_regs(s, s_regs) == WIRE_OK) {
@@ -446,6 +479,7 @@ int debug_tui_run(DebugSession *s, DwarfDBI *dbi)
             if (rc == WIRE_OK && debug_session_read_regs(s, s_regs) == WIRE_OK) {
                 s_regs_ok = 1;
                 s_pc = s_regs[debug_session_pc_reg(s)];
+                tui_update_task(s, dbi);
             }
             redraw(s, dbi);
 
@@ -455,6 +489,7 @@ int debug_tui_run(DebugSession *s, DwarfDBI *dbi)
             if (rc == WIRE_OK && debug_session_read_regs(s, s_regs) == WIRE_OK) {
                 s_regs_ok = 1;
                 s_pc = s_regs[debug_session_pc_reg(s)];
+                tui_update_task(s, dbi);
             }
             redraw(s, dbi);
 

@@ -210,6 +210,7 @@ typedef struct {
   int         baud;
   const char *elf_path;
   const char *arch;  /* --arch name, e.g. "cortex-m"; NULL defaults to "cortex-m" */
+  int freertos_name_offset; /* pcTaskName offset in TCB; 0=disable, -1=auto(52) */
 } DebugOptions;
 
 typedef struct {
