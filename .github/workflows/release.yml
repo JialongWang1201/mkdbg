@@ -1,0 +1,120 @@
+name: Release
+
+# Runs on every push to main (updates a rolling "latest" pre-release)
+# and on version tags (creates a versioned release).
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  # ── Build matrix ────────────────────────────────────────────────────────────
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            os: linux
+            arch: x86_64
+
+          - runner: ubuntu-latest
+            os: linux
+            arch: arm64
+            cross: true
+
+          - runner: macos-13        # Intel
+            os: darwin
+            arch: x86_64
+
+          - runner: macos-latest    # Apple Silicon
+            os: darwin
+            arch: arm64
+
+    runs-on: ${{ matrix.runner }}
+    name: build-${{ matrix.os }}-${{ matrix.arch }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install cross-compiler (linux-arm64)
+        if: matrix.cross == true
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Configure (native)
+        if: "!matrix.cross"
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Configure (cross linux-arm64)
+        if: matrix.cross == true
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc \
+            -DCMAKE_SYSTEM_NAME=Linux \
+            -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
+            -DMKDBG_SKIP_LG2=ON
+
+      - name: Build
+        run: cmake --build build --target mkdbg-native
+
+      - name: Stage artifact
+        run: cp build/mkdbg-native mkdbg-native-${{ matrix.os }}-${{ matrix.arch }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mkdbg-native-${{ matrix.os }}-${{ matrix.arch }}
+          path: mkdbg-native-${{ matrix.os }}-${{ matrix.arch }}
+
+  # ── Publish release ─────────────────────────────────────────────────────────
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: dist/
+
+      - name: Determine release tag
+        id: tag
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            echo "name=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+            echo "prerelease=false"              >> "$GITHUB_OUTPUT"
+          else
+            echo "name=latest"    >> "$GITHUB_OUTPUT"
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Delete existing 'latest' release before overwriting
+        if: steps.tag.outputs.name == 'latest'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO:  ${{ github.repository }}
+        run: gh release delete latest --yes --cleanup-tag 2>/dev/null || true
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO:  ${{ github.repository }}
+        run: |
+          PRERELEASE_FLAG=""
+          if [[ "${{ steps.tag.outputs.prerelease }}" == "true" ]]; then
+            PRERELEASE_FLAG="--prerelease"
+          fi
+          gh release create "${{ steps.tag.outputs.name }}" \
+            --title "mkdbg ${{ steps.tag.outputs.name }}" \
+            ${PRERELEASE_FLAG} \
+            --notes "Built from \`${GITHUB_SHA:0:7}\` on \`${GITHUB_REF_NAME}\`" \
+            dist/mkdbg-native-*

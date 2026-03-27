@@ -7,6 +7,9 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 # ── libgit2: minimal static build (no HTTPS, no SSH, no TLS) ─────────────────
 # Used by mkdbg-native for local git operations without requiring a git CLI.
 # Network operations (push/fetch) fall back to the git CLI subprocess path.
+# Pass -DMKDBG_SKIP_LG2=ON to disable even when the submodule is present
+# (used for cross-compilation targets in CI).
+option(MKDBG_SKIP_LG2 "Disable libgit2 integration even if submodule is present" OFF)
 set(BUILD_SHARED_LIBS    OFF CACHE BOOL   "" FORCE)
 set(BUILD_TESTS          OFF CACHE BOOL   "" FORCE)
 set(BUILD_CLI            OFF CACHE BOOL   "" FORCE)
@@ -16,7 +19,7 @@ set(USE_GSSAPI           OFF CACHE BOOL   "" FORCE)
 set(USE_NTLMCLIENT       OFF CACHE BOOL   "" FORCE)
 set(REGEX_BACKEND        builtin CACHE STRING "" FORCE)
 set(SONAME               OFF CACHE BOOL   "" FORCE)
-if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/deps/libgit2/CMakeLists.txt")
+if(NOT MKDBG_SKIP_LG2 AND EXISTS "${CMAKE_CURRENT_LIST_DIR}/deps/libgit2/CMakeLists.txt")
   add_subdirectory(deps/libgit2 libgit2_build EXCLUDE_FROM_ALL)
   set(MKDBG_HAS_LG2 ON)
 else()
