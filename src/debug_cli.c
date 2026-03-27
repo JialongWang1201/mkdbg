@@ -16,6 +16,7 @@
 
 #include "mkdbg.h"
 #include "debug_session.h"
+#include "debug_tui.h"
 #include "dwarf.h"
 #include "wire_host.h"
 
@@ -286,10 +287,13 @@ int cmd_debug(const DebugOptions *opts)
             split_token(args, sub, sizeof(sub));
             if (strcmp(sub, "breakpoints") == 0) do_info_breakpoints();
             else printf("info: unknown subcommand '%s'\n", sub);
-        } else if (strcmp(cmd, "watch") == 0) {
-            printf("watch: memory watches visible in tui mode (PR 11)\n");
         } else if (strcmp(cmd, "tui") == 0) {
-            printf("tui: not yet implemented (PR 11)\n");
+            int ret = debug_tui_run(s, s_dbi);
+            if (ret == TUI_QUIT) {
+                debug_session_detach(s);
+                break;
+            }
+            printf("(back in CLI mode — type 'help' for commands)\n");
         } else if (strcmp(cmd, "help") == 0 || strcmp(cmd, "?") == 0) {
             print_help();
         } else if (strcmp(cmd, "quit") == 0 || strcmp(cmd, "q") == 0) {

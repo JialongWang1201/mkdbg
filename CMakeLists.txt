@@ -67,7 +67,9 @@ add_executable(mkdbg-native
   src/wire.c
   src/debug_session.c
   src/debug_cli.c
+  src/debug_tui.c
   src/dwarf.c
+  src/termbox2_impl.c
   arch/cortex_m.c
   arch/arch_registry.c
   $<TARGET_OBJECTS:seam_lib>
@@ -80,6 +82,7 @@ target_include_directories(mkdbg-native PRIVATE
   ${CMAKE_CURRENT_LIST_DIR}/deps/seam/include
   ${CMAKE_CURRENT_LIST_DIR}/deps/wire/include
   ${CMAKE_CURRENT_LIST_DIR}/deps/wire/host
+  ${CMAKE_CURRENT_LIST_DIR}/deps/termbox2
 )
 if(MKDBG_HAS_LG2)
   target_compile_definitions(mkdbg-native PRIVATE MKDBG_USE_LG2=1)

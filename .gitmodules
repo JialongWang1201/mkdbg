@@ -9,3 +9,6 @@
 [submodule "deps/libgit2"]
 	path = deps/libgit2
 	url = https://github.com/libgit2/libgit2.git
+[submodule "deps/termbox2"]
+	path = deps/termbox2
+	url = https://github.com/termbox/termbox2
