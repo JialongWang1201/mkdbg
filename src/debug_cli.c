@@ -19,6 +19,7 @@
 #include "debug_tui.h"
 #include "dwarf.h"
 #include "wire_host.h"
+#include "arch.h"
 
 /* ── Session-scoped DWARF handle (NULL if no --elf provided) ─────────────── */
 
@@ -107,22 +108,15 @@ static const char *signal_name(int sig)
     }
 }
 
-static const char *reg_name(int i)
-{
-    static const char *names[17] = {
-        "r0","r1","r2","r3","r4","r5","r6","r7",
-        "r8","r9","r10","r11","r12","sp","lr","pc","xpsr"
-    };
-    return (i >= 0 && i < 17) ? names[i] : "??";
-}
+/* reg_name is now delegated to debug_session_reg_name(s, i) at call sites */
 
 static void print_halt(DebugSession *s)
 {
     int sig = debug_session_last_signal(s);
     printf("Halted.  signal=%d (%s)", sig, signal_name(sig));
-    uint32_t regs[DEBUG_SESSION_NREGS];
+    uint32_t regs[DEBUG_SESSION_MAX_REGS];
     if (debug_session_read_regs(s, regs) == WIRE_OK) {
-        uint32_t pc = regs[15];
+        uint32_t pc = regs[debug_session_pc_reg(s)];
         printf("  pc=0x%08x", pc);
         if (s_dbi) {
             DwarfLocation loc;
@@ -208,19 +202,16 @@ static void do_clear(DebugSession *s, const char *args)
 
 static void do_regs(DebugSession *s)
 {
-    uint32_t regs[DEBUG_SESSION_NREGS];
+    uint32_t regs[DEBUG_SESSION_MAX_REGS];
     if (debug_session_read_regs(s, regs) != WIRE_OK) {
         printf("error: failed to read registers\n");
         return;
     }
-    /* r0–r12: four per row */
-    for (int i = 0; i <= 12; i++) {
-        printf("%-4s 0x%08x", reg_name(i), regs[i]);
-        printf(((i % 4) == 3 || i == 12) ? "\n" : "   ");
+    int nregs = debug_session_nregs(s);
+    for (int i = 0; i < nregs; i++) {
+        printf("%-6s 0x%08x", debug_session_reg_name(s, i), regs[i]);
+        printf(((i % 4) == 3 || i == nregs - 1) ? "\n" : "   ");
     }
-    printf("sp   0x%08x   lr   0x%08x   pc   0x%08x\n",
-           regs[13], regs[14], regs[15]);
-    printf("xpsr 0x%08x\n", regs[16]);
 }
 
 static void do_mem(DebugSession *s, const char *args)
@@ -352,7 +343,12 @@ int cmd_debug(const DebugOptions *opts)
     if (!port || !*port)
         die("debug requires --port; e.g. mkdbg debug --port /dev/ttyUSB0");
 
-    DebugSession *s = debug_session_open(port, baud);
+    const char     *arch_name = opts->arch ? opts->arch : "cortex-m";
+    const MkdbgArch *arch     = mkdbg_arch_find(arch_name);
+    if (!arch || !arch->live_debug)
+        die("arch '%s' does not support live debug", arch_name);
+
+    DebugSession *s = debug_session_open(port, baud, arch);
     if (!s) return 1;
 
     printf("mkdbg live debug  port=%s  baud=%d\n", port, baud);

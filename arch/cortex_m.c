@@ -241,9 +241,21 @@ static int cortex_m_decode_crash(const uint8_t *raw, size_t len,
 
 /* ── exported arch descriptor ────────────────────────────────────────────── */
 
+static const ArchLiveDebug cortex_m_live = {
+    .nregs       = 17,
+    .pc_reg_idx  = 15,
+    .sp_reg_idx  = 13,
+    .reg_names   = {
+        "r0","r1","r2","r3","r4","r5","r6","r7",
+        "r8","r9","r10","r11","r12","sp","lr","pc","xpsr",
+        NULL
+    },
+};
+
 const MkdbgArch cortex_m_arch = {
     .name         = "cortex-m",
     .decode_crash = cortex_m_decode_crash,
+    .live_debug   = &cortex_m_live,
 };
 
 /* suppress "unused function" warnings for parse_registers / parse_halt_signal

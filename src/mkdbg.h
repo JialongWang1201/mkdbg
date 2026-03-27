@@ -209,6 +209,7 @@ typedef struct {
   const char *port;
   int         baud;
   const char *elf_path;
+  const char *arch;  /* --arch name, e.g. "cortex-m"; NULL defaults to "cortex-m" */
 } DebugOptions;
 
 typedef struct {

@@ -4,6 +4,7 @@
  */
 
 #include "debug_session.h"
+#include "arch.h"
 #include "wire_host.h"
 
 #include <stdio.h>
@@ -14,8 +15,9 @@
 /* ── Internal state ──────────────────────────────────────────────────────── */
 
 struct DebugSession {
-    int fd;           /* serial port file descriptor */
-    int last_signal;  /* GDB signal from most recent stop reply */
+    int              fd;           /* serial port file descriptor */
+    int              last_signal;  /* GDB signal from most recent stop reply */
+    const MkdbgArch *arch;         /* active architecture (live_debug guaranteed non-NULL) */
 };
 
 /* ── Hex helpers (local) ─────────────────────────────────────────────────── */
@@ -40,7 +42,8 @@ static int parse_stop_signal(const char *reply)
 
 /* ── Lifecycle ───────────────────────────────────────────────────────────── */
 
-DebugSession *debug_session_open(const char *port, int baud)
+DebugSession *debug_session_open(const char *port, int baud,
+                                  const MkdbgArch *arch)
 {
     int fd = wire_serial_open(port, baud);
     if (fd < 0) return NULL;
@@ -52,6 +55,7 @@ DebugSession *debug_session_open(const char *port, int baud)
     }
     s->fd          = fd;
     s->last_signal = 0;
+    s->arch        = arch;
     return s;
 }
 
@@ -154,15 +158,16 @@ int debug_session_clear_watchpoint(DebugSession *s, uint32_t addr)
 
 /* ── Register / memory inspection ───────────────────────────────────────── */
 
-int debug_session_read_regs(DebugSession *s, uint32_t regs[DEBUG_SESSION_NREGS])
+int debug_session_read_regs(DebugSession *s, uint32_t regs[DEBUG_SESSION_MAX_REGS])
 {
-    /* RSP 'g' response: 17 registers × 8 hex chars = 136 chars, little-endian. */
-    char resp[256];
+    int nregs = s->arch->live_debug->nregs;
+    /* RSP 'g': nregs registers × 8 hex chars each, little-endian. */
+    char resp[DEBUG_SESSION_MAX_REGS * 8 + 4];
     int rc = rsp_transaction(s->fd, "g", resp, sizeof(resp));
     if (rc != WIRE_OK) return rc;
     if (resp[0] == 'E') return WIRE_ERR_IO;
 
-    for (int i = 0; i < DEBUG_SESSION_NREGS; i++) {
+    for (int i = 0; i < nregs; i++) {
         const char *p = resp + i * 8;
         uint32_t v = 0;
         for (int b = 0; b < 4; b++) {
@@ -196,6 +201,24 @@ int debug_session_read_mem(DebugSession *s, uint32_t addr, size_t len, uint8_t *
         out[i] = (uint8_t)((hi << 4) | lo);
     }
     return WIRE_OK;
+}
+
+/* ── Arch metadata ───────────────────────────────────────────────────────── */
+
+int debug_session_nregs(const DebugSession *s)
+{
+    return s ? s->arch->live_debug->nregs : 0;
+}
+
+const char *debug_session_reg_name(const DebugSession *s, int i)
+{
+    if (!s || i < 0 || i >= s->arch->live_debug->nregs) return "??";
+    return s->arch->live_debug->reg_names[i];
+}
+
+int debug_session_pc_reg(const DebugSession *s)
+{
+    return s ? s->arch->live_debug->pc_reg_idx : 0;
 }
 
 /* ── Status ──────────────────────────────────────────────────────────────── */

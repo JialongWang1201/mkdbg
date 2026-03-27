@@ -54,7 +54,7 @@ static int      s_wp_next  = 1;
 static uint32_t s_display[MAX_DISPLAY];
 static int      s_ndisplay = 0;
 
-static uint32_t s_regs[DEBUG_SESSION_NREGS];
+static uint32_t s_regs[DEBUG_SESSION_MAX_REGS];
 static int      s_regs_ok  = 0;
 
 static uint32_t s_pc       = 0;
@@ -161,19 +161,10 @@ static void draw_source(int y0, int src_h, int w, DwarfDBI *dbi, uint32_t pc)
 
 /* ── Register/Breakpoint panel ───────────────────────────────────────────── */
 
-/* Register name at index 0-16 */
-static const char *rname(int i)
-{
-    static const char *n[] = {
-        "r0","r1","r2","r3","r4","r5","r6","r7",
-        "r8","r9","r10","r11","r12","sp","lr","pc","xpsr"
-    };
-    return (i >= 0 && i < 17) ? n[i] : "??";
-}
-
 /*
  * Register pairs displayed per row (left index, right index).
- * Rows: 0..REG_ROWS-1 = 8 rows.
+ * Rows: 0..REG_ROWS-1 = 8 rows.  Cortex-M layout; for other arches
+ * indices that exceed nregs are silently skipped.
  */
 static const int REG_PAIRS[REG_ROWS][2] = {
     {0, 8}, {1, 9}, {2, 10}, {3, 11}, {4, 12},
@@ -182,7 +173,7 @@ static const int REG_PAIRS[REG_ROWS][2] = {
     {6, 16},   /* r6, xpsr */
 };
 
-static void draw_reg_bp(int y0, int h, int w, DwarfDBI *dbi, uint32_t pc)
+static void draw_reg_bp(int y0, int h, int w, DebugSession *s, DwarfDBI *dbi, uint32_t pc)
 {
     int split = w / 2;  /* column of the vertical separator ─ │ ─ */
 
@@ -204,24 +195,32 @@ static void draw_reg_bp(int y0, int h, int w, DwarfDBI *dbi, uint32_t pc)
         bchar(0, y0 + 1 + r, "\xe2\x94\x82");          /* │ left edge */
 
         /* ── Registers (left half) ── */
+        int nregs = debug_session_nregs(s);
+        int pc_reg = debug_session_pc_reg(s);
         if (r < REG_ROWS && s_regs_ok) {
             int li = REG_PAIRS[r][0];
             int ri = REG_PAIRS[r][1];
             /* highlight pc with bold */
             uintattr_t pc_fg = TB_WHITE | TB_BOLD;
             uintattr_t pc_bg = TB_BLUE;
-            uintattr_t lfg = (li == 15) ? pc_fg : TB_DEFAULT;
-            uintattr_t lbg = (li == 15) ? pc_bg : TB_DEFAULT;
-            uintattr_t rfg = (ri == 15) ? pc_fg : TB_DEFAULT;
-            uintattr_t rbg = (ri == 15) ? pc_bg : TB_DEFAULT;
+            uintattr_t lfg = (li == pc_reg) ? pc_fg : TB_DEFAULT;
+            uintattr_t lbg = (li == pc_reg) ? pc_bg : TB_DEFAULT;
+            uintattr_t rfg = (ri == pc_reg) ? pc_fg : TB_DEFAULT;
+            uintattr_t rbg = (ri == pc_reg) ? pc_bg : TB_DEFAULT;
             char lbuf[20], rbuf[20];
-            snprintf(lbuf, sizeof(lbuf), "%-4s 0x%08x", rname(li), s_regs[li]);
-            snprintf(rbuf, sizeof(rbuf), "%-4s 0x%08x", rname(ri), s_regs[ri]);
+            if (li < nregs)
+                snprintf(lbuf, sizeof(lbuf), "%-6s 0x%08x",
+                         debug_session_reg_name(s, li), s_regs[li]);
+            else lbuf[0] = '\0';
+            if (ri < nregs)
+                snprintf(rbuf, sizeof(rbuf), "%-6s 0x%08x",
+                         debug_session_reg_name(s, ri), s_regs[ri]);
+            else rbuf[0] = '\0';
             tb_printf(1, y0 + 1 + r, lfg, lbg, " %-*s", reg_content_w / 2, lbuf);
             tb_printf(1 + reg_content_w / 2 + 1, y0 + 1 + r, rfg, rbg,
                       " %-*s", reg_content_w / 2, rbuf);
         }
-        (void)reg_content_w;
+        (void)reg_content_w; (void)nregs; (void)pc_reg;
 
         bchar(split, y0 + 1 + r, "\xe2\x94\x82");      /* │ middle */
 
@@ -334,7 +333,7 @@ static void redraw(DebugSession *s, DwarfDBI *dbi)
     int y_hint     = y_bottom + 1;
 
     draw_source(y_src_top, src_h, w, dbi, s_pc);
-    draw_reg_bp(y_reg_sep, REG_ROWS, w, dbi, s_pc);
+    draw_reg_bp(y_reg_sep, REG_ROWS, w, s, dbi, s_pc);
     draw_mem(y_mem_sep, mem_h, w, s);
     draw_bottom(y_bottom, y_hint, w);
 
@@ -419,7 +418,7 @@ int debug_tui_run(DebugSession *s, DwarfDBI *dbi)
     /* Read initial register state */
     if (debug_session_read_regs(s, s_regs) == WIRE_OK) {
         s_regs_ok = 1;
-        s_pc = s_regs[15];
+        s_pc = s_regs[debug_session_pc_reg(s)];
     }
 
     redraw(s, dbi);
@@ -446,7 +445,7 @@ int debug_tui_run(DebugSession *s, DwarfDBI *dbi)
             int rc = debug_session_step(s);
             if (rc == WIRE_OK && debug_session_read_regs(s, s_regs) == WIRE_OK) {
                 s_regs_ok = 1;
-                s_pc = s_regs[15];
+                s_pc = s_regs[debug_session_pc_reg(s)];
             }
             redraw(s, dbi);
 
@@ -455,7 +454,7 @@ int debug_tui_run(DebugSession *s, DwarfDBI *dbi)
             int rc = debug_session_continue(s);
             if (rc == WIRE_OK && debug_session_read_regs(s, s_regs) == WIRE_OK) {
                 s_regs_ok = 1;
-                s_pc = s_regs[15];
+                s_pc = s_regs[debug_session_pc_reg(s)];
             }
             redraw(s, dbi);
 

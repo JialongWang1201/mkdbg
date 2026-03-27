@@ -15,18 +15,23 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* Forward-declare MkdbgArch to avoid circular includes. */
+typedef struct MkdbgArch MkdbgArch;
+
 /* Opaque session handle. */
 typedef struct DebugSession DebugSession;
 
-/* Number of Cortex-M registers returned by debug_session_read_regs().
- * Order: r0-r12, sp(r13), lr(r14), pc(r15), xpsr  — matches RSP 'g' layout. */
-#define DEBUG_SESSION_NREGS 17
+/* Maximum registers any supported arch can return from RSP 'g'.
+ * Cortex-M: 17.  RISC-V 32: 33.  Increase if a future arch needs more. */
+#define DEBUG_SESSION_MAX_REGS 64
 
 /* ── Lifecycle ───────────────────────────────────────────────────────────── */
 
 /* Open UART port and return a new session.  baud=0 for PTY (QEMU).
+ * arch must point to an MkdbgArch with a valid live_debug descriptor.
  * Returns NULL on error (error printed to stderr). */
-DebugSession *debug_session_open(const char *port, int baud);
+DebugSession *debug_session_open(const char *port, int baud,
+                                  const MkdbgArch *arch);
 
 /* Close UART and free the session. */
 void debug_session_close(DebugSession *s);
@@ -75,13 +80,25 @@ int debug_session_clear_watchpoint(DebugSession *s, uint32_t addr);
 
 /* ── Register / memory inspection ───────────────────────────────────────── */
 
-/* Read all CPU registers into regs[DEBUG_SESSION_NREGS].
- * Indices: 0-12 = r0-r12, 13 = sp, 14 = lr, 15 = pc, 16 = xpsr. */
-int debug_session_read_regs(DebugSession *s, uint32_t regs[DEBUG_SESSION_NREGS]);
+/* Read all CPU registers into regs[].  The number of registers is arch-dependent;
+ * use debug_session_nregs() to find out how many were written.
+ * regs must have room for at least DEBUG_SESSION_MAX_REGS elements. */
+int debug_session_read_regs(DebugSession *s, uint32_t regs[DEBUG_SESSION_MAX_REGS]);
 
 /* Read len bytes from target address addr into out.
  * Returns WIRE_OK, or WIRE_ERR_IO if address is out of the allowed RAM range. */
 int debug_session_read_mem(DebugSession *s, uint32_t addr, size_t len, uint8_t *out);
+
+/* ── Arch metadata ───────────────────────────────────────────────────────── */
+
+/* Number of registers returned by debug_session_read_regs() for this session. */
+int debug_session_nregs(const DebugSession *s);
+
+/* Register name at index i (e.g. "r0", "pc", "x2").  Returns "??" if out of range. */
+const char *debug_session_reg_name(const DebugSession *s, int i);
+
+/* Index of the PC register (e.g. 15 for Cortex-M, 32 for RISC-V). */
+int debug_session_pc_reg(const DebugSession *s);
 
 /* ── Status ──────────────────────────────────────────────────────────────── */
 

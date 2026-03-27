@@ -10,9 +10,11 @@
 #include <string.h>
 
 extern const MkdbgArch cortex_m_arch;
+extern const MkdbgArch riscv32_arch;
 
 static const MkdbgArch *arches[] = {
     &cortex_m_arch,
+    &riscv32_arch,
     NULL,
 };
 

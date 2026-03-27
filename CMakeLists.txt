@@ -74,6 +74,7 @@ add_executable(mkdbg-native
   src/dwarf.c
   src/termbox2_impl.c
   arch/cortex_m.c
+  arch/riscv32.c
   arch/arch_registry.c
   $<TARGET_OBJECTS:seam_lib>
   $<TARGET_OBJECTS:wire_crash_lib>
@@ -145,6 +146,7 @@ set_tests_properties(seam_analyze_kdi_cascade PROPERTIES
 add_executable(arch_test
   tests/arch_test.c
   arch/cortex_m.c
+  arch/riscv32.c
   arch/arch_registry.c
 )
 target_compile_options(arch_test PRIVATE -Wall -Wextra -Werror -O2)

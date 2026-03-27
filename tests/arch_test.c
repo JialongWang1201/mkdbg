@@ -60,6 +60,26 @@ int main(void)
               "zero payload: timeout flag set (halt_signal=0)");
     }
 
+    /* cortex-m live_debug descriptor */
+    CHECK(cm != NULL && cm->live_debug != NULL,
+          "cortex-m has live_debug descriptor");
+    CHECK(cm != NULL && cm->live_debug != NULL && cm->live_debug->nregs == 17,
+          "cortex-m live_debug->nregs == 17");
+    CHECK(cm != NULL && cm->live_debug != NULL && cm->live_debug->pc_reg_idx == 15,
+          "cortex-m live_debug->pc_reg_idx == 15");
+
+    /* riscv32 arch registration and live_debug */
+    const MkdbgArch *rv = mkdbg_arch_find("riscv32");
+    CHECK(rv != NULL, "mkdbg_arch_find(\"riscv32\") != NULL");
+    CHECK(rv != NULL && strcmp(rv->name, "riscv32") == 0,
+          "riscv32 arch->name == \"riscv32\"");
+    CHECK(rv != NULL && rv->live_debug != NULL,
+          "riscv32 has live_debug descriptor");
+    CHECK(rv != NULL && rv->live_debug != NULL && rv->live_debug->nregs == 33,
+          "riscv32 live_debug->nregs == 33");
+    CHECK(rv != NULL && rv->live_debug != NULL && rv->live_debug->pc_reg_idx == 32,
+          "riscv32 live_debug->pc_reg_idx == 32");
+
     printf("\n%d/%d tests passed\n", tests_passed, tests_run);
     return (tests_passed == tests_run) ? 0 : 1;
 }

@@ -21,7 +21,16 @@
 /* MkdbgCrashReport aliases WireCrashReport for the arch layer. */
 typedef WireCrashReport MkdbgCrashReport;
 
+/* Live-debug register layout for a given arch.
+ * Used by debug_session and debug_tui to avoid hardcoding Cortex-M specifics. */
 typedef struct {
+    int         nregs;         /* total registers returned by RSP 'g' command */
+    int         pc_reg_idx;    /* index of PC in the register array */
+    int         sp_reg_idx;    /* index of SP in the register array */
+    const char *reg_names[64]; /* register names, NULL-terminated */
+} ArchLiveDebug;
+
+typedef struct MkdbgArch {
     const char *name;  /* arch name matched by --arch flag, e.g. "cortex-m" */
 
     /*
@@ -34,6 +43,9 @@ typedef struct {
      * Returns 0 on success, -1 on error (bad length, parse failure, etc.).
      */
     int (*decode_crash)(const uint8_t *raw, size_t len, MkdbgCrashReport *out);
+
+    /* Live debug register layout.  NULL if the arch doesn't support live debug. */
+    const ArchLiveDebug *live_debug;
 } MkdbgArch;
 
 /* Returns the registered arch whose name matches (case-sensitive), or NULL. */
