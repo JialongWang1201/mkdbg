@@ -37,10 +37,6 @@ void debug_session_close(DebugSession *s);
  * Returns WIRE_OK on halt, WIRE_ERR_TIMEOUT if no halt within 60 s. */
 int debug_session_continue(DebugSession *s);
 
-/* Resume MCU and return immediately — does NOT wait for next halt.
- * Use before closing the session so the MCU keeps running. */
-int debug_session_detach(DebugSession *s);
-
 /* Execute one instruction; block until DebugMonitor fires.
  * Returns WIRE_OK on halt, WIRE_ERR_TIMEOUT if step takes > 60 s. */
 int debug_session_step(DebugSession *s);

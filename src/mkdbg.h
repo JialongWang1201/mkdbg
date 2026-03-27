@@ -206,12 +206,6 @@ typedef struct {
 } DashboardOptions;
 
 typedef struct {
-  const char *port;
-  int         baud;
-  const char *elf_path;  /* optional --elf firmware.elf for source context (PR 10) */
-} DebugOptions;
-
-typedef struct {
   char id[MAX_NAME];
   char name[MAX_NAME];
   char status[MAX_NAME];
@@ -312,7 +306,6 @@ int cmd_incident_status(const IncidentStatusOptions *opts);
 int cmd_incident_close(void);
 
 /* ---- parse.c ---- */
-int parse_debug_args(int argc, char **argv, DebugOptions *opts);
 int parse_init_args(int argc, char **argv, InitOptions *opts);
 int parse_doctor_args(int argc, char **argv, DoctorOptions *opts);
 int parse_repo_add_args(int argc, char **argv, RepoAddOptions *opts);
@@ -399,9 +392,6 @@ int cmd_repo_use(const NameCommandOptions *opts);
 int cmd_capture_bundle(const CaptureBundleOptions *opts);
 int cmd_watch(const WatchOptions *opts);
 int cmd_attach(const AttachOptions *opts);
-
-/* ---- debug_cli.c ---- */
-int cmd_debug(const DebugOptions *opts);
 
 /* seam analyze subcommand — argv already shifted past "seam" */
 int mkdbg_cmd_seam(int argc, char *argv[]);
