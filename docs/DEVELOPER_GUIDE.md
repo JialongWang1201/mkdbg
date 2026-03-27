@@ -1,412 +1,263 @@
 # Developer Guide
 
-Internal engineering handbook for maintainers and contributors.
-For external onboarding, read `README.md` first.
-Platform-level narrative and naming policy live in `docs/PLATFORM_NARRATIVE.md`.
+Internal engineering handbook for mkdbg maintainers and contributors.
+For user-facing onboarding, read `README.md` first.
+For porting to a new MCU, read `docs/PORTING.md`.
+
+---
 
 ## Table of Contents
 
 - [1. Architecture](#1-architecture)
-- [2. Operations](#2-operations)
-- [3. Troubleshooting](#3-troubleshooting)
-- [4. Contribution Guide](#4-contribution-guide)
-- [5. Reference Map](#5-reference-map)
+- [2. Source layout](#2-source-layout)
+- [3. Build](#3-build)
+- [4. Adding a new arch plugin](#4-adding-a-new-arch-plugin)
+- [5. Testing](#5-testing)
+- [6. Contribution guide](#6-contribution-guide)
+
+---
 
 ## 1. Architecture
 
-### 1.1 System intent
+mkdbg is a host CLI for embedded crash diagnostics over UART.
 
-MicroKernel-MPU is a reference platform for validating protected RTOS behavior under scripted load and fault conditions.
-
-Primary goals:
-- deterministic behavior generation via VM scenarios
-- unified, explainable fault snapshots
-- machine-parseable UART fault output
-
-Non-goals:
-- general application framework
-- high-performance VM runtime
-
-### 1.2 Runtime layers
-
-1. BSP (`bsp/`): clock, GPIO, UART, ADC
-2. RTOS + MPU (`freertos/`): privileged scheduler/kernel + unprivileged task sandbox
-3. VM32 runtime (`src/vm32.c`): dual-stack interpreter + MMIO
-4. Scenario engine (`src/scenario.c`, `src/vm32_scenarios.c`): named workload catalog
-5. Fault pipeline (`src/fault.c`, `src/interrupts.c`): normalized `FaultRecord` + emitters
-6. CLI (`src/main.c`): operator control plane
-
-### 1.3 Isolation model
-
-- Kernel tasks execute privileged.
-- `mpu_user_task` executes unprivileged with explicit MPU regions.
-- `mpu_overflow` intentionally violates RO protection to validate MemManage handling.
-
-### 1.4 Scenario system (Direction 1)
-
-Entry points:
-- CLI: `vm scenario <name>`
-- Runtime: `scenario_run(name)`
-
-Scenario contract:
-- catalog source: `src/vm32_scenarios.c`
-- assets location: `scenarios/`
-- formats: `.asm` and `.vm`
-- output type: `ScenarioResult` (`status`, `vm_result`, `steps`, `vm_fault`)
-- bounded profile: scenarios with VM bytecode are validated by `vm32_verify_bounded_cfg`
-  before execution
-
-Built-in scenarios:
-- `mpu_overflow`
-- `irq_starvation`
-- `io_flood`
-
-### 1.5 Fault pipeline (Direction 2)
-
-All fault sources converge into `fault_dispatch()`.
-
-CPU path:
-- `HardFault_Handler` / `UsageFault_Handler` / `MemManage_Handler`
-- bridge in `src/interrupts.c`
-- snapshot built by `fault_report_cpu()`
-
-VM path:
-- VM runtime errors (`VM32_ERR_STACK`, `VM32_ERR_MEM`, `VM32_ERR_POLICY`)
-- snapshot built by `fault_report_vm()`
-
-Snapshot model (`FaultRecord`) includes:
-- CPU context: `pc/lr/sp/xpsr/control/exc_return`
-- fault status: `cfsr/hfsr/mmfar/bfar`
-- isolation context: privilege + matched `mpu_region/rbar/rasr`
-- VM context: `vm_err/vm_pc/vm_op/vm_ic/vm_dtop/vm_rtop/vm_last_out`
-
-Output modes:
-- human-readable line (interactive debugging)
-- JSON line (host tooling)
-
-CLI semantics:
-- `fault last`: latest record (JSON)
-- `fault dump`: history dump (human + JSON)
-- history retention: latest 8 records, oldest to newest
-
-### 1.6 Design rules
-
-- Any new crash/fault path must flow through `fault_dispatch()`.
-- Prefer scenario catalog updates over ad-hoc CLI branches for new workloads.
-- Preserve privilege boundaries by default.
-- Keep JSON output stable; add fields additively.
-- Bounded profile constraints: no `CALL/RET`, no backward CFG edges, no out-of-window targets.
-
-### 1.7 Naming baseline
-
-Use canonical names across code, docs, and commit messages:
-- `Scenario` for named runtime workloads
-- `ScenarioResult` for scenario output/status contract
-- `bounded profile` for CFG-safe VM execution subset
-- `FaultRecord` for normalized CPU/VM fault snapshots
-
-## 2. Operations
-
-### 2.1 Toolchain prerequisites
-
-- `arm-none-eabi-gcc`
-- `cmake`
-- `openocd`
-
-Optional host utilities:
-- `python3`
-- `pyserial`
-
-### 2.2 Build and flash
-
-Build:
-```bash
-bash tools/build.sh
+```
+  ┌──────────────────────────────────────────────────────────┐
+  │  mkdbg-native (host)                                     │
+  │                                                          │
+  │  main.c ──► core.c ──► action.c                          │
+  │                  │         │                             │
+  │                  │         ├──► wire.c ──► wire_crash_lib│
+  │                  │         │         (RSP over UART)     │
+  │                  │         ├──► seam.c ──► seam_lib      │
+  │                  │         │         (causal analysis)   │
+  │                  │         └──► dashboard.c (TUI)        │
+  │                  │                                       │
+  │                  └──► git.c, incident.c, probe.c, ...   │
+  │                                                          │
+  │  arch/ ──► arch_registry.c ──► cortex_m.c               │
+  │            (decode_crash plugin interface)               │
+  └──────────────────────────────────────────────────────────┘
+                    │ UART
+  ┌──────────────────────────────────────────────────────────┐
+  │  Target firmware                                         │
+  │  wire_agent.c  — RSP stub, halts on fault                │
+  │  seam_agent.c  — 64-entry event ring (optional)          │
+  └──────────────────────────────────────────────────────────┘
 ```
 
-Flash:
-```bash
-bash tools/flash.sh
+### Key data flow — `mkdbg attach`
+
+1. `wire.c` forks `wire-host --dump` (or calls `wire_probe_dump()` directly)
+2. `wire_crash.c` exchanges three RSP transactions with the halted MCU:
+   - `?` → halt signal
+   - `g` → 17 registers
+   - `m <sp>,100` → 256 stack bytes
+   - `m e000ed28,4` → CFSR
+3. Result is a JSON `WireCrashReport`
+4. `action.c` formats and prints the crash report
+
+The `arch/` layer provides architecture-specific decode (CFSR bits,
+heuristic backtrace, register names) via a plugin interface so future
+architectures do not require changes to the core.
+
+---
+
+## 2. Source layout
+
+```
+src/                   mkdbg host CLI (C11, no external deps beyond deps/)
+  main.c               entry point, argument dispatch
+  core.c               repo + session state
+  action.c             command handlers (attach, dashboard, seam, ...)
+  wire.c               wire probe integration
+  seam.c               seam causal-chain integration
+  dashboard.c          TUI (termbox2)
+  git.c                libgit2 wrappers
+  probe.c              device probe detection
+  incident.c           incident metadata
+  config.c             ~/.mkdbg/config persistence
+  serial.c             serial port helpers
+  launcher.c           subprocess management
+  parse.c              JSON/text parsing helpers
+  process.c            child process management
+  util.c               string, path, die()
+  mkdbg.h              all types and function declarations
+  termbox2.h           vendored single-header TUI library
+
+arch/                  MCU architecture plugins
+  arch.h               MkdbgArch interface + mkdbg_arch_find()
+  arch_registry.c      static registry of built-in arch implementations
+  cortex_m.c           Cortex-M: CFSR decode, heuristic backtrace, registers
+
+deps/                  git submodules
+  wire/                RSP stub firmware agent + host crash library
+  seam/                fault event ring firmware agent + host analyzer
+  libgit2/             local git ops (no git CLI required at runtime)
+
+tests/
+  arch_test.c          arch plugin registry smoke test
+  fixtures/            test input files
+
+examples/stm32f446/    STM32F446RE reference implementation
+  src/                 firmware source
+  scripts/             build, flash, CI scripts
+  docs/                STM32-specific documentation
 ```
 
-Common options:
-```bash
-VM32_MEM_SIZE=256 bash tools/build.sh
-BOARD_UART_PORT=2 bash tools/build.sh
-BUILD_PROFILE=debug bash tools/build.sh
-```
+---
 
-`mkdbg` wraps these same primitives behind one repo-aware CLI:
+## 3. Build
+
+**Prerequisites:** `cmake >= 3.20`, a C11 compiler, `git` with submodules.
 
 ```bash
-bash tools/install_mkdbg.sh
-mkdbg init --name microkernel --port /dev/cu.usbmodemXXXX
-mkdbg doctor
-mkdbg build
-mkdbg flash
-mkdbg attach
-mkdbg hil --port /dev/cu.usbmodemXXXX
+git clone --recurse-submodules https://github.com/JialongWang1201/mkdbg
+cmake -S mkdbg -B mkdbg/build_host -DCMAKE_BUILD_TYPE=Release
+cmake --build mkdbg/build_host --target mkdbg-native wire-host seam-analyze
 ```
 
-UART mapping:
-- `1`: USART1 (PA9/PA10)
-- `2`: USART2 (PA2/PA3, default)
-- `3`: USART3 (PB10/PB11)
+Binaries land in `build_host/`:
+- `mkdbg-native` — main CLI
+- `wire-host` — TCP↔UART bridge for GDB
+- `seam-analyze` — standalone causal-chain analyzer
 
-The early boot banner now prints firmware identity on UART:
+**Without libgit2** (if submodule not initialised):
 
-```text
-MicroKernel-MPU boot
-Build id=0x1A2B3C4D git=1a2b3c4d clean profile=debug board=Nucleo-F446RE uart=USART2
-```
+The `git` panel in the dashboard falls back to calling the `git` CLI
+subprocess.  Everything else works normally.
 
-### 2.3 Core operator commands
-
-VM:
-- `vm reset`
-- `vm load <addr> <b0> <b1> ...`
-- `vm run <addr> [max]`
-- `vm verify <addr> [span]`
-- `vm runb <addr> [span]`
-- `vm step [n]`
-- `vm dump <addr> <len>`
-- `vm patch <addr> <byte>`
-- `vm mig status|mode|allow|deny|reset`
-- `vm mig apply <json>` (compact JSON subset)
-
-Scenario:
-- `vm scenario list`
-- `vm scenario <name>`
-
-Fault:
-- `fault last`
-- `fault dump`
-
-Bring-up:
-- `bringup` / `bringup check`
-- `bringup json`
-- `bringup mpu`
-
-MicroSONiC-Lite:
-- `sonic cap`
-- `sonic show [db|running|candidate|config|appl|asic]`
-- `sonic get [running|candidate] <config|appl|asic> <key>`
-- `sonic set <config|appl|asic> <key> <value>`
-- `sonic diff [config|appl|asic]`
-- `sonic history [n]`
-- `sonic preset list|show|apply <name> [running|candidate]`
-- `sonic apply mig [running|candidate]`
-- `sonic apply vm [running|candidate]`
-- `sonic commit [rollback_ms]`
-- `sonic confirm`
-- `sonic rollback [now]`
-- `sonic abort`
-
-### 2.4 Baseline regression
-
-Run in this order:
-
-```text
-disable
-vm scenario list
-vm scenario io_flood
-fault last
-vm scenario irq_starvation
-fault last
-vm reset
-vm load 0 3
-vm run 0 1
-fault last
-fault dump
-vm scenario mpu_overflow
-```
-
-Expected outcomes:
-- `io_flood`: scenario result should be halted and no recorded fault
-- `irq_starvation`: scenario result should be halted and no recorded fault
-- `vm run 0 1` (with `0x03` at PC): VM fault emitted and captured
-- `fault dump`: includes history records in chronological order
-- `mpu_overflow`: CPU MemManage JSON emitted, then handler halt
-
-Operational note:
-- Execute `mpu_overflow` last in a test batch.
-
-### 2.5 Host tooling
-
-Assembler:
-```bash
-tools/vm32 asm demo.asm -o demo.bin
-tools/vm32 asm demo.asm --load --base 0
-```
-
-Tiny C:
-```bash
-tools/vm32 tinyc demo/hello.c -o demo/hello.asm
-```
-
-Loader:
-```bash
-tools/vm32 load demo.bin --dry-run
-tools/vm32 load demo.bin --port /dev/tty.usbmodemXXXX
-```
-
-Disassembler:
-```bash
-tools/vm32 disasm demo.bin --base 0
-```
-
-Verifier:
-```bash
-tools/vm32 verify demo/hello.bin
-tools/vm32 --json verify demo/hello.bin
-```
-
-Batch execution:
-```bash
-tools/vm32 batch demo/vm32_smoke.batch
-tools/vm32 --json batch demo/vm32_smoke.batch --keep-going
-```
-
-Batch grammar:
-- one VM32 subcommand per line (no `tools/vm32` prefix)
-- comments start with `#` or `;`
-- `--keep-going` continues execution after failures
-
-Exit code conventions:
-- `0`: success
-- `1`: semantic verification reject
-- `2`: tooling/input failures
-
-Smoke tests:
-```bash
-bash tools/vm32_ci.sh
-bash tools/ci_smoke.sh
-bash tools/build_identity_host_tests.sh
-bash tools/mkdbg_host_tests.sh
-bash tools/ovwatch_host_tests.sh
-bash tools/vm32_host_tests.sh
-tools/vm32 sonic-regress --port /dev/cu.usbmodem21303
-```
-
-### 2.6 Declarative bring-up manifest
-
-Bring-up stage names, phase aliases, stage-driver edges, and driver-resource edges are declared in:
-
-- `configs/bringup/manifest.yaml`
-
-Generate the committed runtime/doc artifacts with:
+**Run host tests:**
 
 ```bash
-python3 tools/bringup_compile.py
+cmake --build build_host --target arch_test
+ctest --test-dir build_host -V
 ```
 
-Generated outputs:
+---
 
-- `include/bringup_manifest_gen.h`
-- `docs/generated/bringup_manifest.md`
+## 4. Adding a new arch plugin
 
-Validation:
+Each arch plugin is one `.c` file in `arch/`.
+
+**Step 1 — create `arch/your_arch.c`:**
+
+```c
+#include "arch.h"
+#include <stdint.h>
+#include <string.h>
+
+static int your_arch_decode_crash(const uint8_t *raw, size_t len,
+                                   MkdbgCrashReport *out)
+{
+    if (!raw || len < YOUR_ARCH_RAW_MIN || !out) return -1;
+    /* decode raw bytes into out->regs[], out->cfsr, out->cfsr_decoded, etc. */
+    return 0;
+}
+
+const MkdbgArch your_arch_arch = {
+    .name         = "your-arch",   /* matched by --arch flag */
+    .decode_crash = your_arch_decode_crash,
+};
+```
+
+**Step 2 — register in `arch/arch_registry.c`:**
+
+```c
+extern const MkdbgArch your_arch_arch;
+
+static const MkdbgArch *arches[] = {
+    &cortex_m_arch,
+    &your_arch_arch,   /* add here */
+    NULL,
+};
+```
+
+**Step 3 — add to `CMakeLists.txt`:**
+
+```cmake
+add_executable(mkdbg-native
+  ...
+  arch/your_arch.c      # add this line
+  ...
+)
+```
+
+**Step 4 — test:**
 
 ```bash
-bash tools/bringup_compile_host_tests.sh
+./build_host/mkdbg-native --version        # must still build and run
+./build_host/arch_test                     # lookup tests
+./build_host/mkdbg-native attach --port /dev/ttyUSB0 --arch your-arch
 ```
 
-### 2.7 Terminal dashboard
+---
 
-For a host-side operator console that borrows the split-pane terminal style, use:
+## 5. Testing
+
+### Host unit tests
 
 ```bash
-tools/vm32 bringup-ui --port /dev/cu.usbmodemXXXX
-tools/vm32 bringup-ui --port /dev/cu.usbmodemXXXX --auto-refresh-s 5
+# arch plugin registry
+cmake --build build_host --target arch_test
+./build_host/arch_test
+
+# seam-analyze integration
+cmake --build build_host --target seam-analyze
+./build_host/seam-analyze deps/seam/test/fixtures/normal_kdi_cascade.cfl
+
+# STM32 reference build + scripts (requires arm-none-eabi-gcc)
+bash examples/stm32f446/scripts/ci_smoke.sh
 ```
 
-Offline render/test paths:
+### CI
 
-```bash
-tools/vm32 bringup-ui --bundle-json tests/fixtures/triage/sample_bundle.json --render-once
-bash tools/bringup_ui_host_tests.sh
-```
+All jobs are in `.github/workflows/ci.yml`:
 
-## 3. Troubleshooting
+| Job | What it runs |
+|-----|-------------|
+| `native-host-artifacts` | CMake build for linux/darwin, binary smoke test |
+| `smoke` | STM32 firmware build + `ci_smoke.sh` |
+| `host-tests` | vm32, kdi, sonic-lite, bringup, analysis-engine host tests |
+| `host-regress` | vm32 CI, profile compare, triage regression |
 
-### 3.1 CLI does not respond
+---
 
-Checks:
-1. Ensure board is flashed and UART port is correct.
-2. Send commands with slower character pacing if using custom serial scripts.
-3. Confirm no terminal process is holding the same serial device.
+## 6. Contribution guide
 
-### 3.2 `fault dump` shows no data
+### Change policy
 
-Checks:
-1. Trigger a known VM fault probe: `vm reset`, `vm load 0 3`, `vm run 0 1`.
-2. Run `fault last` to validate a latest record exists.
-3. Run `fault dump` again.
-
-### 3.3 `mpu_overflow` does not print expected CPU fault
-
-Checks:
-1. Verify scenario dispatch prints `Scenario: mpu_overflow` from user task.
-2. Verify MPU is not disabled at build/runtime.
-3. Ensure scenario runs last; CPU fault handler halts after emission.
-
-### 3.4 Build succeeds but runtime regresses
-
-Checks:
-1. Compare latest commits touching `src/fault.c`, `src/main.c`, `bsp/mpu_demo.c`.
-2. Re-run baseline regression sequence end-to-end.
-3. Validate JSON schema changes did not break host parser assumptions.
-
-## 4. Contribution Guide
-
-### 4.1 Change policy
-
-- Keep changes minimal and composable.
 - One logical change per commit.
-- Prefer additive contracts for CLI/JSON changes.
+- Minimal diff: change only what is necessary.
+- New C code must compile with `-Wall -Wextra -Werror`.
+- CI must pass before merging.
 
-### 4.2 Commit quality bar
+### Commit style
 
-Each change should include:
-1. clear rationale
-2. implementation scoped to affected module
-3. verification evidence (build + focused runtime checks)
+```
+subsystem: short description
 
-Recommended commit style:
-- `subsystem: intent`
-- examples: `fault: add history ring`, `scenario: add workload metadata`
+Optional body explaining why.
+```
 
-### 4.3 Fault and scenario extensions
+Examples:
+- `arch: add ESP32 DPORT register decoder`
+- `wire: increase RSP timeout to 5s`
+- `docs: fix PORTING.md baud rate example`
 
-When adding a new scenario:
-1. add catalog entry in `src/vm32_scenarios.c`
-2. keep execution via `scenario_run()`
-3. define expected `ScenarioResult` behavior
+### Adding a command
 
-When adding a new fault source:
-1. map source into `FaultRecord`
-2. route through `fault_dispatch()`
-3. ensure `fault last` and `fault dump` visibility
+1. Add a handler function in `src/action.c`.
+2. Wire it into the dispatch table in `src/core.c`.
+3. Document in `docs/COMMANDS.md`.
 
-### 4.4 Compatibility rules
+### Extending WireCrashReport
 
-- Do not remove existing JSON keys without migration notes.
-- Keep CLI command grammar backward-compatible when possible.
-- Maintain chronological ordering in fault history dump output.
+`WireCrashReport` is defined in `src/mkdbg.h`.  Add fields additively — do
+not remove or reorder existing fields, as the JSON parser in `src/wire.c`
+matches by field name.
 
-## 5. Reference Map
+### Submodule policy
 
-Core files:
-- `src/main.c`: bootstrap, task creation, CLI
-- `src/vm32.c`: VM32 interpreter
-- `src/scenario.c`: scenario execution pipeline
-- `src/vm32_scenarios.c`: scenario catalog
-- `src/fault.c`: fault normalization/history/output
-- `src/interrupts.c`: CPU fault bridge
-- `bsp/mpu_demo.c`: unprivileged behavior + MPU probes
-
-Supporting docs:
-- `README.md`: external quick-start
-- `docs/vm32_design.md`: VM32 ISA/design
-- `docs/vm32_errors.md`: VM error semantics
-- `docs/vm32_debug.md`: VM debug and breakpoints
+`deps/wire`, `deps/seam`, `deps/libgit2` are external submodules.  Do not
+commit changes to them in this repo — send PRs upstream instead.
