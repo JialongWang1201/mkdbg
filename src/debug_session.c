@@ -64,6 +64,13 @@ void debug_session_close(DebugSession *s)
 
 /* ── Execution control ───────────────────────────────────────────────────── */
 
+int debug_session_detach(DebugSession *s)
+{
+    char resp[16];
+    /* Send 'c' to resume; accept S00 and return without waiting for halt. */
+    return rsp_transaction(s->fd, "c", resp, sizeof(resp));
+}
+
 int debug_session_continue(DebugSession *s)
 {
     char resp[16];
