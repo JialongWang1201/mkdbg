@@ -65,6 +65,7 @@ add_executable(mkdbg-native
   src/seam.c
   src/dashboard.c
   src/wire.c
+  src/debug_session.c
   arch/cortex_m.c
   arch/arch_registry.c
   $<TARGET_OBJECTS:seam_lib>
