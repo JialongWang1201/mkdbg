@@ -1,0 +1,1 @@
+../examples/stm32f446/tests/semantic_telemetry_host_tests.c

@@ -1,0 +1,1 @@
+../examples/stm32f446/tests/bringup_phase_host_tests.c

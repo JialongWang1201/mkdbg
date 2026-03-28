@@ -1,0 +1,1 @@
+../examples/stm32f446/tests/seam_host_stub.c

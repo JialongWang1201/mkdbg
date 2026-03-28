@@ -1,0 +1,1 @@
+../examples/stm32f446/tests/sonic_lite_host_tests.c
