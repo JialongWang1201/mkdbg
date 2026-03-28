@@ -12,9 +12,12 @@ set -euo pipefail
 
 INSTALL_DIR="${MKDBG_INSTALL_DIR:-$HOME/.local/bin}"
 TARGET="${INSTALL_DIR}/mkdbg"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LOCAL_NATIVE_SOURCE="${SCRIPT_DIR}/../src/main.c"
-LOCAL_PYTHON_SOURCE="${SCRIPT_DIR}/../examples/stm32f446/scripts/mkdbg"
+# BASH_SOURCE[0] is unset when bash reads from a pipe (curl | bash).
+# Use the safe expansion; SCRIPT_DIR stays empty for remote installs.
+_BASH_SOURCE="${BASH_SOURCE[0]:-}"
+SCRIPT_DIR="${_BASH_SOURCE:+$(cd "$(dirname "$_BASH_SOURCE")" && pwd)}"
+LOCAL_NATIVE_SOURCE="${SCRIPT_DIR:+${SCRIPT_DIR}/../src/main.c}"
+LOCAL_PYTHON_SOURCE="${SCRIPT_DIR:+${SCRIPT_DIR}/../examples/stm32f446/scripts/mkdbg}"
 NATIVE_BINARY_PATH="${MKDBG_INSTALL_BINARY_PATH:-}"
 NATIVE_BINARY_URL="${MKDBG_INSTALL_BINARY_URL:-}"
 REPO_SLUG="${MKDBG_REPO_SLUG:-JialongWang1201/mkdbg}"
