@@ -1,11 +1,17 @@
 #ifndef MKDBG_H
 #define MKDBG_H
 
+#ifndef _POSIX_C_SOURCE
 #define _POSIX_C_SOURCE 200809L
+#endif
 #ifdef __APPLE__
+#ifndef _DARWIN_C_SOURCE
 #define _DARWIN_C_SOURCE
+#endif
 #else
+#ifndef _DEFAULT_SOURCE
 #define _DEFAULT_SOURCE
+#endif
 #endif
 
 #include <ctype.h>
