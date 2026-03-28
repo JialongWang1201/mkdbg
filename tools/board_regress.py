@@ -1,0 +1,1 @@
+../examples/stm32f446/scripts/board_regress.py

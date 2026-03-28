@@ -1,0 +1,1 @@
+../examples/stm32f446/scripts/driver_profile_compare.py
