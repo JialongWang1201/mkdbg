@@ -3,7 +3,7 @@
 static void usage(void)
 {
   printf("mkdbg-native %s\n", MKDBG_NATIVE_VERSION);
-  printf("usage: mkdbg-native [--version] <init|doctor|repo|target|incident|build|flash|snapshot|dashboard|watch|attach|probe|serial|git|run|capture|seam|debug> [options]\n");
+  printf("usage: mkdbg-native [--version] <init|doctor|repo|target|incident|build|flash|hil|snapshot|dashboard|watch|attach|probe|serial|git|run|capture|seam|debug> [options]\n");
 }
 
 int main(int argc, char **argv)
@@ -39,6 +39,12 @@ int main(int argc, char **argv)
     ActionOptions opts;
     parse_action_args(argc - 2, argv + 2, &opts);
     return cmd_configured_action(&opts, "flash_cmd", 0);
+  }
+
+  if (strcmp(argv[1], "hil") == 0) {
+    ActionOptions opts;
+    parse_action_args(argc - 2, argv + 2, &opts);
+    return cmd_configured_action(&opts, "hil_cmd", 1);
   }
 
   if (strcmp(argv[1], "snapshot") == 0) {
