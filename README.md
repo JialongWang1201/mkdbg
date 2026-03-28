@@ -36,7 +36,7 @@ No J-Link. No ST-Link. No OpenOCD. No GDB required for a crash report.
 **1. Install the host tool**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/JialongWang1201/mkdbg/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/JialongWang1201/mkdbg/main/scripts/install.sh | bash
 ```
 
 Or build from source (requires `cmake` and a C compiler):

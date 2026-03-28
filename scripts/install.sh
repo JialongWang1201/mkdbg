@@ -1,4 +1,13 @@
-#!/usr/bin/env bash
+#!/usr/bin/env sh
+# When invoked as `curl URL | sh`, the shebang is ignored and sh runs this.
+# Ensure we continue under bash (required for pipefail, [[...]], BASH_SOURCE, arrays).
+# These lines must be POSIX sh — no bash-isms before the exec.
+if [ -z "${BASH_VERSION:-}" ]; then
+  if ! command -v bash >/dev/null 2>&1; then
+    echo "error: bash is required to install mkdbg" >&2; exit 1
+  fi
+  exec bash -s "$@"
+fi
 set -euo pipefail
 
 INSTALL_DIR="${MKDBG_INSTALL_DIR:-$HOME/.local/bin}"

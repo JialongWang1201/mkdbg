@@ -27,7 +27,7 @@ This installs the native C frontend as `mkdbg`.
 One-line remote install:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/JialongWang1201/mkdbg/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/JialongWang1201/mkdbg/main/scripts/install.sh | bash
 ```
 
 The remote installer currently builds the native frontend from source and
