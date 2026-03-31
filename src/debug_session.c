@@ -203,6 +203,34 @@ int debug_session_read_mem(DebugSession *s, uint32_t addr, size_t len, uint8_t *
     return WIRE_OK;
 }
 
+int debug_session_write_mem(DebugSession *s, uint32_t addr, size_t len,
+                             const uint8_t *data)
+{
+    /* RSP 'M addr,len:hexdata' — hexdata is one byte per two hex chars. */
+    static const char hex[] = "0123456789abcdef";
+    char cmd[32 + len * 2 + 1];  /* header + hex payload + NUL */
+    int hdr = snprintf(cmd, 32, "M%x,%zx:", addr, len);
+    if (hdr < 0 || hdr >= 32) return WIRE_ERR_OVERFLOW;
+    for (size_t i = 0; i < len; i++) {
+        cmd[hdr + i * 2]     = hex[data[i] >> 4];
+        cmd[hdr + i * 2 + 1] = hex[data[i] & 0xf];
+    }
+    cmd[hdr + len * 2] = '\0';
+
+    char resp[16];
+    int rc = rsp_transaction(s->fd, cmd, resp, sizeof(resp));
+    if (rc != WIRE_OK) return rc;
+    return (strcmp(resp, "OK") == 0) ? WIRE_OK : WIRE_ERR_IO;
+}
+
+int debug_session_reset(DebugSession *s)
+{
+    /* RSP 'R' packet: software system reset.
+     * The MCU resets immediately and sends NO reply — use rsp_send_packet,
+     * not rsp_transaction, to avoid blocking on a reply that never arrives. */
+    return rsp_send_packet(s->fd, "R00");
+}
+
 /* ── Arch metadata ───────────────────────────────────────────────────────── */
 
 int debug_session_nregs(const DebugSession *s)

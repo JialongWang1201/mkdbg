@@ -164,6 +164,7 @@ typedef struct {
   const char *repo;
   const char *target;
   const char *port;
+  const char *baud;
   const char *address;
   const char *value;
   int dry_run;
@@ -349,8 +350,9 @@ int cmd_git_worktree(const GitOptions *opts);
 int cmd_git_push_current(const GitOptions *opts);
 
 /* ---- probe.c ---- */
-int cmd_probe_action(const ProbeOptions *opts, const char *command);
-int cmd_probe_flash(const ProbeOptions *opts);
+int cmd_probe_halt(const ProbeOptions *opts);
+int cmd_probe_resume(const ProbeOptions *opts);
+int cmd_probe_reset(const ProbeOptions *opts);
 int cmd_probe_read32(const ProbeOptions *opts);
 int cmd_probe_write32(const ProbeOptions *opts);
 

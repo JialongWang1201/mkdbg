@@ -89,6 +89,16 @@ int debug_session_read_regs(DebugSession *s, uint32_t regs[DEBUG_SESSION_MAX_REG
  * Returns WIRE_OK, or WIRE_ERR_IO if address is out of the allowed RAM range. */
 int debug_session_read_mem(DebugSession *s, uint32_t addr, size_t len, uint8_t *out);
 
+/* Write len bytes of data to target address addr.
+ * Returns WIRE_OK, or WIRE_ERR_IO on target error or bounds violation. */
+int debug_session_write_mem(DebugSession *s, uint32_t addr, size_t len,
+                             const uint8_t *data);
+
+/* Trigger a software system reset (RSP 'R' packet).
+ * Send-only — does NOT wait for a reply (the MCU resets immediately).
+ * Returns WIRE_OK if the packet was transmitted, WIRE_ERR_IO on UART error. */
+int debug_session_reset(DebugSession *s);
+
 /* ── Arch metadata ───────────────────────────────────────────────────────── */
 
 /* Number of registers returned by debug_session_read_regs() for this session. */

@@ -286,19 +286,19 @@ int main(int argc, char **argv)
     }
     if (strcmp(argv[2], "reset") == 0) {
       parse_probe_args(argc - 3, argv + 3, &opts);
-      return cmd_probe_action(&opts, "init; reset run; shutdown");
+      return cmd_probe_reset(&opts);
     }
     if (strcmp(argv[2], "halt") == 0) {
       parse_probe_args(argc - 3, argv + 3, &opts);
-      return cmd_probe_action(&opts, "init; reset halt; shutdown");
+      return cmd_probe_halt(&opts);
     }
     if (strcmp(argv[2], "resume") == 0) {
       parse_probe_args(argc - 3, argv + 3, &opts);
-      return cmd_probe_action(&opts, "init; resume; shutdown");
+      return cmd_probe_resume(&opts);
     }
     if (strcmp(argv[2], "flash") == 0) {
-      parse_probe_args(argc - 3, argv + 3, &opts);
-      return cmd_probe_flash(&opts);
+      fprintf(stderr, "mkdbg: probe flash removed — use `mkdbg flash` instead\n");
+      return 1;
     }
     if (strcmp(argv[2], "read32") == 0) {
       if (argc < 5) {

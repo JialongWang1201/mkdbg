@@ -1,117 +1,209 @@
+/* probe.c — Wire-based hardware probe commands (no openocd/gdb required)
+ *
+ * All probe commands open a direct UART connection to the MCU's wire agent,
+ * send one RSP packet, and close.  The MCU must be in wire_debug_loop
+ * (i.e. already halted at a crash or breakpoint) for halt/read32/write32.
+ *
+ * SPDX-License-Identifier: MIT
+ */
 #include "mkdbg.h"
+#include "wire_host.h"
 
-int cmd_probe_action(const ProbeOptions *opts, const char *command)
+/* ── UART open helper ────────────────────────────────────────────────────── */
+
+static int probe_open(const ProbeOptions *opts)
 {
-  char config_path[PATH_MAX];
-  char repo_root[PATH_MAX];
-  char openocd_cfg[PATH_MAX];
-  const char *repo_name;
-  const RepoConfig *repo;
-  MkdbgConfig config;
-  char *argv[6];
-  int argc = 0;
-
-  if (find_config_upward(config_path, sizeof(config_path)) != 0) {
-    die("missing %s; run `mkdbg init` first", CONFIG_NAME);
+  if (opts->port == NULL || opts->port[0] == '\0') {
+    fprintf(stderr,
+            "mkdbg: probe requires --port (e.g. --port /dev/ttyUSB0)\n");
+    return -1;
   }
-  if (load_config_file(config_path, &config) != 0) {
-    die("invalid config: %s", config_path);
-  }
-  resolve_repo_name(&config, opts->repo, opts->target, &repo_name);
-  repo = find_repo_const(&config, repo_name);
-  if (repo == NULL) {
-    die("repo `%s` not found in %s", repo_name, config_path);
-  }
-  if (repo->openocd_cfg[0] == '\0') {
-    die("repo `%s` has no `openocd_cfg` configured", repo_name);
-  }
-
-  resolve_repo_root(config_path, repo, repo_root, sizeof(repo_root));
-  resolve_repo_file(config_path, repo, repo->openocd_cfg, openocd_cfg, sizeof(openocd_cfg));
-  if (!opts->dry_run && !path_exists(openocd_cfg)) {
-    die("repo `%s` is missing openocd_cfg: %s", repo_name, openocd_cfg);
-  }
-
-  argv[argc++] = "openocd";
-  argv[argc++] = "-f";
-  argv[argc++] = openocd_cfg;
-  argv[argc++] = "-c";
-  argv[argc++] = (char *)command;
-  argv[argc] = NULL;
-  return run_process(argv, repo_root, opts->dry_run);
+  int baud = 115200;
+  if (opts->baud != NULL && opts->baud[0] != '\0')
+    baud = atoi(opts->baud);
+  int fd = wire_serial_open(opts->port, baud);
+  if (fd < 0)
+    fprintf(stderr, "mkdbg: cannot open %s\n", opts->port);
+  return fd;
 }
 
-int cmd_probe_flash(const ProbeOptions *opts)
+/* ── Hex helpers (local) ─────────────────────────────────────────────────── */
+
+static int hn(char c)
 {
-  char config_path[PATH_MAX];
-  char repo_root[PATH_MAX];
-  char openocd_cfg[PATH_MAX];
-  char elf_path[PATH_MAX];
-  char command[MAX_VALUE];
-  const char *repo_name;
-  const RepoConfig *repo;
-  MkdbgConfig config;
-  char *argv[6];
-  int argc = 0;
-
-  if (find_config_upward(config_path, sizeof(config_path)) != 0) {
-    die("missing %s; run `mkdbg init` first", CONFIG_NAME);
-  }
-  if (load_config_file(config_path, &config) != 0) {
-    die("invalid config: %s", config_path);
-  }
-  resolve_repo_name(&config, opts->repo, opts->target, &repo_name);
-  repo = find_repo_const(&config, repo_name);
-  if (repo == NULL) {
-    die("repo `%s` not found in %s", repo_name, config_path);
-  }
-  if (repo->openocd_cfg[0] == '\0') {
-    die("repo `%s` has no `openocd_cfg` configured", repo_name);
-  }
-  if (repo->elf_path[0] == '\0') {
-    die("repo `%s` has no `elf_path` configured", repo_name);
-  }
-
-  resolve_repo_root(config_path, repo, repo_root, sizeof(repo_root));
-  resolve_repo_file(config_path, repo, repo->openocd_cfg, openocd_cfg, sizeof(openocd_cfg));
-  resolve_repo_file(config_path, repo, repo->elf_path, elf_path, sizeof(elf_path));
-  if (!opts->dry_run && !path_exists(openocd_cfg)) {
-    die("repo `%s` is missing openocd_cfg: %s", repo_name, openocd_cfg);
-  }
-  if (!opts->dry_run && !path_exists(elf_path)) {
-    die("repo `%s` is missing elf_path: %s", repo_name, elf_path);
-  }
-
-  copy_string(command, sizeof(command), "program ");
-  append_string(command, sizeof(command), elf_path);
-  append_string(command, sizeof(command), " verify reset exit");
-  argv[argc++] = "openocd";
-  argv[argc++] = "-f";
-  argv[argc++] = openocd_cfg;
-  argv[argc++] = "-c";
-  argv[argc++] = command;
-  argv[argc] = NULL;
-  return run_process(argv, repo_root, opts->dry_run);
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+  return 0;
 }
 
+/* Parse little-endian 4-byte hex (RSP 'm' response) → uint32. */
+static uint32_t le_hex_to_u32(const char *s)
+{
+  uint32_t v = 0;
+  for (int i = 0; i < 4; i++) {
+    uint8_t b = (uint8_t)((hn(s[i * 2]) << 4) | hn(s[i * 2 + 1]));
+    v |= (uint32_t)b << (i * 8);
+  }
+  return v;
+}
+
+/* Encode uint32 as 8 little-endian hex chars (for RSP 'M' payload). */
+static void u32_to_le_hex(uint32_t v, char out[9])
+{
+  static const char h[] = "0123456789abcdef";
+  for (int i = 0; i < 4; i++) {
+    uint8_t b    = (uint8_t)(v >> (i * 8));
+    out[i * 2]   = h[b >> 4];
+    out[i * 2 + 1] = h[b & 0xf];
+  }
+  out[8] = '\0';
+}
+
+/* ── Probe commands ──────────────────────────────────────────────────────── */
+
+/* probe halt: query halt reason via RSP '?' */
+int cmd_probe_halt(const ProbeOptions *opts)
+{
+  int fd = probe_open(opts);
+  if (fd < 0) return 1;
+
+  char resp[32];
+  int rc = rsp_transaction(fd, "?", resp, sizeof(resp));
+  close(fd);
+
+  if (rc != WIRE_OK) {
+    fprintf(stderr,
+            "mkdbg: probe halt: no response — is the MCU halted in wire_debug_loop?\n");
+    return 1;
+  }
+  if (resp[0] == 'S' || resp[0] == 'T') {
+    int sig = (hn(resp[1]) << 4) | hn(resp[2]);
+    printf("halted  signal=%d  (%s)\n", sig,
+           sig == 5  ? "SIGTRAP"  :
+           sig == 11 ? "SIGSEGV"  :
+           sig == 6  ? "SIGABRT"  : "unknown");
+    return 0;
+  }
+  fprintf(stderr, "mkdbg: unexpected response: %s\n", resp);
+  return 1;
+}
+
+/* probe resume: send RSP 'c' and get the S00 acknowledge */
+int cmd_probe_resume(const ProbeOptions *opts)
+{
+  int fd = probe_open(opts);
+  if (fd < 0) return 1;
+
+  char resp[16];
+  int rc = rsp_transaction(fd, "c", resp, sizeof(resp));
+  close(fd);
+
+  if (rc != WIRE_OK) {
+    fprintf(stderr, "mkdbg: probe resume: no response\n");
+    return 1;
+  }
+  printf("resumed\n");
+  return 0;
+}
+
+/* probe reset: send RSP 'R00' — send-only, MCU resets immediately */
+int cmd_probe_reset(const ProbeOptions *opts)
+{
+  int fd = probe_open(opts);
+  if (fd < 0) return 1;
+
+  int rc = rsp_send_packet(fd, "R00");
+  close(fd);
+
+  if (rc != WIRE_OK) {
+    fprintf(stderr, "mkdbg: probe reset: send failed\n");
+    return 1;
+  }
+  printf("reset sent\n");
+  return 0;
+}
+
+/* probe read32: read 4 bytes via RSP 'm addr,4' */
 int cmd_probe_read32(const ProbeOptions *opts)
 {
-  char address[MAX_U32_TEXT];
-  char command[MAX_VALUE];
+  if (opts->address == NULL) {
+    fprintf(stderr, "mkdbg: probe read32 requires an address\n");
+    return 1;
+  }
 
-  format_u32_hex(opts->address, "address", address, sizeof(address));
-  snprintf(command, sizeof(command), "init; mdw %s; shutdown", address);
-  return cmd_probe_action(opts, command);
+  char *end;
+  errno = 0;
+  uint32_t addr = (uint32_t)strtoul(opts->address, &end, 0);
+  if (errno != 0 || *end != '\0') {
+    fprintf(stderr, "mkdbg: invalid address: %s\n", opts->address);
+    return 1;
+  }
+
+  int fd = probe_open(opts);
+  if (fd < 0) return 1;
+
+  char cmd[32];
+  snprintf(cmd, sizeof(cmd), "m%x,4", addr);
+  char resp[32];
+  int rc = rsp_transaction(fd, cmd, resp, sizeof(resp));
+  close(fd);
+
+  if (rc != WIRE_OK) {
+    fprintf(stderr, "mkdbg: probe read32: no response\n");
+    return 1;
+  }
+  if (resp[0] == 'E') {
+    fprintf(stderr, "mkdbg: probe read32: target error %s\n", resp);
+    return 1;
+  }
+
+  uint32_t val = le_hex_to_u32(resp);
+  printf("0x%08x  =  0x%08x  (%u)\n", addr, val, val);
+  return 0;
 }
 
+/* probe write32: write 4 bytes via RSP 'M addr,4:hexdata' */
 int cmd_probe_write32(const ProbeOptions *opts)
 {
-  char address[MAX_U32_TEXT];
-  char value[MAX_U32_TEXT];
-  char command[MAX_VALUE];
+  if (opts->address == NULL || opts->value == NULL) {
+    fprintf(stderr, "mkdbg: probe write32 requires an address and value\n");
+    return 1;
+  }
 
-  format_u32_hex(opts->address, "address", address, sizeof(address));
-  format_u32_hex(opts->value, "value", value, sizeof(value));
-  snprintf(command, sizeof(command), "init; mww %s %s; shutdown", address, value);
-  return cmd_probe_action(opts, command);
+  char *end;
+  errno = 0;
+  uint32_t addr = (uint32_t)strtoul(opts->address, &end, 0);
+  if (errno != 0 || *end != '\0') {
+    fprintf(stderr, "mkdbg: invalid address: %s\n", opts->address);
+    return 1;
+  }
+  errno = 0;
+  uint32_t val = (uint32_t)strtoul(opts->value, &end, 0);
+  if (errno != 0 || *end != '\0') {
+    fprintf(stderr, "mkdbg: invalid value: %s\n", opts->value);
+    return 1;
+  }
+
+  int fd = probe_open(opts);
+  if (fd < 0) return 1;
+
+  char hexdata[9];
+  u32_to_le_hex(val, hexdata);
+  char cmd[64];
+  snprintf(cmd, sizeof(cmd), "M%x,4:%s", addr, hexdata);
+  char resp[16];
+  int rc = rsp_transaction(fd, cmd, resp, sizeof(resp));
+  close(fd);
+
+  if (rc != WIRE_OK) {
+    fprintf(stderr, "mkdbg: probe write32: no response\n");
+    return 1;
+  }
+  if (strcmp(resp, "OK") != 0) {
+    fprintf(stderr, "mkdbg: probe write32: target error %s\n", resp);
+    return 1;
+  }
+  printf("wrote 0x%08x → 0x%08x\n", val, addr);
+  return 0;
 }

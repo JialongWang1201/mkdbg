@@ -147,23 +147,10 @@ int cmd_attach(const AttachOptions *opts)
 {
   char config_path[PATH_MAX];
   char repo_root[PATH_MAX];
-  char elf_path[PATH_MAX];
-  char openocd_cfg[PATH_MAX];
-  char target_command[MAX_VALUE];
   const char *repo_name;
   const RepoConfig *repo;
-  const char *gdb_bin;
-  const char *gdb_target;
   MkdbgConfig config;
-  char *openocd_argv[8];
-  char *gdb_argv[2 + 1 + 2 + (2 * MAX_ATTACH_BREAKPOINTS) + (2 * MAX_ATTACH_COMMANDS) + 1];
   char *shell_argv[4];
-  int openocd_argc = 0;
-  int gdb_argc = 0;
-  pid_t server_pid;
-  int rc = 1;
-  int server_rc = 1;
-  size_t i;
 
   if (find_config_upward(config_path, sizeof(config_path)) != 0) {
     die("missing %s; run `mkdbg init` first", CONFIG_NAME);
@@ -229,82 +216,8 @@ int cmd_attach(const AttachOptions *opts)
     return run_process(shell_argv, repo_root, opts->dry_run);
   }
 
-  if (repo->elf_path[0] == '\0') {
-    die("repo `%s` has no `elf_path` configured", repo_name);
-  }
-  if (repo->openocd_cfg[0] == '\0' && repo->openocd_server_cmd[0] == '\0') {
-    die("repo `%s` has no `openocd_cfg` configured", repo_name);
-  }
-
-  resolve_repo_file(config_path, repo, repo->elf_path, elf_path, sizeof(elf_path));
-  if (!path_exists(elf_path)) {
-    die("repo `%s` is missing elf_path: %s", repo_name, elf_path);
-  }
-
-  if (repo->openocd_server_cmd[0] != '\0') {
-    shell_argv[0] = "/bin/sh";
-    shell_argv[1] = "-lc";
-    shell_argv[2] = (char *)repo->openocd_server_cmd;
-    shell_argv[3] = NULL;
-  } else {
-    resolve_repo_file(config_path, repo, repo->openocd_cfg, openocd_cfg, sizeof(openocd_cfg));
-    if (!path_exists(openocd_cfg)) {
-      die("repo `%s` is missing openocd_cfg: %s", repo_name, openocd_cfg);
-    }
-    openocd_argv[openocd_argc++] = "openocd";
-    openocd_argv[openocd_argc++] = "-f";
-    openocd_argv[openocd_argc++] = openocd_cfg;
-    openocd_argv[openocd_argc++] = "-c";
-    openocd_argv[openocd_argc++] = "gdb_port 3333; init; reset halt";
-    openocd_argv[openocd_argc] = NULL;
-  }
-
-  gdb_bin = repo->gdb[0] != '\0' ? repo->gdb : "arm-none-eabi-gdb";
-  gdb_target = repo->gdb_target[0] != '\0' ? repo->gdb_target : "localhost:3333";
-  gdb_argv[gdb_argc++] = (char *)gdb_bin;
-  gdb_argv[gdb_argc++] = elf_path;
-  if (opts->batch) {
-    gdb_argv[gdb_argc++] = "-batch";
-  }
-  copy_string(target_command, sizeof(target_command), "target extended-remote ");
-  append_string(target_command, sizeof(target_command), gdb_target);
-  gdb_argv[gdb_argc++] = "-ex";
-  gdb_argv[gdb_argc++] = target_command;
-  for (i = 0U; i < opts->breakpoint_count; ++i) {
-    static char breakpoint_commands[MAX_ATTACH_BREAKPOINTS][MAX_VALUE];
-    snprintf(breakpoint_commands[i], sizeof(breakpoint_commands[i]), "break %s", opts->breakpoints[i]);
-    gdb_argv[gdb_argc++] = "-ex";
-    gdb_argv[gdb_argc++] = breakpoint_commands[i];
-  }
-  for (i = 0U; i < opts->gdb_command_count; ++i) {
-    gdb_argv[gdb_argc++] = "-ex";
-    gdb_argv[gdb_argc++] = (char *)opts->gdb_commands[i];
-  }
-  gdb_argv[gdb_argc] = NULL;
-
-  printf("[mkdbg] cwd=%s\n", repo_root);
-  if (repo->openocd_server_cmd[0] != '\0') {
-    printf("[mkdbg] openocd=%s\n", repo->openocd_server_cmd);
-  } else {
-    print_command_label("openocd", openocd_argv);
-  }
-  print_command_label("gdb", gdb_argv);
-  if (opts->dry_run) {
-    return 0;
-  }
-
-  if (repo->openocd_server_cmd[0] != '\0') {
-    server_pid = spawn_process(shell_argv, repo_root);
-  } else {
-    server_pid = spawn_process(openocd_argv, repo_root);
-  }
-
-  sleep_seconds(opts->server_wait_s);
-  if (try_reap_pid(server_pid, &server_rc)) {
-    return server_rc;
-  }
-
-  rc = run_process(gdb_argv, repo_root, 0);
-  terminate_pid(server_pid);
-  return rc;
+  fprintf(stderr,
+          "mkdbg: attach requires --port to read a crash report over UART\n"
+          "       mkdbg attach --port /dev/ttyUSB0\n");
+  return 1;
 }

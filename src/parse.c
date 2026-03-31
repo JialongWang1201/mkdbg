@@ -307,6 +307,11 @@ int parse_probe_args(int argc, char **argv, ProbeOptions *opts)
         die("missing value for --port");
       }
       opts->port = argv[++i];
+    } else if (strcmp(argv[i], "--baud") == 0) {
+      if (i + 1 >= argc) {
+        die("missing value for --baud");
+      }
+      opts->baud = argv[++i];
     } else if (strcmp(argv[i], "--dry-run") == 0) {
       opts->dry_run = 1;
     } else if (argv[i][0] == '-') {

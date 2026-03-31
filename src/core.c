@@ -116,16 +116,22 @@ int cmd_doctor(const DoctorOptions *opts)
     resolve_repo_file(config_path, repo, repo->elf_path, detail, sizeof(detail));
     print_check(path_exists(detail), "elf_path", detail, &failed);
   }
+  /* openocd and gdb checks: only run when the user has explicitly configured
+   * the openocd probe path.  Users without openocd never see these failures. */
   if (repo->openocd_cfg[0] != '\0') {
     resolve_repo_file(config_path, repo, repo->openocd_cfg, detail, sizeof(detail));
     print_check(path_exists(detail), "openocd_cfg", detail, &failed);
-  }
-  if (repo->openocd_server_cmd[0] != '\0') {
+    if (repo->openocd_server_cmd[0] != '\0') {
+      char program[PATH_MAX];
+      command_program(repo->openocd_server_cmd, program, sizeof(program));
+      print_check(command_available(repo->openocd_server_cmd), "openocd", program, &failed);
+    } else {
+      print_check(search_path("openocd"), "openocd", "openocd", &failed);
+    }
+  } else if (repo->openocd_server_cmd[0] != '\0') {
     char program[PATH_MAX];
     command_program(repo->openocd_server_cmd, program, sizeof(program));
     print_check(command_available(repo->openocd_server_cmd), "openocd", program, &failed);
-  } else {
-    print_check(search_path("openocd"), "openocd", "openocd", &failed);
   }
   if (repo->gdb[0] != '\0') {
     print_check(command_available(repo->gdb), "gdb", repo->gdb, &failed);
