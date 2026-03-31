@@ -1,20 +1,172 @@
 #include "mkdbg.h"
 
+/* ── ANSI color macros ──────────────────────────────────────────────────── */
+/* Active only when g_color == 1 (stdout is a TTY).                         */
+#define C_BOLD   (g_color ? "\033[1m"    : "")
+#define C_DIM    (g_color ? "\033[2m"    : "")
+#define C_CYAN   (g_color ? "\033[1;36m" : "")
+#define C_RESET  (g_color ? "\033[0m"    : "")
+
+static int g_color = 0;   /* set once in main() via isatty(STDOUT_FILENO) */
+
+/* ── ASCII logo + colored usage ─────────────────────────────────────────── */
 static void usage(void)
 {
-  printf("mkdbg-native %s\n", MKDBG_NATIVE_VERSION);
-  printf("usage: mkdbg-native [--version] <init|doctor|repo|target|incident|build|flash|hil|snapshot|dashboard|watch|attach|probe|serial|git|run|capture|seam|debug> [options]\n");
+  printf("\n%s"
+    " _ __ ___  | | __ __| | |__   __ _\n"
+    "| '_ ` _ \\ | |/ // _` | '_ \\ / _` |\n"
+    "| | | | | ||   <| (_| | |_) | (_| |\n"
+    "|_| |_| |_||_|\\_\\__,_|_.__/ \\__, |\n"
+    "                              |___/%s  %s%s%s\n\n",
+    C_CYAN, C_RESET, C_DIM, MKDBG_NATIVE_VERSION, C_RESET);
+
+  printf("  Crash diagnostics for embedded firmware"
+         " — over UART, no debug probe needed.\n\n");
+  printf("  %sUsage:%s  mkdbg <command> [options]\n\n", C_BOLD, C_RESET);
+
+  printf("%sSetup:%s\n", C_BOLD, C_RESET);
+  printf("  %sinit%s      %screate .mkdbg.toml for this repo%s\n",
+         C_BOLD, C_RESET, C_DIM, C_RESET);
+  printf("  %sdoctor%s    %scheck tool + config health%s\n\n",
+         C_BOLD, C_RESET, C_DIM, C_RESET);
+
+  printf("%sDebug (no probe needed):%s\n", C_BOLD, C_RESET);
+  printf("  %sattach%s    %sread crash report from MCU over UART%s\n",
+         C_BOLD, C_RESET, C_DIM, C_RESET);
+  printf("  %sdebug%s     %slive interactive debugger (breakpoints, step, registers)%s\n",
+         C_BOLD, C_RESET, C_DIM, C_RESET);
+  printf("  %sseam%s      %scausal-chain analysis from fault event ring%s\n\n",
+         C_BOLD, C_RESET, C_DIM, C_RESET);
+
+  printf("%sBuild & control:%s\n", C_BOLD, C_RESET);
+  printf("  %sbuild%s     %srun build_cmd from config%s\n",
+         C_BOLD, C_RESET, C_DIM, C_RESET);
+  printf("  %sflash%s     %srun flash_cmd from config%s\n",
+         C_BOLD, C_RESET, C_DIM, C_RESET);
+  printf("  %sprobe%s     %shardware control (halt, resume, reset, read32, write32)%s\n\n",
+         C_BOLD, C_RESET, C_DIM, C_RESET);
+
+  printf("%sMonitor:%s\n", C_BOLD, C_RESET);
+  printf("  %sdashboard%s %slive TUI: serial output + git status + crash probe%s\n",
+         C_BOLD, C_RESET, C_DIM, C_RESET);
+  printf("  %swatch%s     %swatch crash bundles in terminal%s\n",
+         C_BOLD, C_RESET, C_DIM, C_RESET);
+  printf("  %ssnapshot%s  %scapture triage bundle%s\n\n",
+         C_BOLD, C_RESET, C_DIM, C_RESET);
+
+  printf("%sSession:%s\n", C_BOLD, C_RESET);
+  printf("  %sincident%s  %sopen/status/close a debug incident%s\n",
+         C_BOLD, C_RESET, C_DIM, C_RESET);
+  printf("  %scapture%s   %scapture and bundle crash artifacts%s\n",
+         C_BOLD, C_RESET, C_DIM, C_RESET);
+  printf("  %srepo%s/%starget%s  %smanage repo aliases%s\n",
+         C_BOLD, C_RESET, C_BOLD, C_RESET, C_DIM, C_RESET);
+  printf("  %srun%s       %srun arbitrary command in repo context%s\n\n",
+         C_BOLD, C_RESET, C_DIM, C_RESET);
+
+  printf("%sQuick start:%s\n", C_BOLD, C_RESET);
+  printf("  mkdbg init --name myboard --port /dev/ttyUSB0\n");
+  printf("  mkdbg attach --port /dev/ttyUSB0\n\n");
+  printf("  %sDocs:%s https://github.com/JialongWang1201/mkdbg\n\n", C_DIM, C_RESET);
+}
+
+/* ── First-run wizard ───────────────────────────────────────────────────── */
+/* Fires only when: argc < 2 AND stdout+stdin are TTYs AND no config found. */
+static int run_first_run_wizard(void)
+{
+  char name[64];
+  char port[64];
+  size_t nl;
+
+  /* banner */
+  printf("\n%s"
+    " _ __ ___  | | __ __| | |__   __ _\n"
+    "| '_ ` _ \\ | |/ // _` | '_ \\ / _` |\n"
+    "| | | | | ||   <| (_| | |_) | (_| |\n"
+    "|_| |_| |_||_|\\_\\__,_|_.__/ \\__, |\n"
+    "                              |___/%s  %s%s%s\n\n",
+    C_CYAN, C_RESET, C_DIM, MKDBG_NATIVE_VERSION, C_RESET);
+
+  printf("  %sNo .mkdbg.toml found — let's set up mkdbg for this repo.%s\n",
+         C_BOLD, C_RESET);
+  printf("  Press Enter to continue, or Ctrl-C to cancel.\n");
+  fflush(stdout);
+  if (fgets(name, sizeof(name), stdin) == NULL) {
+    printf("\n");
+    return 1;
+  }
+
+  /* board name */
+  printf("\n  Board name (e.g. stm32, my-board): ");
+  fflush(stdout);
+  if (fgets(name, sizeof(name), stdin) == NULL) {
+    printf("\n");
+    return 1;
+  }
+  nl = strcspn(name, "\n");
+  name[nl] = '\0';
+  if (name[0] == '\0') {
+    fprintf(stderr, "error: board name is required\n");
+    return 1;
+  }
+
+  /* UART port */
+  printf("  UART port (e.g. /dev/ttyUSB0): ");
+  fflush(stdout);
+  if (fgets(port, sizeof(port), stdin) == NULL) {
+    printf("\n");
+    return 1;
+  }
+  nl = strcspn(port, "\n");
+  port[nl] = '\0';
+  if (port[0] == '\0') {
+    fprintf(stderr, "error: UART port is required\n");
+    return 1;
+  }
+
+  /* call cmd_init with the collected options */
+  InitOptions opts;
+  memset(&opts, 0, sizeof(opts));
+  opts.name = name;
+  opts.port = port;
+
+  printf("\n");
+  int rc = cmd_init(&opts);
+  if (rc == 0) {
+    printf("\n  %s✓  Created .mkdbg.toml%s\n\n", C_CYAN, C_RESET);
+    printf("  Next steps:\n");
+    printf("    mkdbg doctor                     — verify your setup\n");
+    printf("    mkdbg attach --port %s", port);
+    /* pad so the comment aligns reasonably */
+    int portlen = (int)strlen(port);
+    int pad = 30 - portlen;
+    for (int i = 0; i < pad; i++) printf(" ");
+    printf("— read crash report\n\n");
+  }
+  return rc;
 }
 
 int main(int argc, char **argv)
 {
+  g_color = isatty(STDOUT_FILENO);
+
   if (argc == 2 && strcmp(argv[1], "--version") == 0) {
-    printf("mkdbg-native %s\n", MKDBG_NATIVE_VERSION);
+    printf("mkdbg %s\n", MKDBG_NATIVE_VERSION);
     return 0;
   }
-  if (argc < 2) {
+  if (argc < 2 ||
+      strcmp(argv[1], "--help") == 0 ||
+      strcmp(argv[1], "-h") == 0 ||
+      strcmp(argv[1], "help") == 0) {
+    /* First-run wizard when no args, interactive, and no config present */
+    if (argc < 2 && g_color && isatty(STDIN_FILENO)) {
+      char config_path[PATH_MAX];
+      if (find_config_upward(config_path, sizeof(config_path)) != 0) {
+        return run_first_run_wizard();
+      }
+    }
     usage();
-    return 2;
+    return (argc < 2) ? 2 : 0;
   }
 
   if (strcmp(argv[1], "init") == 0) {
