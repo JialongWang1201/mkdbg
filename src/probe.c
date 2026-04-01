@@ -65,6 +65,10 @@ static void u32_to_le_hex(uint32_t v, char out[9])
 /* probe halt: query halt reason via RSP '?' */
 int cmd_probe_halt(const ProbeOptions *opts)
 {
+  if (opts->dry_run) {
+    printf("[dry-run] port=%s  rsp=?\n", opts->port ? opts->port : "<unset>");
+    return 0;
+  }
   int fd = probe_open(opts);
   if (fd < 0) return 1;
 
@@ -92,6 +96,10 @@ int cmd_probe_halt(const ProbeOptions *opts)
 /* probe resume: send RSP 'c' and get the S00 acknowledge */
 int cmd_probe_resume(const ProbeOptions *opts)
 {
+  if (opts->dry_run) {
+    printf("[dry-run] port=%s  rsp=c\n", opts->port ? opts->port : "<unset>");
+    return 0;
+  }
   int fd = probe_open(opts);
   if (fd < 0) return 1;
 
@@ -110,6 +118,10 @@ int cmd_probe_resume(const ProbeOptions *opts)
 /* probe reset: send RSP 'R00' — send-only, MCU resets immediately */
 int cmd_probe_reset(const ProbeOptions *opts)
 {
+  if (opts->dry_run) {
+    printf("[dry-run] port=%s  rsp=R00\n", opts->port ? opts->port : "<unset>");
+    return 0;
+  }
   int fd = probe_open(opts);
   if (fd < 0) return 1;
 
@@ -138,6 +150,12 @@ int cmd_probe_read32(const ProbeOptions *opts)
   if (errno != 0 || *end != '\0') {
     fprintf(stderr, "mkdbg: invalid address: %s\n", opts->address);
     return 1;
+  }
+
+  if (opts->dry_run) {
+    printf("[dry-run] port=%s  rsp=m%x,4\n",
+           opts->port ? opts->port : "<unset>", addr);
+    return 0;
   }
 
   int fd = probe_open(opts);
@@ -183,6 +201,14 @@ int cmd_probe_write32(const ProbeOptions *opts)
   if (errno != 0 || *end != '\0') {
     fprintf(stderr, "mkdbg: invalid value: %s\n", opts->value);
     return 1;
+  }
+
+  if (opts->dry_run) {
+    char hexdata[9];
+    u32_to_le_hex(val, hexdata);
+    printf("[dry-run] port=%s  rsp=M%x,4:%s\n",
+           opts->port ? opts->port : "<unset>", addr, hexdata);
+    return 0;
   }
 
   int fd = probe_open(opts);

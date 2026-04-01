@@ -390,11 +390,9 @@ for item in checks:
         raise SystemExit(f"missing expected watch render text: {item}")
 PY
 
+# attach --port dry-run: wire dump path
 PATH="${BIN_DIR}:${PATH}" "${NATIVE_BIN}" attach --target microkernel \
-  --break main \
-  --command continue \
-  --command bt \
-  --batch \
+  --port /dev/ttyACM0 \
   --dry-run > "${ATTACH_DRY_OUT}"
 python3 - "${ATTACH_DRY_OUT}" <<'PY'
 import sys
@@ -402,20 +400,20 @@ from pathlib import Path
 
 text = Path(sys.argv[1]).read_text(encoding="utf-8")
 checks = [
-    "[mkdbg] cwd=",
-    "[mkdbg] openocd=openocd -f ",
-    "[mkdbg] gdb=arm-none-eabi-gdb ",
-    "MicroKernel_MPU.elf",
-    "-batch",
-    "-ex 'target extended-remote localhost:3333'",
-    "-ex 'break main'",
-    "-ex continue",
-    "-ex bt",
+    "[dry-run] wire-host --dump --port /dev/ttyACM0",
 ]
 for item in checks:
     if item not in text:
         raise SystemExit(f"missing expected attach dry-run output: {item}")
 PY
+
+# attach with scripted flags but no port/attach_cmd → must fail
+if PATH="${BIN_DIR}:${PATH}" "${NATIVE_BIN}" attach --target microkernel \
+    --break main --command continue --batch --dry-run \
+    > /dev/null 2> "${ATTACH_ERR_OUT}"; then
+  echo "mkdbg_native_host_tests: expected attach without port to fail" >&2
+  exit 1
+fi
 
 PATH="${BIN_DIR}:${PATH}" "${NATIVE_BIN}" target add tahoe \
   --path . \
@@ -434,63 +432,67 @@ if needle not in text:
     raise SystemExit(f"missing expected attach error text: {needle}")
 PY
 
-PATH="${BIN_DIR}:${PATH}" "${NATIVE_BIN}" probe halt --target microkernel --dry-run > "${PROBE_HALT_OUT}"
+# probe halt dry-run: wire RSP path
+PATH="${BIN_DIR}:${PATH}" "${NATIVE_BIN}" probe halt --port /dev/ttyACM0 --dry-run > "${PROBE_HALT_OUT}"
 python3 - "${PROBE_HALT_OUT}" <<'PY'
 import sys
 from pathlib import Path
 
 text = Path(sys.argv[1]).read_text(encoding="utf-8")
 checks = [
-    "[mkdbg] cwd=",
-    "[mkdbg] cmd=openocd -f ",
-    "reset halt; shutdown",
+    "[dry-run]",
+    "port=/dev/ttyACM0",
+    "rsp=?",
 ]
 for item in checks:
     if item not in text:
         raise SystemExit(f"missing expected probe halt output: {item}")
 PY
 
-PATH="${BIN_DIR}:${PATH}" "${NATIVE_BIN}" probe flash --target microkernel --dry-run > "${PROBE_FLASH_OUT}"
+# probe flash is removed — must fail
+if PATH="${BIN_DIR}:${PATH}" "${NATIVE_BIN}" probe flash --target microkernel --dry-run \
+    > "${PROBE_FLASH_OUT}" 2>&1; then
+  echo "mkdbg_native_host_tests: expected probe flash to fail (removed command)" >&2
+  exit 1
+fi
 python3 - "${PROBE_FLASH_OUT}" <<'PY'
 import sys
 from pathlib import Path
 
 text = Path(sys.argv[1]).read_text(encoding="utf-8")
-checks = [
-    "[mkdbg] cmd=openocd -f ",
-    "program /",
-    "MicroKernel_MPU.elf",
-    "verify reset exit",
-]
-for item in checks:
-    if item not in text:
-        raise SystemExit(f"missing expected probe flash output: {item}")
+needle = "probe flash removed"
+if needle not in text:
+    raise SystemExit(f"missing expected probe flash error text: {needle}")
 PY
 
-PATH="${BIN_DIR}:${PATH}" "${NATIVE_BIN}" probe read32 --target microkernel --dry-run 0xE000ED28 > "${PROBE_READ32_OUT}"
+# probe read32 dry-run: wire RSP path
+PATH="${BIN_DIR}:${PATH}" "${NATIVE_BIN}" probe read32 --port /dev/ttyACM0 --dry-run 0xE000ED28 > "${PROBE_READ32_OUT}"
 python3 - "${PROBE_READ32_OUT}" <<'PY'
 import sys
 from pathlib import Path
 
 text = Path(sys.argv[1]).read_text(encoding="utf-8")
 checks = [
-    "mdw 0xe000ed28",
-    "shutdown",
+    "[dry-run]",
+    "port=/dev/ttyACM0",
+    "rsp=me000ed28,4",
 ]
 for item in checks:
     if item not in text:
         raise SystemExit(f"missing expected probe read32 output: {item}")
 PY
 
-PATH="${BIN_DIR}:${PATH}" "${NATIVE_BIN}" probe write32 --target microkernel --dry-run 0xE000ED24 0x700 > "${PROBE_WRITE32_OUT}"
+# probe write32 dry-run: wire RSP path
+PATH="${BIN_DIR}:${PATH}" "${NATIVE_BIN}" probe write32 --port /dev/ttyACM0 --dry-run 0xE000ED24 0x700 > "${PROBE_WRITE32_OUT}"
 python3 - "${PROBE_WRITE32_OUT}" <<'PY'
 import sys
 from pathlib import Path
 
 text = Path(sys.argv[1]).read_text(encoding="utf-8")
 checks = [
-    "mww 0xe000ed24 0x00000700",
-    "shutdown",
+    "[dry-run]",
+    "port=/dev/ttyACM0",
+    "rsp=Me000ed24,4:",
 ]
 for item in checks:
     if item not in text:
