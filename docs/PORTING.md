@@ -112,6 +112,45 @@ in under a second.
 
 ---
 
+## Optional — break-in (soft-halt a running MCU)
+
+By default `wire_uart_try_read()` is a weak stub that always returns 0.
+Override it in your BSP to allow the host to halt a running MCU without a
+hardware debug probe:
+
+```c
+/* bsp/uart.c — non-blocking UART read for break-in detection */
+#include "wire.h"
+
+int wire_uart_try_read(uint8_t *byte)
+{
+    if (__HAL_UART_GET_FLAG(&huart2, UART_FLAG_RXNE)) {
+        *byte = (uint8_t)huart2.Instance->RDR;
+        return 1;
+    }
+    return 0;
+}
+```
+
+Then call `wire_poll_break_in()` from your main loop or RTOS idle hook:
+
+```c
+for (;;) {
+    wire_poll_break_in();   /* detects Ctrl-C (0x03) from mkdbg */
+    do_work();
+}
+```
+
+When the host sends Ctrl-C (via `mkdbg debug` → `interrupt` command or `i`
+key in TUI mode), `wire_poll_break_in()` pends DebugMonitor and the CPU
+halts at the next instruction.
+
+Requires `WIRE_LIVE_DEBUG=1` and `wire_enable_debug_monitor()` to have been
+called (done automatically by `wire_init()` when `WIRE_LIVE_DEBUG` is
+defined).
+
+---
+
 ## Optional — seam event ring
 
 seam lets you record what happened *before* the crash.  Feed it events during
@@ -145,6 +184,7 @@ mkdbg seam analyze capture.cfl
 [ ] link deps/wire/src/wire_agent.c into firmware
 [ ] flash and test: trigger a HardFault, run mkdbg attach
 [ ] optional: link deps/seam/src/seam_agent.c, call seam_emit()
+[ ] optional: override wire_uart_try_read(), call wire_poll_break_in() in main loop
 ```
 
 ---
@@ -176,3 +216,14 @@ Baud rate mismatch.  Pass `--baud <rate>` to mkdbg.
 
 `parse_registers` got a short RSP response.  Verify `wire_uart_recv` blocks
 until all bytes arrive (not just one read-and-return).
+
+**Live debug breakpoints not firing on Cortex-M7 or Cortex-M33**
+
+These cores use FPBv2 (Flash Patch and Breakpoint revision 2).  The wire
+agent auto-detects the revision at runtime by reading `FPB_CTRL.REV`
+(bits [31:28]).  FPBv2 requires a KEY bit alongside ENABLE in the same
+write to `FP_CTRL` — a read-modify-write is silently ignored.
+
+`wire_enable_debug_monitor()` handles this automatically.  If breakpoints
+still do not fire, check that `DEMCR.MON_EN` is set and that DebugMonitor
+is not masked by `BASEPRI` or `PRIMASK` on your target.

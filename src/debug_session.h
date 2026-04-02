@@ -46,6 +46,12 @@ int debug_session_continue(DebugSession *s);
  * Used on quit to leave the MCU running. */
 int debug_session_detach(DebugSession *s);
 
+/* Send a Ctrl-C (0x03) break-in byte to the MCU and wait for the halt
+ * stop reply.  The firmware must be polling wire_poll_break_in() from its
+ * main loop for this to work.  Returns WIRE_OK on halt,
+ * WIRE_ERR_TIMEOUT if the MCU does not halt within 60 s. */
+int debug_session_interrupt(DebugSession *s);
+
 /* Execute one instruction; block until DebugMonitor fires.
  * Returns WIRE_OK on halt, WIRE_ERR_TIMEOUT if step takes > 60 s. */
 int debug_session_step(DebugSession *s);
