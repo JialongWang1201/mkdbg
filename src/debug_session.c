@@ -89,6 +89,21 @@ int debug_session_detach(DebugSession *s)
     return rsp_send_packet(s->fd, "c");
 }
 
+int debug_session_interrupt(DebugSession *s)
+{
+    /* Send raw Ctrl-C (0x03) — not an RSP packet, just one byte.
+     * The firmware's wire_poll_break_in() detects it and pends DebugMonitor. */
+    uint8_t ctrlc = 0x03u;
+    ssize_t n = write(s->fd, &ctrlc, 1);
+    if (n != 1) return WIRE_ERR_IO;
+
+    char stop[16];
+    int rc = rsp_wait_for_stop(s->fd, stop, sizeof(stop));
+    if (rc == WIRE_OK)
+        s->last_signal = parse_stop_signal(stop);
+    return rc;
+}
+
 int debug_session_step(DebugSession *s)
 {
     /* 's' has NO immediate reply per RSP spec — send directly, not via

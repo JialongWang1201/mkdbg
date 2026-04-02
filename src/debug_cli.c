@@ -353,6 +353,7 @@ static void print_help(void)
         "  display 0x<addr>         add memory address to display list\n"
         "  undisplay <id>           remove from display list\n"
         "  continue  (c)            resume execution; wait for next halt\n"
+        "  interrupt (int)          send Ctrl-C break-in; halt running MCU\n"
         "  step      (s)            single-step one instruction\n"
         "  regs                     print all CPU registers\n"
         "  mem 0x<addr> [len]       hexdump memory (default 16 bytes, max 256)\n"
@@ -430,6 +431,12 @@ int cmd_debug(const DebugOptions *opts)
             int rc = debug_session_continue(s);
             if (rc == WIRE_OK) print_halt(s);
             else printf("error: continue failed (rc=%d)\n", rc);
+        } else if (strcmp(cmd, "interrupt") == 0 || strcmp(cmd, "int") == 0) {
+            printf("Sending break-in...\n");
+            int rc = debug_session_interrupt(s);
+            if (rc == WIRE_OK) print_halt(s);
+            else printf("error: interrupt timed out (MCU did not halt; "
+                        "check wire_poll_break_in() is called in firmware)\n");
         } else if (strcmp(cmd, "step") == 0 || strcmp(cmd, "s") == 0) {
             int rc = debug_session_step(s);
             if (rc == WIRE_OK) print_halt(s);

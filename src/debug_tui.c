@@ -306,7 +306,7 @@ static void draw_bottom(int y_border, int y_hint, int w)
     bchar(w - 1, y_border, "\xe2\x94\x98");            /* ┘ */
 
     tb_print(0, y_hint, TB_YELLOW, TB_DEFAULT,
-             "[s]tep [c]ontinue [b]reak [d]el [w]atch [m]em [t]cli [q]uit");
+             "[s]tep [c]ontinue [i]nterrupt [b]reak [d]el [w]atch [m]em [t]cli [q]uit");
 }
 
 /* ── Status bar (replaces hint bar during blocking ops) ──────────────────── */
@@ -490,6 +490,19 @@ int debug_tui_run(DebugSession *s, DwarfDBI *dbi)
                 s_regs_ok = 1;
                 s_pc = s_regs[debug_session_pc_reg(s)];
                 tui_update_task(s, dbi);
+            }
+            redraw(s, dbi);
+
+        } else if (ev.ch == 'i') {
+            draw_status(y_hint, w, "Sending break-in...  (waiting for halt)");
+            int rc = debug_session_interrupt(s);
+            if (rc == WIRE_OK && debug_session_read_regs(s, s_regs) == WIRE_OK) {
+                s_regs_ok = 1;
+                s_pc = s_regs[debug_session_pc_reg(s)];
+                tui_update_task(s, dbi);
+            } else if (rc != WIRE_OK) {
+                draw_status(y_hint, w,
+                    "Break-in timed out (check wire_poll_break_in in firmware)");
             }
             redraw(s, dbi);
 
