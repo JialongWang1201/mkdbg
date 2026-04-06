@@ -589,3 +589,48 @@ int dwarf_sym_to_addr(DwarfDBI *dbi, const char *name, uint32_t *addr)
     }
     return -1;
 }
+
+int dwarf_addr_to_sym(DwarfDBI *dbi, uint32_t pc,
+                      const char **out_name, uint32_t *out_offset)
+{
+    if (!dbi || !dbi->sym_data || !out_name || !out_offset) return -1;
+
+    /* Pass 1: exact interval hit — st_value <= pc < st_value + st_size */
+    for (size_t i = 0; i < dbi->sym_count; i++) {
+        const uint8_t *e      = dbi->sym_data + i * 16;
+        uint32_t       st_val = le32(e + 4);
+        uint32_t       st_sz  = le32(e + 8);
+        uint8_t        stt    = e[12] & 0xfu;
+        if (stt != 2u) continue;                          /* STT_FUNC only */
+        if (st_sz == 0) continue;                         /* skip size-0 entries */
+        if (pc >= st_val && pc < st_val + st_sz) {
+            uint32_t st_nm = le32(e + 0);
+            if (st_nm >= (uint32_t)dbi->str_size) continue;
+            *out_name   = (const char *)dbi->str_data + st_nm;
+            *out_offset = pc - st_val;
+            return 0;
+        }
+    }
+
+    /* Pass 2: nearest symbol — largest st_value <= pc among STT_FUNC entries */
+    const uint8_t *best   = NULL;
+    uint32_t       best_v = 0;
+    for (size_t i = 0; i < dbi->sym_count; i++) {
+        const uint8_t *e      = dbi->sym_data + i * 16;
+        uint32_t       st_val = le32(e + 4);
+        uint8_t        stt    = e[12] & 0xfu;
+        if (stt != 2u) continue;                          /* STT_FUNC only */
+        if (st_val > pc) continue;
+        if (best == NULL || st_val > best_v) {
+            best   = e;
+            best_v = st_val;
+        }
+    }
+    if (!best) return -1;
+
+    uint32_t st_nm = le32(best + 0);
+    if (st_nm >= (uint32_t)dbi->str_size) return -1;
+    *out_name   = (const char *)dbi->str_data + st_nm;
+    *out_offset = pc - best_v;
+    return 0;
+}
