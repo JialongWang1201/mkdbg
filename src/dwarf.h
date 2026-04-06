@@ -40,4 +40,19 @@ int dwarf_pc_to_location(DwarfDBI *dbi, uint32_t pc, DwarfLocation *out);
  *         -1  if not found or no symbol table present. */
 int dwarf_sym_to_addr(DwarfDBI *dbi, const char *name, uint32_t *addr);
 
+/* Reverse lookup: given a PC address, find the nearest enclosing function.
+ *
+ * First pass: find a STT_FUNC entry where st_value <= pc < st_value+st_size
+ *             (exact interval hit).
+ * Second pass: if no exact hit, find the STT_FUNC entry with the largest
+ *             st_value that is still <= pc (nearest-symbol semantics).
+ *
+ * out_name   — set to a pointer into .strtab; valid until dwarf_close().
+ * out_offset — set to (pc - st_value); 0 for an exact interval hit at entry.
+ *
+ * Returns  0  on success,
+ *         -1  if no suitable symbol found or no symbol table present. */
+int dwarf_addr_to_sym(DwarfDBI *dbi, uint32_t pc,
+                      const char **out_name, uint32_t *out_offset);
+
 #endif /* DWARF_H */

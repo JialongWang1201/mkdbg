@@ -1,14 +1,25 @@
-/* tests/dwarf_test.c — unit tests for dwarf_sym_to_addr()
+/* tests/dwarf_test.c — unit tests for dwarf_sym_to_addr() and dwarf_addr_to_sym()
  *
  * Builds a minimal ELF32 LE binary in memory (written to a temp file),
- * calls dwarf_open(), then exercises dwarf_sym_to_addr() covering:
+ * calls dwarf_open(), then exercises:
  *
+ * dwarf_sym_to_addr():
  *   1. STT_FUNC symbol "main" found → returns 0, correct address
  *   2. STT_OBJECT symbol "pxCurrentTCB" found → returns 0 (FreeRTOS TCB ptr)
- *   3. Unknown name returns -1
- *   4. NULL dbi returns -1
- *   5. NULL name returns -1
- *   6. NULL addr pointer returns -1
+ *   3. STT_NOTYPE "foo" not found → -1
+ *   4. Unknown name returns -1
+ *   5. NULL dbi returns -1
+ *   6. NULL name returns -1
+ *   7. NULL addr pointer returns -1
+ *
+ * dwarf_addr_to_sym():
+ *   8.  NULL dbi returns -1
+ *   9.  NULL out_name returns -1
+ *   10. exact start of "main" (ADDR_MAIN + 0) → name="main", offset=0
+ *   11. mid-function (ADDR_MAIN + 0x20) → name="main", offset=0x20
+ *   12. last byte (ADDR_MAIN + 63) → name="main", offset=63
+ *   13. past interval end (ADDR_MAIN + 64) → nearest-symbol, offset=64
+ *   14. before all symbols (ADDR_MAIN - 1) → returns -1
  *
  * SPDX-License-Identifier: MIT
  */
@@ -79,7 +90,7 @@ static void pu32(uint8_t *p, uint32_t v)
 #define SYM_PXCURRENT   10u   /* "pxCurrentTCB" */
 
 /* Symbol addresses baked into .symtab */
-#define ADDR_MAIN        0x08001234u
+#define ADDR_MAIN        0x00001000u
 #define ADDR_FOO         0x20000000u
 #define ADDR_PXCURRENT   0x20003F00u
 
@@ -171,8 +182,8 @@ static void build_test_elf(uint8_t *buf)
     e[12] = (info); e[13] = 0; pu16(e+14, 1); } while(0)
 
     /* Entry 0: STN_UNDEF (all zeros — already zeroed by memset) */
-    /* Entry 1: "main" STT_FUNC(2) */
-    SYM(1, SYM_MAIN,      ADDR_MAIN,      0, 0x02);
+    /* Entry 1: "main" STT_FUNC(2), size=64 (needed for addr_to_sym interval tests) */
+    SYM(1, SYM_MAIN,      ADDR_MAIN,     64, 0x02);
     /* Entry 2: "foo" STT_NOTYPE(0) — must be skipped */
     SYM(2, SYM_FOO,       ADDR_FOO,       4, 0x00);
     /* Entry 3: "pxCurrentTCB" STT_OBJECT(1) — FreeRTOS global pointer */
@@ -240,6 +251,51 @@ int main(void)
     addr = 0;
     rc = dwarf_sym_to_addr(dbi, "nonexistent", &addr);
     CHECK(rc == -1,                   "unknown symbol returns -1");
+
+    /* ── dwarf_addr_to_sym: null-guard tests ─────────────────────────── */
+    {
+        const char *sym_name   = NULL;
+        uint32_t    sym_offset = 0;
+        CHECK(dwarf_addr_to_sym(NULL, ADDR_MAIN, &sym_name, &sym_offset) == -1,
+              "addr_to_sym: null dbi");
+        CHECK(dwarf_addr_to_sym(dbi, ADDR_MAIN, NULL, &sym_offset) == -1,
+              "addr_to_sym: null out_name");
+    }
+
+    /* ── dwarf_addr_to_sym: address lookups ──────────────────────────── */
+    {
+        const char *name   = NULL;
+        uint32_t    offset = 0;
+
+        /* T1: exact start of main — pass 1 hit, offset must be 0 */
+        name = NULL; offset = 0xFFFFFFFFu;
+        CHECK(dwarf_addr_to_sym(dbi, ADDR_MAIN, &name, &offset) == 0 &&
+              name != NULL && strcmp(name, "main") == 0 && offset == 0u,
+              "addr_to_sym: exact start");
+
+        /* T2: mid-function (ADDR_MAIN + 0x20) — pass 1 hit */
+        name = NULL; offset = 0xFFFFFFFFu;
+        CHECK(dwarf_addr_to_sym(dbi, ADDR_MAIN + 0x20u, &name, &offset) == 0 &&
+              name != NULL && strcmp(name, "main") == 0 && offset == 0x20u,
+              "addr_to_sym: mid-function");
+
+        /* T3: last byte within interval (ADDR_MAIN + 63) — pass 1 hit */
+        name = NULL; offset = 0xFFFFFFFFu;
+        CHECK(dwarf_addr_to_sym(dbi, ADDR_MAIN + 63u, &name, &offset) == 0 &&
+              name != NULL && strcmp(name, "main") == 0 && offset == 63u,
+              "addr_to_sym: last byte");
+
+        /* T4: one past interval end (ADDR_MAIN + 64) — pass 2 nearest-symbol */
+        name = NULL; offset = 0xFFFFFFFFu;
+        CHECK(dwarf_addr_to_sym(dbi, ADDR_MAIN + 64u, &name, &offset) == 0 &&
+              name != NULL && strcmp(name, "main") == 0 && offset == 64u,
+              "addr_to_sym: past end");
+
+        /* T5: before all symbols (ADDR_MAIN - 1) — both passes fail */
+        name = NULL; offset = 0xFFFFFFFFu;
+        CHECK(dwarf_addr_to_sym(dbi, ADDR_MAIN - 1u, &name, &offset) == -1,
+              "addr_to_sym: before all syms");
+    }
 
     dwarf_close(dbi);
 
