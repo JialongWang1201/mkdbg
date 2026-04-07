@@ -229,3 +229,200 @@ static int decode_16(uint32_t pc, uint16_t hw,
         }
     }
 
+    /* ── LDR literal T1 ─────────────────────────────────────────────── */
+    if ((hw & 0xf800u) == 0x4800u) {   /* bits[15:11]=01001 */
+        uint8_t rt   = (hw >> 8) & 0x7u;
+        uint8_t imm8 = hw & 0xffu;
+        uint32_t addr = ((pc & ~3u) + 4u) + (uint32_t)imm8 * 4u;
+        snprintf(out, out_sz, "ldr%s %s, [pc, #%u]  ; 0x%08x",
+                 cs, s_reg[rt], imm8 * 4u, addr);
+        goto done16;
+    }
+
+    /* ── Load/Store register offset ─────────────────────────────────── */
+    if ((hw & 0xf000u) == 0x5000u) {   /* bits[15:12]=0101 */
+        static const char *ls_reg_ops[8] = {
+            "str","strh","strb","ldrsb","ldr","ldrh","ldrb","ldrsh"
+        };
+        uint8_t op3 = (hw >> 9) & 0x7u;
+        uint8_t rm  = (hw >> 6) & 0x7u;
+        uint8_t rn  = (hw >> 3) & 0x7u;
+        uint8_t rt  = hw & 0x7u;
+        snprintf(out, out_sz, "%s%s %s, [%s, %s]",
+                 ls_reg_ops[op3], cs, s_reg[rt], s_reg[rn], s_reg[rm]);
+        goto done16;
+    }
+
+    /* ── Load/Store word/byte immediate offset ───────────────────────── */
+    if ((hw & 0xe000u) == 0x6000u) {   /* bits[15:13]=011 */
+        uint8_t byte = (hw >> 12) & 1u;
+        uint8_t load = (hw >> 11) & 1u;
+        uint8_t imm5 = (hw >> 6) & 0x1fu;
+        uint8_t rn   = (hw >> 3) & 0x7u;
+        uint8_t rt   = hw & 0x7u;
+        uint32_t off = byte ? (uint32_t)imm5 : (uint32_t)imm5 * 4u;
+        const char *mn = load ? (byte ? "ldrb" : "ldr") : (byte ? "strb" : "str");
+        if (off == 0)
+            snprintf(out, out_sz, "%s%s %s, [%s]", mn, cs, s_reg[rt], s_reg[rn]);
+        else
+            snprintf(out, out_sz, "%s%s %s, [%s, #%u]", mn, cs, s_reg[rt], s_reg[rn], off);
+        goto done16;
+    }
+
+    /* ── Load/Store halfword immediate ──────────────────────────────── */
+    if ((hw & 0xf000u) == 0x8000u) {   /* bits[15:12]=1000 */
+        uint8_t load = (hw >> 11) & 1u;
+        uint8_t imm5 = (hw >> 6) & 0x1fu;
+        uint8_t rn   = (hw >> 3) & 0x7u;
+        uint8_t rt   = hw & 0x7u;
+        uint32_t off = (uint32_t)imm5 * 2u;
+        if (off == 0)
+            snprintf(out, out_sz, "%sh%s %s, [%s]",
+                     load ? "ldr" : "str", cs, s_reg[rt], s_reg[rn]);
+        else
+            snprintf(out, out_sz, "%sh%s %s, [%s, #%u]",
+                     load ? "ldr" : "str", cs, s_reg[rt], s_reg[rn], off);
+        goto done16;
+    }
+
+    /* ── SP-relative Load/Store ──────────────────────────────────────── */
+    if ((hw & 0xf000u) == 0x9000u) {   /* bits[15:12]=1001 */
+        uint8_t load = (hw >> 11) & 1u;
+        uint8_t rt   = (hw >> 8) & 0x7u;
+        uint8_t imm8 = hw & 0xffu;
+        uint32_t off = (uint32_t)imm8 * 4u;
+        if (off == 0)
+            snprintf(out, out_sz, "%s%s %s, [sp]",
+                     load ? "ldr" : "str", cs, s_reg[rt]);
+        else
+            snprintf(out, out_sz, "%s%s %s, [sp, #%u]",
+                     load ? "ldr" : "str", cs, s_reg[rt], off);
+        goto done16;
+    }
+
+    /* ── ADR T1 (ADD PC + imm) ───────────────────────────────────────── */
+    if ((hw & 0xf800u) == 0xa000u) {   /* bits[15:11]=10100 */
+        uint8_t rd   = (hw >> 8) & 0x7u;
+        uint8_t imm8 = hw & 0xffu;
+        uint32_t addr = (pc & ~3u) + 4u + (uint32_t)imm8 * 4u;
+        snprintf(out, out_sz, "adr%s %s, 0x%08x", cs, s_reg[rd], addr);
+        goto done16;
+    }
+
+    /* ── ADD SP-relative (T1/T2) ─────────────────────────────────────── */
+    if ((hw & 0xf800u) == 0xa800u) {   /* bits[15:11]=10101 — ADD T1 */
+        uint8_t rd   = (hw >> 8) & 0x7u;
+        uint8_t imm8 = hw & 0xffu;
+        snprintf(out, out_sz, "add%s %s, sp, #%u", cs, s_reg[rd], imm8 * 4u);
+        goto done16;
+    }
+    if ((hw & 0xff80u) == 0xb000u) {   /* ADD SP T2: 1011 0000 0xxx xxxx */
+        uint8_t imm7 = hw & 0x7fu;
+        snprintf(out, out_sz, "add%s sp, sp, #%u", cs, imm7 * 4u);
+        goto done16;
+    }
+    if ((hw & 0xff80u) == 0xb080u) {   /* SUB SP T1: 1011 0000 1xxx xxxx */
+        uint8_t imm7 = hw & 0x7fu;
+        snprintf(out, out_sz, "sub%s sp, sp, #%u", cs, imm7 * 4u);
+        goto done16;
+    }
+
+    /* ── PUSH T1 ─────────────────────────────────────────────────────── */
+    if ((hw & 0xfe00u) == 0xb400u) {   /* bits[15:9]=1011010 */
+        uint8_t list8 = hw & 0xffu;
+        int lr_bit = (hw >> 8) & 1;
+        char rl[THUMB_DIS_OUT_MAX];
+        fmt_reglist(rl, sizeof(rl), list8, lr_bit ? 14 : -1);  /* lr=14 */
+        snprintf(out, out_sz, "push%s %s", cs, rl);
+        goto done16;
+    }
+
+    /* ── POP T1 ──────────────────────────────────────────────────────── */
+    if ((hw & 0xfe00u) == 0xbc00u) {   /* bits[15:9]=1011110 */
+        uint8_t list8 = hw & 0xffu;
+        int pc_bit = (hw >> 8) & 1;
+        char rl[THUMB_DIS_OUT_MAX];
+        fmt_reglist(rl, sizeof(rl), list8, pc_bit ? 15 : -1);  /* pc=15 */
+        snprintf(out, out_sz, "pop%s %s", cs, rl);
+        goto done16;
+    }
+
+    /* ── BKPT ────────────────────────────────────────────────────────── */
+    if ((hw & 0xff00u) == 0xbe00u) {
+        snprintf(out, out_sz, "bkpt #%u", hw & 0xffu);
+        goto done16;
+    }
+
+    /* ── IT and hints (0xBFxx) ───────────────────────────────────────── */
+    if ((hw & 0xff00u) == 0xbf00u) {
+        uint8_t firstcond = (hw >> 4) & 0xfu;
+        uint8_t mask      = hw & 0xfu;
+        if (mask == 0) {
+            /* Hints: NOP, YIELD, WFE, WFI, SEV */
+            static const char *hints[8] = {
+                "nop","yield","wfe","wfi","sev","hint5","hint6","hint7"
+            };
+            snprintf(out, out_sz, "%s", hints[firstcond & 0x7u]);
+        } else {
+            /* IT instruction: set itstate for subsequent instructions */
+            char itm[8];
+            fmt_it_mnemonic(itm, sizeof(itm), firstcond, mask);
+            snprintf(out, out_sz, "%s %s", itm, s_cc[firstcond]);
+            if (itstate)
+                *itstate = (uint8_t)((firstcond << 4) | mask);
+            return 2;  /* skip the generic IT advance at done16 */
+        }
+        goto done16;
+    }
+
+    /* ── Sign/zero extend ───────────────────────────────────────────── */
+    if ((hw & 0xff00u) == 0xb200u) {
+        static const char *ext_ops[4] = {"sxth","sxtb","uxth","uxtb"};
+        uint8_t op2 = (hw >> 6) & 0x3u;
+        uint8_t rm  = (hw >> 3) & 0x7u;
+        uint8_t rd  = hw & 0x7u;
+        snprintf(out, out_sz, "%s%s %s, %s", ext_ops[op2], cs, s_reg[rd], s_reg[rm]);
+        goto done16;
+    }
+
+    /* ── STM / LDM T1 ────────────────────────────────────────────────── */
+    if ((hw & 0xf000u) == 0xc000u) {
+        uint8_t load  = (hw >> 11) & 1u;
+        uint8_t rn    = (hw >> 8) & 0x7u;
+        uint8_t list8 = hw & 0xffu;
+        char rl[THUMB_DIS_OUT_MAX];
+        fmt_reglist(rl, sizeof(rl), list8, -1);
+        snprintf(out, out_sz, "%smia%s %s!, %s",
+                 load ? "ld" : "st", cs, s_reg[rn], rl);
+        goto done16;
+    }
+
+    /* ── B conditional T1 ───────────────────────────────────────────── */
+    if ((hw & 0xf000u) == 0xd000u) {
+        uint8_t cond = (hw >> 8) & 0xfu;
+        if (cond == 0xe) { snprintf(out, out_sz, "udf #%u", hw & 0xffu); goto done16; }
+        if (cond == 0xf) { snprintf(out, out_sz, "svc #%u", hw & 0xffu); goto done16; }
+        int8_t  off8  = (int8_t)(hw & 0xffu);
+        uint32_t dest = pc + 4u + (int32_t)off8 * 2;
+        snprintf(out, out_sz, "b%s 0x%08x", s_cc[cond], dest);
+        goto done16;
+    }
+
+    /* ── B unconditional T2 ─────────────────────────────────────────── */
+    if ((hw & 0xf800u) == 0xe000u) {
+        int32_t off11 = sext(hw & 0x7ffu, 11);
+        uint32_t dest = pc + 4u + (uint32_t)(off11 * 2);
+        snprintf(out, out_sz, "b%s 0x%08x", cs, dest);
+        goto done16;
+    }
+
+    /* Unknown 16-bit */
+    snprintf(out, out_sz, "<unknown 0x%04x>", hw);
+    if (itstate && (*itstate & 0x0f)) it_advance(itstate);
+    return 2;
+
+done16:
+    if (itstate && (*itstate & 0x0f)) it_advance(itstate);
+    return 2;
+}
+
