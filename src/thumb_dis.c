@@ -3,6 +3,7 @@
  * Coverage:
  *   P1: MOV/MOVW/MOVT, LDR/STR (T1-T4), PUSH/POP, BL/BLX, B (all conds)
  *   P2: ADD/SUB/MUL, CMP/TST/AND/ORR/EOR/BIC/MVN, LSL/LSR/ASR, IT block
+ *   P3: VLDR/VSTR, VADD/VSUB/VMUL (F32), VMOV (imm/reg/core↔FPU), VCVT
  *   Unknown encodings → "<unknown 0xXXXX>" (never crashes)
  *
  * SPDX-License-Identifier: MIT
@@ -640,6 +641,148 @@ static int decode_32(uint32_t pc, uint16_t hw1, uint16_t hw2,
         case 4: snprintf(out, out_sz, "teq%s.w %s, %s", cs, s_reg[rn], s_reg[rm]); goto done32;
         case 8: snprintf(out, out_sz, "cmn%s.w %s, %s", cs, s_reg[rn], s_reg[rm]); goto done32;
         case 13: snprintf(out, out_sz, "cmp%s.w %s, %s", cs, s_reg[rn], s_reg[rm]); goto done32;
+        }
+    }
+
+    /* ── VFP/FPU (Cortex-M4 FPv4-SP-D16) ────────────────────────────────── */
+    /*
+     * All VFP SP instructions have hw1[15:8] in [0xEC..0xEF] and
+     * hw2[11:8]=0b1010 (cp10, single-precision).
+     *
+     * Register encoding (5-bit SP regs s0..s31):
+     *   Sd = Vd*2+D  where Vd=hw2[15:12], D=hw1[6]
+     *   Sn = Vn*2+N  where Vn=hw1[3:0],   N=hw2[7]
+     *   Sm = Vm*2+M  where Vm=hw2[3:0],    M=hw2[5]
+     *
+     * Instruction groups distinguished by hw1[15:8]:
+     *   0xED: VLDR / VSTR
+     *   0xEE, hw2&0x0F70==0x0A10: VMOV (core↔VFP) or VMRS
+     *   0xEE, otherwise:          VFP data-processing
+     *
+     * Within VFP data-processing, op_nD removes the D bit from hw1[7:4]:
+     *   op_nD = ((hw1>>5)&4) | ((hw1>>4)&3)
+     *     2 → VMUL
+     *     3 → VADD (hw2[6]=0) / VSUB (hw2[6]=1)
+     *     4 → VDIV
+     *     7 → miscellaneous unary/convert (distinguished by hw1[3:0] and hw2[7])
+     *
+     * Verified against arm-none-eabi-as output (ARMv7E-M, FPv4-SP-D16).
+     */
+    if ((hw1 & 0xff00u) >= 0xec00u && (hw2 & 0x0f00u) == 0x0a00u) {
+        uint8_t  D  = (hw1 >> 6) & 1u;
+        uint8_t  Vn = hw1 & 0xfu;
+        uint8_t  Vd = (hw2 >> 12) & 0xfu;
+        uint8_t  N  = (hw2 >> 7) & 1u;   /* also used as op2 (signed) in VCVT */
+        uint8_t  Vm = hw2 & 0xfu;
+        uint8_t  M  = (hw2 >> 5) & 1u;
+        unsigned sd = (unsigned)Vd * 2u + D;
+        unsigned sn = (unsigned)Vn * 2u + N;
+        unsigned sm = (unsigned)Vm * 2u + M;
+
+        /* ── VLDR / VSTR (hw1[15:8]=0xED) ──────────────────────────────── */
+        if ((hw1 & 0xff00u) == 0xed00u) {
+            uint8_t  load = (hw1 >> 4) & 1u;   /* L=1 → VLDR, L=0 → VSTR */
+            uint8_t  U    = (hw1 >> 7) & 1u;   /* U=1 → add offset */
+            uint8_t  Rn   = hw1 & 0xfu;
+            uint32_t off  = (uint32_t)(hw2 & 0xffu) * 4u;
+            const char *base = (Rn == 15) ? "pc" : s_reg[Rn];
+            if (off == 0)
+                snprintf(out, out_sz, "%s%s s%u, [%s]",
+                         load ? "vldr" : "vstr", cs, sd, base);
+            else if (U)
+                snprintf(out, out_sz, "%s%s s%u, [%s, #%u]",
+                         load ? "vldr" : "vstr", cs, sd, base, off);
+            else
+                snprintf(out, out_sz, "%s%s s%u, [%s, #-%u]",
+                         load ? "vldr" : "vstr", cs, sd, base, off);
+            goto done32;
+        }
+
+        if ((hw1 & 0xff00u) == 0xee00u) {
+            /* ── VMOV core↔VFP / VMRS (fixed hw2 pattern) ─────────────── */
+            /* hw2[6:4]=001 (with N free at hw2[7]):  hw2 & 0x0F70 == 0x0A10 */
+            if ((hw2 & 0x0f70u) == 0x0a10u) {
+                uint8_t op47 = (hw1 >> 4) & 0xfu;   /* hw1[7:4] */
+                uint8_t Rt   = (hw2 >> 12) & 0xfu;
+                if (op47 == 0xfu) {
+                    /* VMRS: hw1[7:4]=1111 (FPSCR system register) */
+                    if (Rt == 15)
+                        snprintf(out, out_sz, "vmrs%s APSR_nzcv, fpscr", cs);
+                    else
+                        snprintf(out, out_sz, "vmrs%s %s, fpscr", cs, s_reg[Rt]);
+                } else {
+                    /* VMOV between ARM core reg and SP VFP reg.
+                     * L=hw1[4]: 0=ARM→VFP, 1=VFP→ARM.
+                     * Sn = Vn*2+N where Vn=hw1[3:0], N=hw2[7]. */
+                    if ((hw1 >> 4) & 1u)
+                        snprintf(out, out_sz, "vmov%s %s, s%u", cs, s_reg[Rt], sn);
+                    else
+                        snprintf(out, out_sz, "vmov%s s%u, %s", cs, sn, s_reg[Rt]);
+                }
+                goto done32;
+            }
+
+            /* ── VFP data-processing ─────────────────────────────────────── */
+            /* op_nD: hw1[7] in bit2, hw1[5:4] in bits[1:0] — removes D(hw1[6]) */
+            uint8_t op_nD = (uint8_t)(((hw1 >> 5) & 4u) | ((hw1 >> 4) & 3u));
+            switch (op_nD) {
+            case 0x2:   /* VMUL */
+                snprintf(out, out_sz, "vmul%s.f32 s%u, s%u, s%u", cs, sd, sn, sm);
+                goto done32;
+            case 0x3:   /* VADD / VSUB distinguished by hw2[6] */
+                if (hw2 & 0x40u)
+                    snprintf(out, out_sz, "vsub%s.f32 s%u, s%u, s%u", cs, sd, sn, sm);
+                else
+                    snprintf(out, out_sz, "vadd%s.f32 s%u, s%u, s%u", cs, sd, sn, sm);
+                goto done32;
+            case 0x4:   /* VDIV */
+                snprintf(out, out_sz, "vdiv%s.f32 s%u, s%u, s%u", cs, sd, sn, sm);
+                goto done32;
+            case 0x7: { /* miscellaneous: VMOV, VABS, VNEG, VSQRT, VCVT, VCMP */
+                uint8_t vn_lo = hw1 & 0xfu;   /* hw1[3:0] selects sub-operation */
+                if (vn_lo & 0x8u) {
+                    /* VCVT: hw1[3]=1. hw1[2]=to_int, hw1[0]=signed(to_int case)
+                     * hw2[7](=N)=signed for to_float case. */
+                    if (hw1 & 0x4u) {
+                        /* to integer (float→int) */
+                        const char *sfx = (hw1 & 0x1u) ? "s" : "u";
+                        snprintf(out, out_sz, "vcvt%s.%s32.f32 s%u, s%u",
+                                 cs, sfx, sd, sm);
+                    } else {
+                        /* to float (int→float): signed/unsigned from hw2[7] */
+                        const char *sfx = N ? "s" : "u";
+                        snprintf(out, out_sz, "vcvt%s.f32.%s32 s%u, s%u",
+                                 cs, sfx, sd, sm);
+                    }
+                    goto done32;
+                }
+                if (vn_lo == 0x4u) {
+                    /* VCMP */
+                    snprintf(out, out_sz, "vcmp%s.f32 s%u, s%u", cs, sd, sm);
+                    goto done32;
+                }
+                /* VMOV.F32 / VABS / VNEG / VSQRT: distinguished by vn_lo and hw2[7] */
+                if (vn_lo == 0x0u) {
+                    /* hw2[7]=0 → VMOV.F32;  hw2[7]=1 → VABS */
+                    if (N)
+                        snprintf(out, out_sz, "vabs%s.f32 s%u, s%u", cs, sd, sm);
+                    else
+                        snprintf(out, out_sz, "vmov%s.f32 s%u, s%u", cs, sd, sm);
+                    goto done32;
+                }
+                if (vn_lo == 0x1u) {
+                    /* hw2[7]=0 → VNEG;  hw2[7]=1 → VSQRT */
+                    if (N)
+                        snprintf(out, out_sz, "vsqrt%s.f32 s%u, s%u", cs, sd, sm);
+                    else
+                        snprintf(out, out_sz, "vneg%s.f32 s%u, s%u", cs, sd, sm);
+                    goto done32;
+                }
+                break;
+            }
+            default:
+                break;
+            }
         }
     }
 

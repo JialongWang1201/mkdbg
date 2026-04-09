@@ -8,8 +8,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* Minimum output buffer size guaranteed to hold any P1/P2 mnemonic. */
-#define THUMB_DIS_OUT_MAX 64
+/* Minimum output buffer size guaranteed to hold any P1/P2/P3 mnemonic. */
+#define THUMB_DIS_OUT_MAX 96
 
 /* Disassemble one Thumb/Thumb-2 instruction.
  *

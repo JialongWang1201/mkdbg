@@ -10,6 +10,8 @@
  *       STM/LDM, IT block instruction
  *   32-bit: BL, MOVW, MOVT, ADDW, SUBW, LDR.W, STR.W, ADD.W, B.W, BEQ.W
  *   IT state machine: multi-step ITTEE block (4 instructions, 2T+2E)
+ *   P3 FPU: VLDR/VSTR, VADD/VSUB/VMUL/VDIV, VMOV.F32, VABS/VNEG/VSQRT,
+ *           VCVT (f32↔s32/u32), VCMP, VMOV(core↔VFP), VMRS
  *   Edge cases: buf_len < 2, buf_len == 2 for 32-bit prefix, unknown encoding,
  *               itstate=NULL degraded mode
  *
@@ -584,6 +586,91 @@ static void test_pc_relative(void)
           "adr r0, 0x00001008", 2); }
 }
 
+/* ── P3 FPU instruction tests ─────────────────────────────────────────────── */
+/* All byte sequences verified with arm-none-eabi-as (FPv4-SP-D16, Thumb). */
+
+static void test_fpu(void)
+{
+    printf("\n--- P3 FPU instructions ---\n");
+
+    /* ── VLDR / VSTR ─────────────────────────────────────────────────────── */
+    { const uint8_t b[] = {0x90,0xED,0x00,0x0A}; /* ed90 0a00 */
+      chk("vldr s0, [r0]", 0x1000, b, 4, NULL, "vldr s0, [r0]", 4); }
+
+    { const uint8_t b[] = {0x90,0xED,0x02,0x0A}; /* ed90 0a02 */
+      chk("vldr s0, [r0, #8]", 0x1000, b, 4, NULL, "vldr s0, [r0, #8]", 4); }
+
+    { const uint8_t b[] = {0x10,0xED,0x02,0x0A}; /* ed10 0a02 */
+      chk("vldr s0, [r0, #-8]", 0x1000, b, 4, NULL, "vldr s0, [r0, #-8]", 4); }
+
+    { const uint8_t b[] = {0x80,0xED,0x00,0x0A}; /* ed80 0a00 */
+      chk("vstr s0, [r0]", 0x1000, b, 4, NULL, "vstr s0, [r0]", 4); }
+
+    { const uint8_t b[] = {0x81,0xED,0x01,0x1A}; /* ed81 1a01 */
+      chk("vstr s2, [r1, #4]", 0x1000, b, 4, NULL, "vstr s2, [r1, #4]", 4); }
+
+    /* ── VADD / VSUB / VMUL / VDIV ──────────────────────────────────────── */
+    { const uint8_t b[] = {0x31,0xEE,0x02,0x0A}; /* ee31 0a02 */
+      chk("vadd.f32 s0, s2, s4", 0x1000, b, 4, NULL, "vadd.f32 s0, s2, s4", 4); }
+
+    { const uint8_t b[] = {0x31,0xEE,0x42,0x0A}; /* ee31 0a42 */
+      chk("vsub.f32 s0, s2, s4", 0x1000, b, 4, NULL, "vsub.f32 s0, s2, s4", 4); }
+
+    { const uint8_t b[] = {0x21,0xEE,0x02,0x0A}; /* ee21 0a02 */
+      chk("vmul.f32 s0, s2, s4", 0x1000, b, 4, NULL, "vmul.f32 s0, s2, s4", 4); }
+
+    { const uint8_t b[] = {0x81,0xEE,0x02,0x0A}; /* ee81 0a02 */
+      chk("vdiv.f32 s0, s2, s4", 0x1000, b, 4, NULL, "vdiv.f32 s0, s2, s4", 4); }
+
+    /* ── VMOV.F32 (register copy) ───────────────────────────────────────── */
+    { const uint8_t b[] = {0xB0,0xEE,0x41,0x0A}; /* eeb0 0a41 */
+      chk("vmov.f32 s0, s2", 0x1000, b, 4, NULL, "vmov.f32 s0, s2", 4); }
+
+    { const uint8_t b[] = {0xF0,0xEE,0x41,0x0A}; /* eef0 0a41 */
+      chk("vmov.f32 s1, s2", 0x1000, b, 4, NULL, "vmov.f32 s1, s2", 4); }
+
+    /* ── VABS / VNEG / VSQRT ────────────────────────────────────────────── */
+    { const uint8_t b[] = {0xB0,0xEE,0xC1,0x0A}; /* eeb0 0ac1 */
+      chk("vabs.f32 s0, s2", 0x1000, b, 4, NULL, "vabs.f32 s0, s2", 4); }
+
+    { const uint8_t b[] = {0xB1,0xEE,0x41,0x0A}; /* eeb1 0a41 */
+      chk("vneg.f32 s0, s2", 0x1000, b, 4, NULL, "vneg.f32 s0, s2", 4); }
+
+    { const uint8_t b[] = {0xB1,0xEE,0xC1,0x0A}; /* eeb1 0ac1 */
+      chk("vsqrt.f32 s0, s2", 0x1000, b, 4, NULL, "vsqrt.f32 s0, s2", 4); }
+
+    /* ── VCVT ────────────────────────────────────────────────────────────── */
+    { const uint8_t b[] = {0xB8,0xEE,0xC1,0x0A}; /* eeb8 0ac1 */
+      chk("vcvt.f32.s32 s0, s2", 0x1000, b, 4, NULL, "vcvt.f32.s32 s0, s2", 4); }
+
+    { const uint8_t b[] = {0xB8,0xEE,0x40,0x0A}; /* eeb8 0a40 */
+      chk("vcvt.f32.u32 s0, s0", 0x1000, b, 4, NULL, "vcvt.f32.u32 s0, s0", 4); }
+
+    { const uint8_t b[] = {0xBD,0xEE,0xC1,0x0A}; /* eebd 0ac1 */
+      chk("vcvt.s32.f32 s0, s2", 0x1000, b, 4, NULL, "vcvt.s32.f32 s0, s2", 4); }
+
+    { const uint8_t b[] = {0xBC,0xEE,0xC1,0x0A}; /* eebc 0ac1 */
+      chk("vcvt.u32.f32 s0, s2", 0x1000, b, 4, NULL, "vcvt.u32.f32 s0, s2", 4); }
+
+    /* ── VCMP ────────────────────────────────────────────────────────────── */
+    { const uint8_t b[] = {0xB4,0xEE,0x41,0x0A}; /* eeb4 0a41 */
+      chk("vcmp.f32 s0, s2", 0x1000, b, 4, NULL, "vcmp.f32 s0, s2", 4); }
+
+    /* ── VMOV core↔VFP ──────────────────────────────────────────────────── */
+    { const uint8_t b[] = {0x00,0xEE,0x10,0x0A}; /* ee00 0a10 */
+      chk("vmov s0, r0", 0x1000, b, 4, NULL, "vmov s0, r0", 4); }
+
+    { const uint8_t b[] = {0x11,0xEE,0x10,0x1A}; /* ee11 1a10 */
+      chk("vmov r1, s2", 0x1000, b, 4, NULL, "vmov r1, s2", 4); }
+
+    /* ── VMRS ────────────────────────────────────────────────────────────── */
+    { const uint8_t b[] = {0xF1,0xEE,0x10,0xFA}; /* eef1 fa10 */
+      chk("vmrs APSR_nzcv, fpscr", 0x1000, b, 4, NULL, "vmrs APSR_nzcv, fpscr", 4); }
+
+    { const uint8_t b[] = {0xF1,0xEE,0x10,0x0A}; /* eef1 0a10 */
+      chk("vmrs r0, fpscr", 0x1000, b, 4, NULL, "vmrs r0, fpscr", 4); }
+}
+
 /* ── main ─────────────────────────────────────────────────────────────────── */
 
 int main(void)
@@ -593,6 +680,7 @@ int main(void)
     test_it();
     test_edge();
     test_pc_relative();
+    test_fpu();
 
     printf("\n%d/%d passed\n", s_pass, s_run);
     return (s_pass == s_run) ? 0 : 1;
