@@ -79,6 +79,130 @@ static void bchar(int x, int y, const char *utf8)
     tb_print(x, y, TB_DEFAULT, TB_DEFAULT, utf8);
 }
 
+/* ── Syntax highlighting ─────────────────────────────────────────────────── */
+
+/* Sorted C99 keyword table — must stay alphabetically ordered for bsearch. */
+static const char *s_kw[] = {
+    "auto","break","case","char","const","continue","default","do",
+    "double","else","enum","extern","float","for","goto","if",
+    "inline","int","long","register","restrict","return","short","signed",
+    "sizeof","static","struct","switch","typedef","union","unsigned",
+    "void","volatile","while",
+};
+#define S_KW_N (int)(sizeof(s_kw)/sizeof(s_kw[0]))
+
+static int hl_kw_cmp(const void *a, const void *b)
+{
+    return strcmp(*(const char *const *)a, *(const char *const *)b);
+}
+
+static int hl_is_boundary(char c)
+{
+    return !c || !!strchr(" \t.,;:!?(){}[]=+-*/%&|^<>~@#\"'\\", c);
+}
+
+/*
+ * Fill colors[0..len) with a termbox2 fg attribute per byte of `line`.
+ * ASCII-safe: multi-byte UTF-8 continuation bytes get TB_DEFAULT and are
+ * forwarded to tb_print inside the same run as their leading byte.
+ */
+static void hl_colorise(const char *line, int len, uintattr_t *colors)
+{
+    typedef enum { ST_NORMAL, ST_STR, ST_CHAR, ST_CLINE, ST_CBLOCK } St;
+    St st = ST_NORMAL;
+
+    for (int i = 0; i < len; ) {
+        char c = line[i];
+
+        /* ── line comment ── */
+        if (st == ST_CLINE) { colors[i++] = TB_BLUE; continue; }
+
+        /* ── block comment ── */
+        if (st == ST_CBLOCK) {
+            colors[i] = TB_BLUE;
+            if (c == '*' && i + 1 < len && line[i + 1] == '/') {
+                colors[i + 1] = TB_BLUE;
+                i += 2; st = ST_NORMAL;
+            } else { i++; }
+            continue;
+        }
+
+        /* ── string literal ── */
+        if (st == ST_STR) {
+            colors[i] = TB_GREEN;
+            if (c == '\\' && i + 1 < len) { colors[i + 1] = TB_GREEN; i += 2; }
+            else { if (c == '"') st = ST_NORMAL; i++; }
+            continue;
+        }
+
+        /* ── char literal ── */
+        if (st == ST_CHAR) {
+            colors[i] = TB_GREEN;
+            if (c == '\\' && i + 1 < len) { colors[i + 1] = TB_GREEN; i += 2; }
+            else { if (c == '\'') st = ST_NORMAL; i++; }
+            continue;
+        }
+
+        /* ── ST_NORMAL ── */
+        if (c == '/' && i + 1 < len && line[i + 1] == '/') {
+            colors[i] = colors[i + 1] = TB_BLUE;
+            i += 2; st = ST_CLINE; continue;
+        }
+        if (c == '/' && i + 1 < len && line[i + 1] == '*') {
+            colors[i] = colors[i + 1] = TB_BLUE;
+            i += 2; st = ST_CBLOCK; continue;
+        }
+        if (c == '"')  { colors[i++] = TB_GREEN; st = ST_STR;  continue; }
+        if (c == '\'') { colors[i++] = TB_GREEN; st = ST_CHAR; continue; }
+
+        /* keyword detection: only at a token boundary */
+        if (i == 0 || hl_is_boundary(line[i - 1])) {
+            int j = i;
+            while (j < len && !hl_is_boundary(line[j])) j++;
+            int tlen = j - i;
+            if (tlen >= 2 && tlen <= 8) {
+                char tmp[9];
+                memcpy(tmp, line + i, tlen); tmp[tlen] = '\0';
+                const char *key = tmp;
+                if (bsearch(&key, s_kw, S_KW_N, sizeof(char *), hl_kw_cmp)) {
+                    for (int k = i; k < j; k++)
+                        colors[k] = TB_CYAN | TB_BOLD;
+                    i = j; continue;
+                }
+            }
+        }
+        colors[i++] = TB_DEFAULT;
+    }
+}
+
+/*
+ * Render one source-line with syntax colouring starting at terminal cell
+ * (x0, y).  max_w is the maximum number of columns to consume.
+ * Colours are applied per byte; for ASCII source this equals per cell.
+ */
+static void highlight_line(int x0, int y, const char *line, int max_w)
+{
+    int len = (int)strlen(line);
+    if (len > max_w) len = max_w;
+    if (len <= 0) return;
+
+    uintattr_t colors[512];
+    hl_colorise(line, len, colors);
+
+    /* Print consecutive runs of the same colour with a single tb_print. */
+    char tmp[513];
+    int i = 0;
+    while (i < len) {
+        uintattr_t fg = colors[i];
+        int j = i;
+        while (j < len && colors[j] == fg) j++;
+        int rlen = j - i;
+        memcpy(tmp, line + i, rlen); tmp[rlen] = '\0';
+        tb_print(x0 + i, y, fg, TB_DEFAULT, tmp);
+        i = j;
+    }
+}
+
 /* ── Source panel ────────────────────────────────────────────────────────── */
 
 static void draw_source(int y0, int src_h, int w, DwarfDBI *dbi, uint32_t pc)
@@ -147,16 +271,24 @@ static void draw_source(int y0, int src_h, int w, DwarfDBI *dbi, uint32_t pc)
             buf[content_w < (int)sizeof(buf)-1 ? content_w : (int)sizeof(buf)-1] = '\0';
 
             int is_pc = (lineno == loc.line);
-            uintattr_t fg = is_pc ? (TB_WHITE | TB_BOLD) : TB_DEFAULT;
-            uintattr_t bg = is_pc ? TB_BLUE : TB_DEFAULT;
 
             bchar(0, y0 + row, "\xe2\x94\x82");            /* │ */
-            if (is_pc)
-                tb_printf(1, y0 + row, fg, bg, " \xe2\x96\xba%4d: %-*s",
-                          lineno, content_w, buf);          /* ► */
-            else
-                tb_printf(1, y0 + row, fg, bg, "  %4d: %-*s",
+            if (is_pc) {
+                /* PC line: solid blue highlight, no syntax colour */
+                tb_printf(1, y0 + row, TB_WHITE | TB_BOLD, TB_BLUE,
+                          " \xe2\x96\xba%4d: %-*s",        /* ► */
                           lineno, content_w, buf);
+            } else {
+                /* Prefix: "  NNNN: " (8 cells) */
+                tb_printf(1, y0 + row, TB_DEFAULT, TB_DEFAULT,
+                          "  %4d: ", lineno);
+                /* Content with syntax highlighting (x=9) */
+                highlight_line(9, y0 + row, buf, content_w);
+                /* Pad remainder to content_w */
+                int blen = (int)strlen(buf);
+                for (int p = blen; p < content_w; p++)
+                    tb_print(9 + p, y0 + row, TB_DEFAULT, TB_DEFAULT, " ");
+            }
             bchar(w - 1, y0 + row, "\xe2\x94\x82");        /* │ */
             lineno++;
             row++;
