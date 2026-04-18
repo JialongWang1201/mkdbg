@@ -33,11 +33,16 @@
 
 /* ── Layout ──────────────────────────────────────────────────────────────── */
 
-#define REG_ROWS     8    /* register panel content rows (r0-r12 + sp/lr/pc/xpsr) */
-#define CTX_HALF     4    /* source context: ±4 lines around PC = 9 visible lines */
-#define ASM_ROWS     5    /* Asm panel visible instruction rows */
-#define MAX_DISPLAY  4
-#define TUI_WP_MAX   4
+#define REG_ROWS          8   /* register panel content rows */
+#define CTX_HALF          4   /* source context: ±4 lines around PC */
+#define ASM_ROWS          5   /* Asm panel visible instruction rows */
+#define BACKTRACE_ROWS    4   /* Backtrace panel visible frame rows */
+#define MAX_DISPLAY       4
+#define TUI_WP_MAX        4
+
+/* SRAM bounds for fp-chain validity (STM32F4/F7; edit for other targets). */
+#define BACKTRACE_SRAM_BASE 0x20000000u
+#define BACKTRACE_SRAM_END  0x20080000u   /* 512 KB */
 
 /* ── Local state ─────────────────────────────────────────────────────────── */
 
@@ -475,6 +480,112 @@ static void draw_reg_bp(int y0, int h, int w, DebugSession *s, DwarfDBI *dbi, ui
     (void)pc;
 }
 
+/* ── Backtrace panel ─────────────────────────────────────────────────────── */
+
+/*
+ * Walk the fp chain (Thumb -fno-omit-frame-pointer convention: r7 as fp).
+ * Frame #0 is the current PC with no fp walk.
+ * Frame N (N≥1): fp→[0]=prev_fp, fp→[4]=lr; pc_caller = (lr & ~1) - 4.
+ *
+ * fp is rejected (chain stops) when:
+ *   - misaligned (fp & 3)
+ *   - outside SRAM bounds
+ *   - lr looks like EXC_RETURN (Cortex-M exception frame)
+ */
+#define BT_MAX_FRAMES 16
+
+static void draw_backtrace(int y0, int h, int w,
+                            DebugSession *s, DwarfDBI *dbi,
+                            uint32_t pc, uint32_t fp)
+{
+    /* Separator */
+    bchar(0, y0, "\xe2\x94\x9c");                          /* ├ */
+    tb_print(1, y0, TB_CYAN, TB_DEFAULT, "\xe2\x94\x80 Backtrace ");
+    hline(y0, 13, w - 1);
+    bchar(w - 1, y0, "\xe2\x94\xa4");                      /* ┤ */
+
+    /* Collect frames */
+    struct { uint32_t pc; } frames[BT_MAX_FRAMES];
+    int nframes = 0;
+
+    /* Frame 0: current PC */
+    frames[nframes++].pc = pc;
+
+    /* Frame 1+: walk fp chain */
+    uint32_t cur_fp = fp;
+    int fp_valid = (cur_fp >= BACKTRACE_SRAM_BASE &&
+                    cur_fp <  BACKTRACE_SRAM_END  &&
+                    (cur_fp & 3u) == 0);
+    while (fp_valid && nframes < BT_MAX_FRAMES) {
+        uint8_t buf[8];
+        if (debug_session_read_mem(s, cur_fp, 8, buf) != WIRE_OK) break;
+
+        uint32_t prev_fp = (uint32_t)buf[0] | (uint32_t)buf[1]<<8
+                         | (uint32_t)buf[2]<<16 | (uint32_t)buf[3]<<24;
+        uint32_t lr      = (uint32_t)buf[4] | (uint32_t)buf[5]<<8
+                         | (uint32_t)buf[6]<<16 | (uint32_t)buf[7]<<24;
+
+        /* EXC_RETURN: lr top nibble = 0xF → halted inside an exception */
+        if ((lr & 0xF0000000u) == 0xF0000000u) break;
+
+        /* BL/BLX is a 4-byte wide instruction; lr points past it, subtract 4 */
+        uint32_t caller_pc = (lr & ~1u) - 4u;
+        frames[nframes++].pc = caller_pc;
+
+        fp_valid = (prev_fp >= BACKTRACE_SRAM_BASE &&
+                    prev_fp <  BACKTRACE_SRAM_END  &&
+                    (prev_fp & 3u) == 0 &&
+                    prev_fp > cur_fp);   /* fp chain must grow toward higher addr */
+        cur_fp = prev_fp;
+    }
+
+    int fp_ok = (debug_session_fp_reg(s) >= 0);
+
+    /* Render rows */
+    int content_w = w - 2;
+    for (int r = 0; r < h; r++) {
+        bchar(0, y0 + 1 + r, "\xe2\x94\x82");              /* │ */
+
+        if (!fp_ok && r == 0) {
+            tb_printf(2, y0 + 1 + r, TB_YELLOW, TB_DEFAULT,
+                      "[fp backtracing not supported for this arch]");
+        } else if (r == 0 && debug_session_fp_reg(s) >= 0 &&
+                   !(fp >= BACKTRACE_SRAM_BASE && fp < BACKTRACE_SRAM_END)) {
+            tb_printf(2, y0 + 1 + r, TB_YELLOW, TB_DEFAULT,
+                      "[fp chain invalid — rebuild with -fno-omit-frame-pointer]");
+        } else if (r < nframes) {
+            uint32_t fpc = frames[r].pc;
+            char sym_buf[64] = "";
+            char loc_buf[64] = "";
+
+            if (dbi) {
+                const char *sym_name; uint32_t off;
+                if (dwarf_addr_to_sym(dbi, fpc, &sym_name, &off) == 0) {
+                    if (off)
+                        snprintf(sym_buf, sizeof(sym_buf), "%s+%u", sym_name, off);
+                    else
+                        snprintf(sym_buf, sizeof(sym_buf), "%s", sym_name);
+                }
+                DwarfLocation loc;
+                if (dwarf_pc_to_location(dbi, fpc, &loc) == 0) {
+                    const char *base = strrchr(loc.file, '/');
+                    base = base ? base + 1 : loc.file;
+                    snprintf(loc_buf, sizeof(loc_buf), "%s:%d", base, loc.line);
+                }
+            }
+
+            if (sym_buf[0])
+                tb_printf(1, y0 + 1 + r, TB_DEFAULT, TB_DEFAULT,
+                          " #%-2d  %-30s  %s", r, sym_buf, loc_buf);
+            else
+                tb_printf(1, y0 + 1 + r, TB_DEFAULT, TB_DEFAULT,
+                          " #%-2d  0x%08x  %s", r, fpc, loc_buf[0] ? loc_buf : "[no source]");
+        }
+        (void)content_w;
+        bchar(w - 1, y0 + 1 + r, "\xe2\x94\x82");          /* │ */
+    }
+}
+
 /* ── Memory Watch panel ──────────────────────────────────────────────────── */
 
 static void draw_mem(int y0, int h, int w, DebugSession *s)
@@ -541,22 +652,30 @@ static void redraw(DebugSession *s, DwarfDBI *dbi)
     tb_clear();
 
     /* Compute panel heights */
-    int mem_h  = (s_ndisplay > 0) ? s_ndisplay : 1;
-    int asm_h  = ASM_ROWS;
-    int src_h  = h - REG_ROWS - mem_h - asm_h - 7;
-    /* 7 = top_border(1) + asm_sep(1) + reg_sep(1) + mem_sep(1) + bottom_border(1) + hint(1) + 1 spare */
+    int mem_h = (s_ndisplay > 0) ? s_ndisplay : 1;
+    int asm_h = ASM_ROWS;
+    int bt_h  = (debug_session_fp_reg(s) >= 0) ? BACKTRACE_ROWS : 0;
+    int src_h = h - REG_ROWS - mem_h - asm_h - bt_h - (7 + (bt_h ? 1 : 0));
+    /* overhead = top_border(1) + asm_sep(1) + reg_sep(1) + [bt_sep(1)] + mem_sep(1)
+     *          + bottom_border(1) + hint(1) + 1 spare */
     if (src_h < 3) src_h = 3;
 
     int y_src_top  = 0;
     int y_asm_sep  = y_src_top + 1 + src_h;
     int y_reg_sep  = y_asm_sep + 1 + asm_h;
-    int y_mem_sep  = y_reg_sep + 1 + REG_ROWS;
+    int y_bt_sep   = y_reg_sep + 1 + REG_ROWS;
+    int y_mem_sep  = bt_h ? (y_bt_sep + 1 + bt_h) : y_bt_sep;
     int y_bottom   = y_mem_sep + 1 + mem_h;
     int y_hint     = y_bottom + 1;
+
+    int fp_reg = debug_session_fp_reg(s);
+    uint32_t fp_val = (s_regs_ok && fp_reg >= 0) ? s_regs[fp_reg] : 0;
 
     draw_source(y_src_top, src_h, w, dbi, s_pc);
     draw_asm(y_asm_sep, asm_h, w, s, s_pc, s_asm_scroll);
     draw_reg_bp(y_reg_sep, REG_ROWS, w, s, dbi, s_pc);
+    if (bt_h)
+        draw_backtrace(y_bt_sep, bt_h, w, s, dbi, s_pc, fp_val);
     draw_mem(y_mem_sep, mem_h, w, s);
     draw_bottom(y_bottom, y_hint, w);
 

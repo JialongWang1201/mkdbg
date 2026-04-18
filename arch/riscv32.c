@@ -28,7 +28,9 @@ static int riscv32_decode_crash(const uint8_t *raw, size_t len,
 static const ArchLiveDebug riscv32_live = {
     .nregs      = 33,
     .pc_reg_idx = 32,
-    .sp_reg_idx = 2,   /* x2 = sp */
+    .sp_reg_idx = 2,    /* x2 = sp */
+    .fp_reg_idx = -1,   /* no standard fp-chain convention for RISC-V bare-metal */
+    .has_thumb2 = 0,
     .reg_names  = {
         "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7",
         "x8", "x9", "x10","x11","x12","x13","x14","x15",
