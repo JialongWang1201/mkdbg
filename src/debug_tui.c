@@ -224,13 +224,13 @@ static void highlight_line(int x0, int y, const char *line, int max_w)
 
 /* ── Source panel ────────────────────────────────────────────────────────── */
 
-static void draw_source(int y0, int src_h, int w, DwarfDBI *dbi, uint32_t pc)
+static void draw_source(int x0, int y0, int src_h, int w, DwarfDBI *dbi, uint32_t pc)
 {
     DwarfLocation loc;
     int has_loc = (dbi != NULL && dwarf_pc_to_location(dbi, pc, &loc) == 0);
 
     /* Top border */
-    bchar(0, y0, "\xe2\x94\x8c");           /* ┌ */
+    bchar(x0, y0, "\xe2\x94\x8c");           /* ┌ */
     if (has_loc) {
         const char *base = strrchr(loc.file, '/');
         base = base ? base + 1 : loc.file;
@@ -243,29 +243,29 @@ static void draw_source(int y0, int src_h, int w, DwarfDBI *dbi, uint32_t pc)
         else
             hdr_len = snprintf(hdr, sizeof(hdr), "\xe2\x94\x80 Source: %s:%d ",
                                base, loc.line);
-        tb_print(1, y0, TB_CYAN, TB_DEFAULT, hdr);
-        hline(y0, 1 + hdr_len, w - 1);
+        tb_print(x0 + 1, y0, TB_CYAN, TB_DEFAULT, hdr);
+        hline(y0, x0 + 1 + hdr_len, x0 + w - 1);
     } else {
-        tb_print(1, y0, TB_CYAN, TB_DEFAULT,
+        tb_print(x0 + 1, y0, TB_CYAN, TB_DEFAULT,
                  "\xe2\x94\x80 Source ");
-        hline(y0, 9, w - 1);
+        hline(y0, x0 + 9, x0 + w - 1);
     }
-    bchar(w - 1, y0, "\xe2\x94\x90");       /* ┐ */
+    bchar(x0 + w - 1, y0, "\xe2\x94\x90");   /* ┐ */
 
     /* Content */
     if (!has_loc) {
         int mid = y0 + 1 + src_h / 2;
         for (int r = 1; r <= src_h; r++) {
-            bchar(0, y0 + r, "\xe2\x94\x82");        /* │ */
+            bchar(x0, y0 + r, "\xe2\x94\x82");        /* │ */
             if (y0 + r == mid) {
                 if (dbi)
-                    tb_printf(2, y0 + r, TB_DEFAULT, TB_DEFAULT,
+                    tb_printf(x0 + 2, y0 + r, TB_DEFAULT, TB_DEFAULT,
                               "[no source for pc=0x%08x]", pc);
                 else
-                    tb_print(2, y0 + r, TB_DEFAULT, TB_DEFAULT,
+                    tb_print(x0 + 2, y0 + r, TB_DEFAULT, TB_DEFAULT,
                              "[pass --elf firmware.elf for source context]");
             }
-            bchar(w - 1, y0 + r, "\xe2\x94\x82");    /* │ */
+            bchar(x0 + w - 1, y0 + r, "\xe2\x94\x82");    /* │ */
         }
         return;
     }
@@ -281,7 +281,7 @@ static void draw_source(int y0, int src_h, int w, DwarfDBI *dbi, uint32_t pc)
         while (lineno < start && fgets(buf, sizeof(buf), f))
             lineno++;
 
-        int content_w = w - 10;  /* ─ │(1) + prefix(6) + space(1) + content + │(1) */
+        int content_w = w - 10;  /* │(1) + prefix(8) + content + │(1) */
         if (content_w < 1) content_w = 1;
 
         while (row <= src_h && fgets(buf, sizeof(buf), f)) {
@@ -291,32 +291,28 @@ static void draw_source(int y0, int src_h, int w, DwarfDBI *dbi, uint32_t pc)
 
             int is_pc = (lineno == loc.line);
 
-            bchar(0, y0 + row, "\xe2\x94\x82");            /* │ */
+            bchar(x0, y0 + row, "\xe2\x94\x82");            /* │ */
             if (is_pc) {
-                /* PC line: solid blue highlight, no syntax colour */
-                tb_printf(1, y0 + row, TB_WHITE | TB_BOLD, TB_BLUE,
-                          " \xe2\x96\xba%4d: %-*s",        /* ► */
+                tb_printf(x0 + 1, y0 + row, TB_WHITE | TB_BOLD, TB_BLUE,
+                          " \xe2\x96\xba%4d: %-*s",         /* ► */
                           lineno, content_w, buf);
             } else {
-                /* Prefix: "  NNNN: " (8 cells) */
-                tb_printf(1, y0 + row, TB_DEFAULT, TB_DEFAULT,
+                tb_printf(x0 + 1, y0 + row, TB_DEFAULT, TB_DEFAULT,
                           "  %4d: ", lineno);
-                /* Content with syntax highlighting (x=9) */
-                highlight_line(9, y0 + row, buf, content_w);
-                /* Pad remainder to content_w */
+                highlight_line(x0 + 9, y0 + row, buf, content_w);
                 int blen = (int)strlen(buf);
                 for (int p = blen; p < content_w; p++)
-                    tb_print(9 + p, y0 + row, TB_DEFAULT, TB_DEFAULT, " ");
+                    tb_print(x0 + 9 + p, y0 + row, TB_DEFAULT, TB_DEFAULT, " ");
             }
-            bchar(w - 1, y0 + row, "\xe2\x94\x82");        /* │ */
+            bchar(x0 + w - 1, y0 + row, "\xe2\x94\x82");   /* │ */
             lineno++;
             row++;
         }
         fclose(f);
     }
     while (row <= src_h) {
-        bchar(0, y0 + row, "\xe2\x94\x82");
-        bchar(w - 1, y0 + row, "\xe2\x94\x82");
+        bchar(x0,         y0 + row, "\xe2\x94\x82");
+        bchar(x0 + w - 1, y0 + row, "\xe2\x94\x82");
         row++;
     }
 }
@@ -333,14 +329,14 @@ static void draw_source(int y0, int src_h, int w, DwarfDBI *dbi, uint32_t pc)
 #define ASM_BUF_MAX   (ASM_LOOK_BACK + ASM_LOOK_FWD + 4)
 #define ASM_INSN_MAX   80
 
-static void draw_asm(int y0, int h, int w,
+static void draw_asm(int x0, int y0, int h, int w,
                      DebugSession *s, uint32_t pc, int scroll_offset)
 {
     /* Separator */
-    bchar(0, y0, "\xe2\x94\x9c");                          /* ├ */
-    tb_print(1, y0, TB_CYAN, TB_DEFAULT, "\xe2\x94\x80 Asm ");
-    hline(y0, 7, w - 1);
-    bchar(w - 1, y0, "\xe2\x94\xa4");                      /* ┤ */
+    bchar(x0, y0, "\xe2\x94\x9c");                          /* ├ */
+    tb_print(x0 + 1, y0, TB_CYAN, TB_DEFAULT, "\xe2\x94\x80 Asm ");
+    hline(y0, x0 + 7, x0 + w - 1);
+    bchar(x0 + w - 1, y0, "\xe2\x94\xa4");                  /* ┤ */
 
     /* Collect decoded instructions */
     static struct { uint32_t addr; char text[THUMB_DIS_OUT_MAX]; }
@@ -379,22 +375,22 @@ static void draw_asm(int y0, int h, int w,
     if (content_w < 1) content_w = 1;
 
     for (int r = 0; r < h; r++) {
-        bchar(0, y0 + 1 + r, "\xe2\x94\x82");              /* │ */
+        bchar(x0, y0 + 1 + r, "\xe2\x94\x82");              /* │ */
         int idx = start + r;
         if (idx >= 0 && idx < n_insns) {
             int is_pc = (insns[idx].addr == (pc & ~1u));
             uintattr_t fg = is_pc ? (TB_WHITE | TB_BOLD) : TB_DEFAULT;
             uintattr_t bg = is_pc ? TB_BLUE : TB_DEFAULT;
             if (is_pc)
-                tb_printf(1, y0 + 1 + r, fg, bg,
-                          " \xe2\x96\xba 0x%08x  %-*s",   /* ► */
+                tb_printf(x0 + 1, y0 + 1 + r, fg, bg,
+                          " \xe2\x96\xba 0x%08x  %-*s",     /* ► */
                           insns[idx].addr, content_w, insns[idx].text);
             else
-                tb_printf(1, y0 + 1 + r, fg, bg,
+                tb_printf(x0 + 1, y0 + 1 + r, fg, bg,
                           "   0x%08x  %-*s",
                           insns[idx].addr, content_w, insns[idx].text);
         }
-        bchar(w - 1, y0 + 1 + r, "\xe2\x94\x82");          /* │ */
+        bchar(x0 + w - 1, y0 + 1 + r, "\xe2\x94\x82");     /* │ */
     }
 }
 
@@ -412,26 +408,26 @@ static const int REG_PAIRS[REG_ROWS][2] = {
     {6, 16},   /* r6, xpsr */
 };
 
-static void draw_reg_bp(int y0, int h, int w, DebugSession *s, DwarfDBI *dbi, uint32_t pc)
+static void draw_reg_bp(int x0, int y0, int h, int w, DebugSession *s, DwarfDBI *dbi, uint32_t pc)
 {
-    int split = w / 2;  /* column of the vertical separator ─ │ ─ */
+    int split = x0 + w / 2;  /* absolute column of internal Registers|BP separator */
 
     /* Separator row (top) */
-    bchar(0, y0, "\xe2\x94\x9c");                     /* ├ */
-    tb_print(1, y0, TB_CYAN, TB_DEFAULT,
+    bchar(x0, y0, "\xe2\x94\x9c");                     /* ├ */
+    tb_print(x0 + 1, y0, TB_CYAN, TB_DEFAULT,
              "\xe2\x94\x80 Registers ");
-    hline(y0, 12, split);
-    bchar(split, y0, "\xe2\x94\xac");                  /* ┬ */
+    hline(y0, x0 + 12, split);
+    bchar(split, y0, "\xe2\x94\xac");                   /* ┬ */
     tb_print(split + 1, y0, TB_CYAN, TB_DEFAULT,
              "\xe2\x94\x80 BP / WP ");
-    hline(y0, split + 14, w - 1);
-    bchar(w - 1, y0, "\xe2\x94\xa4");                  /* ┤ */
+    hline(y0, split + 14, x0 + w - 1);
+    bchar(x0 + w - 1, y0, "\xe2\x94\xa4");             /* ┤ */
 
-    int reg_content_w = split - 3;   /* usable chars in left half */
-    int bp_content_w  = w - split - 3;
+    int reg_content_w = split - x0 - 3;  /* usable chars in left half */
+    int bp_content_w  = x0 + w - split - 3;
 
     for (int r = 0; r < h; r++) {
-        bchar(0, y0 + 1 + r, "\xe2\x94\x82");          /* │ left edge */
+        bchar(x0, y0 + 1 + r, "\xe2\x94\x82");          /* │ left edge */
 
         /* ── Registers (left half) ── */
         int nregs = debug_session_nregs(s);
@@ -455,13 +451,13 @@ static void draw_reg_bp(int y0, int h, int w, DebugSession *s, DwarfDBI *dbi, ui
                 snprintf(rbuf, sizeof(rbuf), "%-6s 0x%08x",
                          debug_session_reg_name(s, ri), s_regs[ri]);
             else rbuf[0] = '\0';
-            tb_printf(1, y0 + 1 + r, lfg, lbg, " %-*s", reg_content_w / 2, lbuf);
-            tb_printf(1 + reg_content_w / 2 + 1, y0 + 1 + r, rfg, rbg,
+            tb_printf(x0 + 1, y0 + 1 + r, lfg, lbg, " %-*s", reg_content_w / 2, lbuf);
+            tb_printf(x0 + 1 + reg_content_w / 2 + 1, y0 + 1 + r, rfg, rbg,
                       " %-*s", reg_content_w / 2, rbuf);
         }
         (void)reg_content_w; (void)nregs; (void)pc_reg;
 
-        bchar(split, y0 + 1 + r, "\xe2\x94\x82");      /* │ middle */
+        bchar(split, y0 + 1 + r, "\xe2\x94\x82");       /* │ middle */
 
         /* ── Breakpoints + Watchpoints (right half) ── */
         if (r < s_nbp) {
@@ -487,7 +483,7 @@ static void draw_reg_bp(int y0, int h, int w, DebugSession *s, DwarfDBI *dbi, ui
         }
         (void)bp_content_w;
 
-        bchar(w - 1, y0 + 1 + r, "\xe2\x94\x82");      /* │ right edge */
+        bchar(x0 + w - 1, y0 + 1 + r, "\xe2\x94\x82"); /* │ right edge */
     }
 
     /* Drain extra rows if panel is taller than REG_ROWS */
@@ -508,15 +504,15 @@ static void draw_reg_bp(int y0, int h, int w, DebugSession *s, DwarfDBI *dbi, ui
  */
 #define BT_MAX_FRAMES 16
 
-static void draw_backtrace(int y0, int h, int w,
+static void draw_backtrace(int x0, int y0, int h, int w,
                             DebugSession *s, DwarfDBI *dbi,
                             uint32_t pc, uint32_t fp)
 {
     /* Separator */
-    bchar(0, y0, "\xe2\x94\x9c");                          /* ├ */
-    tb_print(1, y0, TB_CYAN, TB_DEFAULT, "\xe2\x94\x80 Backtrace ");
-    hline(y0, 13, w - 1);
-    bchar(w - 1, y0, "\xe2\x94\xa4");                      /* ┤ */
+    bchar(x0, y0, "\xe2\x94\x9c");                          /* ├ */
+    tb_print(x0 + 1, y0, TB_CYAN, TB_DEFAULT, "\xe2\x94\x80 Backtrace ");
+    hline(y0, x0 + 13, x0 + w - 1);
+    bchar(x0 + w - 1, y0, "\xe2\x94\xa4");                  /* ┤ */
 
     /* Collect frames */
     struct { uint32_t pc; } frames[BT_MAX_FRAMES];
@@ -556,16 +552,15 @@ static void draw_backtrace(int y0, int h, int w,
     int fp_ok = (debug_session_fp_reg(s) >= 0);
 
     /* Render rows */
-    int content_w = w - 2;
     for (int r = 0; r < h; r++) {
-        bchar(0, y0 + 1 + r, "\xe2\x94\x82");              /* │ */
+        bchar(x0, y0 + 1 + r, "\xe2\x94\x82");              /* │ */
 
         if (!fp_ok && r == 0) {
-            tb_printf(2, y0 + 1 + r, TB_YELLOW, TB_DEFAULT,
+            tb_printf(x0 + 2, y0 + 1 + r, TB_YELLOW, TB_DEFAULT,
                       "[fp backtracing not supported for this arch]");
         } else if (r == 0 && debug_session_fp_reg(s) >= 0 &&
                    !(fp >= BACKTRACE_SRAM_BASE && fp < BACKTRACE_SRAM_END)) {
-            tb_printf(2, y0 + 1 + r, TB_YELLOW, TB_DEFAULT,
+            tb_printf(x0 + 2, y0 + 1 + r, TB_YELLOW, TB_DEFAULT,
                       "[fp chain invalid — rebuild with -fno-omit-frame-pointer]");
         } else if (r < nframes) {
             uint32_t fpc = frames[r].pc;
@@ -589,14 +584,13 @@ static void draw_backtrace(int y0, int h, int w,
             }
 
             if (sym_buf[0])
-                tb_printf(1, y0 + 1 + r, TB_DEFAULT, TB_DEFAULT,
+                tb_printf(x0 + 1, y0 + 1 + r, TB_DEFAULT, TB_DEFAULT,
                           " #%-2d  %-30s  %s", r, sym_buf, loc_buf);
             else
-                tb_printf(1, y0 + 1 + r, TB_DEFAULT, TB_DEFAULT,
+                tb_printf(x0 + 1, y0 + 1 + r, TB_DEFAULT, TB_DEFAULT,
                           " #%-2d  0x%08x  %s", r, fpc, loc_buf[0] ? loc_buf : "[no source]");
         }
-        (void)content_w;
-        bchar(w - 1, y0 + 1 + r, "\xe2\x94\x82");          /* │ */
+        bchar(x0 + w - 1, y0 + 1 + r, "\xe2\x94\x82");     /* │ */
     }
 }
 
@@ -735,22 +729,22 @@ static int tui_read_tasks(DebugSession *s, DwarfDBI *dbi,
     return n;
 }
 
-static void draw_tasks(int y0, int h, int w, DebugSession *s, DwarfDBI *dbi)
+static void draw_tasks(int x0, int y0, int h, int w, DebugSession *s, DwarfDBI *dbi)
 {
     /* Separator */
-    bchar(0, y0, "\xe2\x94\x9c");                          /* ├ */
-    tb_print(1, y0, TB_CYAN, TB_DEFAULT, "\xe2\x94\x80 Tasks ");
-    hline(y0, 9, w - 1);
-    bchar(w - 1, y0, "\xe2\x94\xa4");                      /* ┤ */
+    bchar(x0, y0, "\xe2\x94\x9c");                          /* ├ */
+    tb_print(x0 + 1, y0, TB_CYAN, TB_DEFAULT, "\xe2\x94\x80 Tasks ");
+    hline(y0, x0 + 9, x0 + w - 1);
+    bchar(x0 + w - 1, y0, "\xe2\x94\xa4");                  /* ┤ */
 
     static TuiTask tasks[TUI_TASK_MAX];
     int n = tui_read_tasks(s, dbi, tasks, TUI_TASK_MAX);
 
     for (int r = 0; r < h; r++) {
-        bchar(0, y0 + 1 + r, "\xe2\x94\x82");              /* │ */
+        bchar(x0, y0 + 1 + r, "\xe2\x94\x82");              /* │ */
 
         if (n == 0 && r == 0) {
-            tb_print(2, y0 + 1 + r, TB_YELLOW, TB_DEFAULT,
+            tb_print(x0 + 2, y0 + 1 + r, TB_YELLOW, TB_DEFAULT,
                      "[pxReadyTasksLists not found — FreeRTOS ELF required]");
         } else if (r < n) {
             static const char *const state_str[] = { "RUN", "RDY", "DLY", "SUS" };
@@ -758,32 +752,32 @@ static void draw_tasks(int y0, int h, int w, DebugSession *s, DwarfDBI *dbi)
                 TB_GREEN | TB_BOLD, TB_DEFAULT, TB_YELLOW, TB_BLUE
             };
             uintattr_t sfg = state_fg[tasks[r].state];
-            tb_printf(1, y0 + 1 + r, TB_DEFAULT, TB_DEFAULT,
+            tb_printf(x0 + 1, y0 + 1 + r, TB_DEFAULT, TB_DEFAULT,
                       " %-16s", tasks[r].name);
-            tb_printf(18, y0 + 1 + r, sfg, TB_DEFAULT,
+            tb_printf(x0 + 18, y0 + 1 + r, sfg, TB_DEFAULT,
                       "%s", state_str[tasks[r].state]);
-            tb_printf(22, y0 + 1 + r, TB_DEFAULT, TB_DEFAULT,
+            tb_printf(x0 + 22, y0 + 1 + r, TB_DEFAULT, TB_DEFAULT,
                       "  pri=%-2u  tcb=0x%08x",
                       tasks[r].priority, tasks[r].tcb);
         }
 
-        bchar(w - 1, y0 + 1 + r, "\xe2\x94\x82");          /* │ */
+        bchar(x0 + w - 1, y0 + 1 + r, "\xe2\x94\x82");     /* │ */
     }
 }
 
 /* ── Memory Watch panel ──────────────────────────────────────────────────── */
 
-static void draw_mem(int y0, int h, int w, DebugSession *s)
+static void draw_mem(int x0, int y0, int h, int w, DebugSession *s)
 {
     /* Separator */
-    bchar(0, y0, "\xe2\x94\x9c");                      /* ├ */
-    tb_print(1, y0, TB_CYAN, TB_DEFAULT,
+    bchar(x0, y0, "\xe2\x94\x9c");                      /* ├ */
+    tb_print(x0 + 1, y0, TB_CYAN, TB_DEFAULT,
              "\xe2\x94\x80 Memory Watch ");
-    hline(y0, 15, w - 1);
-    bchar(w - 1, y0, "\xe2\x94\xa4");                  /* ┤ */
+    hline(y0, x0 + 15, x0 + w - 1);
+    bchar(x0 + w - 1, y0, "\xe2\x94\xa4");              /* ┤ */
 
     for (int r = 0; r < h; r++) {
-        bchar(0, y0 + 1 + r, "\xe2\x94\x82");
+        bchar(x0, y0 + 1 + r, "\xe2\x94\x82");
         if (r < s_ndisplay) {
             uint8_t buf[16];
             if (debug_session_read_mem(s, s_display[r], 16, buf) == WIRE_OK) {
@@ -794,14 +788,14 @@ static void draw_mem(int y0, int h, int w, DebugSession *s)
                     pos += snprintf(hex + pos, sizeof(hex) - pos, "%02x ", buf[i]);
                 }
                 hex[pos > 0 ? pos - 1 : 0] = '\0';
-                tb_printf(2, y0 + 1 + r, TB_DEFAULT, TB_DEFAULT,
+                tb_printf(x0 + 2, y0 + 1 + r, TB_DEFAULT, TB_DEFAULT,
                           "0x%08x: %s", s_display[r], hex);
             } else {
-                tb_printf(2, y0 + 1 + r, TB_RED, TB_DEFAULT,
+                tb_printf(x0 + 2, y0 + 1 + r, TB_RED, TB_DEFAULT,
                           "0x%08x: <read error>", s_display[r]);
             }
         }
-        bchar(w - 1, y0 + 1 + r, "\xe2\x94\x82");
+        bchar(x0 + w - 1, y0 + 1 + r, "\xe2\x94\x82");
     }
 }
 
@@ -859,13 +853,49 @@ static void redraw(DebugSession *s, DwarfDBI *dbi)
     int fp_reg = debug_session_fp_reg(s);
     uint32_t fp_val = (s_regs_ok && fp_reg >= 0) ? s_regs[fp_reg] : 0;
 
-    draw_source(y_src_top, src_h, w, dbi, s_pc);
-    draw_asm(y_asm_sep, asm_h, w, s, s_pc, s_asm_scroll);
-    draw_reg_bp(y_reg_sep, REG_ROWS, w, s, dbi, s_pc);
-    if (bt_h)
-        draw_backtrace(y_bt_sep, bt_h, w, s, dbi, s_pc, fp_val);
-    draw_tasks(y_tsk_sep, tsk_h, w, s, dbi);
-    draw_mem(y_mem_sep, mem_h, w, s);
+    int use_dual = (w >= 120);
+
+    if (!use_dual) {
+        /* ── Single-column layout ── */
+        draw_source(0, y_src_top, src_h, w, dbi, s_pc);
+        draw_asm(0, y_asm_sep, asm_h, w, s, s_pc, s_asm_scroll);
+        draw_reg_bp(0, y_reg_sep, REG_ROWS, w, s, dbi, s_pc);
+        if (bt_h)
+            draw_backtrace(0, y_bt_sep, bt_h, w, s, dbi, s_pc, fp_val);
+        draw_tasks(0, y_tsk_sep, tsk_h, w, s, dbi);
+        draw_mem(0, y_mem_sep, mem_h, w, s);
+    } else {
+        /* ── Dual-column layout (w >= 120) ── */
+        int lw = w * 6 / 10;   /* left column width  (right border at x=lw) */
+        int rw = w - lw;        /* right column width (left border at x=lw)  */
+
+        /* Band 1: Source (left) | Asm (right) */
+        draw_source(0,   y_src_top, src_h, lw + 1, dbi, s_pc);
+        draw_asm(lw,     y_src_top, src_h, rw,     s, s_pc, s_asm_scroll);
+
+        /* Band 2: Registers+BP (left) | Backtrace (right) */
+        draw_reg_bp(0,   y_reg_sep, REG_ROWS, lw + 1, s, dbi, s_pc);
+        draw_backtrace(lw, y_reg_sep, REG_ROWS, rw, s, dbi, s_pc, fp_val);
+
+        /* Band 3: MemWatch (left) | Tasks (right) */
+        draw_mem(0,    y_mem_sep, mem_h, lw + 1, s);
+        draw_tasks(lw, y_mem_sep, mem_h, rw,     s, dbi);
+
+        /* Junction fixups: replace ┤/├ corners at column lw with ┬/┼/┴ */
+        bchar(lw, y_src_top,  "\xe2\x94\xac");  /* ┬ top */
+        bchar(lw, y_reg_sep,  "\xe2\x94\xbc");  /* ┼ between band1 and band2 */
+        bchar(lw, y_mem_sep,  "\xe2\x94\xbc");  /* ┼ between band2 and band3 */
+        bchar(lw, y_bottom,   "\xe2\x94\xb4");  /* ┴ bottom */
+
+        /* In dual mode asm panel spans full height of band 1, no separate sep row */
+        (void)y_asm_sep;
+        if (bt_h) {
+            /* Backtrace is merged into band 2 in dual mode; skip separate sep row */
+            (void)y_bt_sep;
+            (void)y_tsk_sep;
+        }
+    }
+
     draw_bottom(y_bottom, y_hint, w);
 
     tb_present();
