@@ -245,6 +245,8 @@ static const ArchLiveDebug cortex_m_live = {
     .nregs       = 17,
     .pc_reg_idx  = 15,
     .sp_reg_idx  = 13,
+    .fp_reg_idx  = 7,   /* r7 — Thumb frame pointer (-fno-omit-frame-pointer) */
+    .has_thumb2  = 1,
     .reg_names   = {
         "r0","r1","r2","r3","r4","r5","r6","r7",
         "r8","r9","r10","r11","r12","sp","lr","pc","xpsr",

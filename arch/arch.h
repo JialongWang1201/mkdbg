@@ -27,6 +27,8 @@ typedef struct {
     int         nregs;         /* total registers returned by RSP 'g' command */
     int         pc_reg_idx;    /* index of PC in the register array */
     int         sp_reg_idx;    /* index of SP in the register array */
+    int         fp_reg_idx;    /* frame-pointer register index; -1 if fp backtracing unsupported */
+    int         has_thumb2;    /* non-zero if Thumb2 Asm panel is supported */
     const char *reg_names[64]; /* register names, NULL-terminated */
 } ArchLiveDebug;
 

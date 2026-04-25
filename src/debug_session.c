@@ -264,6 +264,11 @@ int debug_session_pc_reg(const DebugSession *s)
     return s ? s->arch->live_debug->pc_reg_idx : 0;
 }
 
+int debug_session_fp_reg(const DebugSession *s)
+{
+    return s ? s->arch->live_debug->fp_reg_idx : -1;
+}
+
 /* ── Status ──────────────────────────────────────────────────────────────── */
 
 int debug_session_last_signal(const DebugSession *s)

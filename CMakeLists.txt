@@ -71,6 +71,7 @@ add_executable(mkdbg-native
   src/debug_session.c
   src/debug_cli.c
   src/debug_tui.c
+  src/thumb_dis.c
   src/dwarf.c
   src/termbox2_impl.c
   arch/cortex_m.c

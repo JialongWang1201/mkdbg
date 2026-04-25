@@ -24,6 +24,7 @@
 
 #include "debug_tui.h"
 #include "mkdbg.h"
+#include "thumb_dis.h"
 #include "wire_host.h"
 
 #include <stdio.h>
@@ -32,10 +33,30 @@
 
 /* ── Layout ──────────────────────────────────────────────────────────────── */
 
-#define REG_ROWS     8    /* register panel content rows (r0-r12 + sp/lr/pc/xpsr) */
-#define CTX_HALF     4    /* source context: ±4 lines around PC = 9 visible lines */
-#define MAX_DISPLAY  4
-#define TUI_WP_MAX   4
+#define REG_ROWS          8   /* register panel content rows */
+#define CTX_HALF          4   /* source context: ±4 lines around PC */
+#define ASM_ROWS          5   /* Asm panel visible instruction rows */
+#define BACKTRACE_ROWS    4   /* Backtrace panel visible frame rows */
+#define TASKS_ROWS        4   /* FreeRTOS Tasks panel visible rows */
+#define MAX_DISPLAY       4
+#define TUI_WP_MAX        4
+
+/* SRAM bounds for fp-chain validity (STM32F4/F7; edit for other targets). */
+#define BACKTRACE_SRAM_BASE 0x20000000u
+#define BACKTRACE_SRAM_END  0x20080000u   /* 512 KB */
+
+/* FreeRTOS 10.x struct offsets (no configUSE_LIST_DATA_INTEGRITY_CHECK_BYTES).
+ * Edit these if your FreeRTOS config differs. */
+#define FR_LIST_COUNT       0   /* List_t.uxNumberOfItems */
+#define FR_LIST_FIRST      12   /* List_t.xListEnd.pxNext (first item or sentinel) */
+#define FR_LIST_SENTINEL    8   /* offset of xListEnd within List_t (sentinel addr) */
+#define FR_LIST_SIZE       20   /* sizeof(List_t) */
+#define FR_ITEM_NEXT        4   /* ListItem_t.pxNext */
+#define FR_ITEM_OWNER      12   /* ListItem_t.pvOwner (→ TCB) */
+#define FR_TCB_NAME        52   /* TCB_t.pcTaskName */
+#define FR_TCB_PRIORITY    56   /* TCB_t.uxPriority */
+#define FR_MAX_PRIORITIES  32   /* configMAX_PRIORITIES */
+#define FR_TASK_NAME_LEN   16
 
 /* ── Local state ─────────────────────────────────────────────────────────── */
 
@@ -60,6 +81,7 @@ static int      s_regs_ok  = 0;
 static char     s_task_name[32] = "";
 
 static uint32_t s_pc       = 0;
+static int      s_asm_scroll = 0;  /* Asm panel scroll offset (instructions) */
 
 /* ── Box-drawing helpers ─────────────────────────────────────────────────── */
 
@@ -74,6 +96,130 @@ static void hline(int y, int x0, int x1)
 static void bchar(int x, int y, const char *utf8)
 {
     tb_print(x, y, TB_DEFAULT, TB_DEFAULT, utf8);
+}
+
+/* ── Syntax highlighting ─────────────────────────────────────────────────── */
+
+/* Sorted C99 keyword table — must stay alphabetically ordered for bsearch. */
+static const char *s_kw[] = {
+    "auto","break","case","char","const","continue","default","do",
+    "double","else","enum","extern","float","for","goto","if",
+    "inline","int","long","register","restrict","return","short","signed",
+    "sizeof","static","struct","switch","typedef","union","unsigned",
+    "void","volatile","while",
+};
+#define S_KW_N (int)(sizeof(s_kw)/sizeof(s_kw[0]))
+
+static int hl_kw_cmp(const void *a, const void *b)
+{
+    return strcmp(*(const char *const *)a, *(const char *const *)b);
+}
+
+static int hl_is_boundary(char c)
+{
+    return !c || !!strchr(" \t.,;:!?(){}[]=+-*/%&|^<>~@#\"'\\", c);
+}
+
+/*
+ * Fill colors[0..len) with a termbox2 fg attribute per byte of `line`.
+ * ASCII-safe: multi-byte UTF-8 continuation bytes get TB_DEFAULT and are
+ * forwarded to tb_print inside the same run as their leading byte.
+ */
+static void hl_colorise(const char *line, int len, uintattr_t *colors)
+{
+    typedef enum { ST_NORMAL, ST_STR, ST_CHAR, ST_CLINE, ST_CBLOCK } St;
+    St st = ST_NORMAL;
+
+    for (int i = 0; i < len; ) {
+        char c = line[i];
+
+        /* ── line comment ── */
+        if (st == ST_CLINE) { colors[i++] = TB_BLUE; continue; }
+
+        /* ── block comment ── */
+        if (st == ST_CBLOCK) {
+            colors[i] = TB_BLUE;
+            if (c == '*' && i + 1 < len && line[i + 1] == '/') {
+                colors[i + 1] = TB_BLUE;
+                i += 2; st = ST_NORMAL;
+            } else { i++; }
+            continue;
+        }
+
+        /* ── string literal ── */
+        if (st == ST_STR) {
+            colors[i] = TB_GREEN;
+            if (c == '\\' && i + 1 < len) { colors[i + 1] = TB_GREEN; i += 2; }
+            else { if (c == '"') st = ST_NORMAL; i++; }
+            continue;
+        }
+
+        /* ── char literal ── */
+        if (st == ST_CHAR) {
+            colors[i] = TB_GREEN;
+            if (c == '\\' && i + 1 < len) { colors[i + 1] = TB_GREEN; i += 2; }
+            else { if (c == '\'') st = ST_NORMAL; i++; }
+            continue;
+        }
+
+        /* ── ST_NORMAL ── */
+        if (c == '/' && i + 1 < len && line[i + 1] == '/') {
+            colors[i] = colors[i + 1] = TB_BLUE;
+            i += 2; st = ST_CLINE; continue;
+        }
+        if (c == '/' && i + 1 < len && line[i + 1] == '*') {
+            colors[i] = colors[i + 1] = TB_BLUE;
+            i += 2; st = ST_CBLOCK; continue;
+        }
+        if (c == '"')  { colors[i++] = TB_GREEN; st = ST_STR;  continue; }
+        if (c == '\'') { colors[i++] = TB_GREEN; st = ST_CHAR; continue; }
+
+        /* keyword detection: only at a token boundary */
+        if (i == 0 || hl_is_boundary(line[i - 1])) {
+            int j = i;
+            while (j < len && !hl_is_boundary(line[j])) j++;
+            int tlen = j - i;
+            if (tlen >= 2 && tlen <= 8) {
+                char tmp[9];
+                memcpy(tmp, line + i, tlen); tmp[tlen] = '\0';
+                const char *key = tmp;
+                if (bsearch(&key, s_kw, S_KW_N, sizeof(char *), hl_kw_cmp)) {
+                    for (int k = i; k < j; k++)
+                        colors[k] = TB_CYAN | TB_BOLD;
+                    i = j; continue;
+                }
+            }
+        }
+        colors[i++] = TB_DEFAULT;
+    }
+}
+
+/*
+ * Render one source-line with syntax colouring starting at terminal cell
+ * (x0, y).  max_w is the maximum number of columns to consume.
+ * Colours are applied per byte; for ASCII source this equals per cell.
+ */
+static void highlight_line(int x0, int y, const char *line, int max_w)
+{
+    int len = (int)strlen(line);
+    if (len > max_w) len = max_w;
+    if (len <= 0) return;
+
+    uintattr_t colors[512];
+    hl_colorise(line, len, colors);
+
+    /* Print consecutive runs of the same colour with a single tb_print. */
+    char tmp[513];
+    int i = 0;
+    while (i < len) {
+        uintattr_t fg = colors[i];
+        int j = i;
+        while (j < len && colors[j] == fg) j++;
+        int rlen = j - i;
+        memcpy(tmp, line + i, rlen); tmp[rlen] = '\0';
+        tb_print(x0 + i, y, fg, TB_DEFAULT, tmp);
+        i = j;
+    }
 }
 
 /* ── Source panel ────────────────────────────────────────────────────────── */
@@ -144,16 +290,24 @@ static void draw_source(int y0, int src_h, int w, DwarfDBI *dbi, uint32_t pc)
             buf[content_w < (int)sizeof(buf)-1 ? content_w : (int)sizeof(buf)-1] = '\0';
 
             int is_pc = (lineno == loc.line);
-            uintattr_t fg = is_pc ? (TB_WHITE | TB_BOLD) : TB_DEFAULT;
-            uintattr_t bg = is_pc ? TB_BLUE : TB_DEFAULT;
 
             bchar(0, y0 + row, "\xe2\x94\x82");            /* │ */
-            if (is_pc)
-                tb_printf(1, y0 + row, fg, bg, " \xe2\x96\xba%4d: %-*s",
-                          lineno, content_w, buf);          /* ► */
-            else
-                tb_printf(1, y0 + row, fg, bg, "  %4d: %-*s",
+            if (is_pc) {
+                /* PC line: solid blue highlight, no syntax colour */
+                tb_printf(1, y0 + row, TB_WHITE | TB_BOLD, TB_BLUE,
+                          " \xe2\x96\xba%4d: %-*s",        /* ► */
                           lineno, content_w, buf);
+            } else {
+                /* Prefix: "  NNNN: " (8 cells) */
+                tb_printf(1, y0 + row, TB_DEFAULT, TB_DEFAULT,
+                          "  %4d: ", lineno);
+                /* Content with syntax highlighting (x=9) */
+                highlight_line(9, y0 + row, buf, content_w);
+                /* Pad remainder to content_w */
+                int blen = (int)strlen(buf);
+                for (int p = blen; p < content_w; p++)
+                    tb_print(9 + p, y0 + row, TB_DEFAULT, TB_DEFAULT, " ");
+            }
             bchar(w - 1, y0 + row, "\xe2\x94\x82");        /* │ */
             lineno++;
             row++;
@@ -164,6 +318,83 @@ static void draw_source(int y0, int src_h, int w, DwarfDBI *dbi, uint32_t pc)
         bchar(0, y0 + row, "\xe2\x94\x82");
         bchar(w - 1, y0 + row, "\xe2\x94\x82");
         row++;
+    }
+}
+
+/* ── Asm panel ───────────────────────────────────────────────────────────── */
+
+/*
+ * Read memory around PC, disassemble with thumb_dis_one(), and render h rows
+ * of instructions.  The PC instruction is centred; scroll_offset shifts the
+ * view up (negative) or down (positive) by that many instructions.
+ */
+#define ASM_LOOK_BACK  64    /* bytes to try to read before PC */
+#define ASM_LOOK_FWD  128    /* bytes to read after PC */
+#define ASM_BUF_MAX   (ASM_LOOK_BACK + ASM_LOOK_FWD + 4)
+#define ASM_INSN_MAX   80
+
+static void draw_asm(int y0, int h, int w,
+                     DebugSession *s, uint32_t pc, int scroll_offset)
+{
+    /* Separator */
+    bchar(0, y0, "\xe2\x94\x9c");                          /* ├ */
+    tb_print(1, y0, TB_CYAN, TB_DEFAULT, "\xe2\x94\x80 Asm ");
+    hline(y0, 7, w - 1);
+    bchar(w - 1, y0, "\xe2\x94\xa4");                      /* ┤ */
+
+    /* Collect decoded instructions */
+    static struct { uint32_t addr; char text[THUMB_DIS_OUT_MAX]; }
+        insns[ASM_INSN_MAX];
+    int n_insns = 0;
+    int pc_insn = -1;
+
+    uint32_t read_addr = (pc >= ASM_LOOK_BACK) ? (pc - ASM_LOOK_BACK) : 0;
+    read_addr &= ~1u;  /* Thumb 2-byte alignment */
+    size_t want = ASM_LOOK_BACK + ASM_LOOK_FWD;
+
+    uint8_t buf[ASM_BUF_MAX];
+    if (debug_session_read_mem(s, read_addr, want, buf) == WIRE_OK) {
+        uint32_t cur = read_addr;
+        size_t   off = 0;
+        uint8_t  its = 0;
+        while (off + 2 <= want && n_insns < ASM_INSN_MAX) {
+            insns[n_insns].addr = cur;
+            int r = thumb_dis_one(cur, buf + off, want - off,
+                                  insns[n_insns].text, THUMB_DIS_OUT_MAX, &its);
+            if (r < 0) r = 2;   /* skip unknown half-word */
+            if ((cur & ~1u) == (pc & ~1u)) pc_insn = n_insns;
+            n_insns++;
+            off += (size_t)r;
+            cur += (uint32_t)r;
+        }
+    }
+
+    /* Centre view on pc_insn + scroll_offset */
+    int center = (pc_insn >= 0 ? pc_insn : n_insns / 2) + scroll_offset;
+    int start  = center - h / 2;
+    if (start + h > n_insns) start = n_insns - h;
+    if (start < 0) start = 0;
+
+    int content_w = w - 16;   /* 1(│) + 3(arrow+sp) + 10(addr) + 2(sp) = 16 */
+    if (content_w < 1) content_w = 1;
+
+    for (int r = 0; r < h; r++) {
+        bchar(0, y0 + 1 + r, "\xe2\x94\x82");              /* │ */
+        int idx = start + r;
+        if (idx >= 0 && idx < n_insns) {
+            int is_pc = (insns[idx].addr == (pc & ~1u));
+            uintattr_t fg = is_pc ? (TB_WHITE | TB_BOLD) : TB_DEFAULT;
+            uintattr_t bg = is_pc ? TB_BLUE : TB_DEFAULT;
+            if (is_pc)
+                tb_printf(1, y0 + 1 + r, fg, bg,
+                          " \xe2\x96\xba 0x%08x  %-*s",   /* ► */
+                          insns[idx].addr, content_w, insns[idx].text);
+            else
+                tb_printf(1, y0 + 1 + r, fg, bg,
+                          "   0x%08x  %-*s",
+                          insns[idx].addr, content_w, insns[idx].text);
+        }
+        bchar(w - 1, y0 + 1 + r, "\xe2\x94\x82");          /* │ */
     }
 }
 
@@ -263,6 +494,283 @@ static void draw_reg_bp(int y0, int h, int w, DebugSession *s, DwarfDBI *dbi, ui
     (void)pc;
 }
 
+/* ── Backtrace panel ─────────────────────────────────────────────────────── */
+
+/*
+ * Walk the fp chain (Thumb -fno-omit-frame-pointer convention: r7 as fp).
+ * Frame #0 is the current PC with no fp walk.
+ * Frame N (N≥1): fp→[0]=prev_fp, fp→[4]=lr; pc_caller = (lr & ~1) - 4.
+ *
+ * fp is rejected (chain stops) when:
+ *   - misaligned (fp & 3)
+ *   - outside SRAM bounds
+ *   - lr looks like EXC_RETURN (Cortex-M exception frame)
+ */
+#define BT_MAX_FRAMES 16
+
+static void draw_backtrace(int y0, int h, int w,
+                            DebugSession *s, DwarfDBI *dbi,
+                            uint32_t pc, uint32_t fp)
+{
+    /* Separator */
+    bchar(0, y0, "\xe2\x94\x9c");                          /* ├ */
+    tb_print(1, y0, TB_CYAN, TB_DEFAULT, "\xe2\x94\x80 Backtrace ");
+    hline(y0, 13, w - 1);
+    bchar(w - 1, y0, "\xe2\x94\xa4");                      /* ┤ */
+
+    /* Collect frames */
+    struct { uint32_t pc; } frames[BT_MAX_FRAMES];
+    int nframes = 0;
+
+    /* Frame 0: current PC */
+    frames[nframes++].pc = pc;
+
+    /* Frame 1+: walk fp chain */
+    uint32_t cur_fp = fp;
+    int fp_valid = (cur_fp >= BACKTRACE_SRAM_BASE &&
+                    cur_fp <  BACKTRACE_SRAM_END  &&
+                    (cur_fp & 3u) == 0);
+    while (fp_valid && nframes < BT_MAX_FRAMES) {
+        uint8_t buf[8];
+        if (debug_session_read_mem(s, cur_fp, 8, buf) != WIRE_OK) break;
+
+        uint32_t prev_fp = (uint32_t)buf[0] | (uint32_t)buf[1]<<8
+                         | (uint32_t)buf[2]<<16 | (uint32_t)buf[3]<<24;
+        uint32_t lr      = (uint32_t)buf[4] | (uint32_t)buf[5]<<8
+                         | (uint32_t)buf[6]<<16 | (uint32_t)buf[7]<<24;
+
+        /* EXC_RETURN: lr top nibble = 0xF → halted inside an exception */
+        if ((lr & 0xF0000000u) == 0xF0000000u) break;
+
+        /* BL/BLX is a 4-byte wide instruction; lr points past it, subtract 4 */
+        uint32_t caller_pc = (lr & ~1u) - 4u;
+        frames[nframes++].pc = caller_pc;
+
+        fp_valid = (prev_fp >= BACKTRACE_SRAM_BASE &&
+                    prev_fp <  BACKTRACE_SRAM_END  &&
+                    (prev_fp & 3u) == 0 &&
+                    prev_fp > cur_fp);   /* fp chain must grow toward higher addr */
+        cur_fp = prev_fp;
+    }
+
+    int fp_ok = (debug_session_fp_reg(s) >= 0);
+
+    /* Render rows */
+    int content_w = w - 2;
+    for (int r = 0; r < h; r++) {
+        bchar(0, y0 + 1 + r, "\xe2\x94\x82");              /* │ */
+
+        if (!fp_ok && r == 0) {
+            tb_printf(2, y0 + 1 + r, TB_YELLOW, TB_DEFAULT,
+                      "[fp backtracing not supported for this arch]");
+        } else if (r == 0 && debug_session_fp_reg(s) >= 0 &&
+                   !(fp >= BACKTRACE_SRAM_BASE && fp < BACKTRACE_SRAM_END)) {
+            tb_printf(2, y0 + 1 + r, TB_YELLOW, TB_DEFAULT,
+                      "[fp chain invalid — rebuild with -fno-omit-frame-pointer]");
+        } else if (r < nframes) {
+            uint32_t fpc = frames[r].pc;
+            char sym_buf[64] = "";
+            char loc_buf[64] = "";
+
+            if (dbi) {
+                const char *sym_name; uint32_t off;
+                if (dwarf_addr_to_sym(dbi, fpc, &sym_name, &off) == 0) {
+                    if (off)
+                        snprintf(sym_buf, sizeof(sym_buf), "%s+%u", sym_name, off);
+                    else
+                        snprintf(sym_buf, sizeof(sym_buf), "%s", sym_name);
+                }
+                DwarfLocation loc;
+                if (dwarf_pc_to_location(dbi, fpc, &loc) == 0) {
+                    const char *base = strrchr(loc.file, '/');
+                    base = base ? base + 1 : loc.file;
+                    snprintf(loc_buf, sizeof(loc_buf), "%s:%d", base, loc.line);
+                }
+            }
+
+            if (sym_buf[0])
+                tb_printf(1, y0 + 1 + r, TB_DEFAULT, TB_DEFAULT,
+                          " #%-2d  %-30s  %s", r, sym_buf, loc_buf);
+            else
+                tb_printf(1, y0 + 1 + r, TB_DEFAULT, TB_DEFAULT,
+                          " #%-2d  0x%08x  %s", r, fpc, loc_buf[0] ? loc_buf : "[no source]");
+        }
+        (void)content_w;
+        bchar(w - 1, y0 + 1 + r, "\xe2\x94\x82");          /* │ */
+    }
+}
+
+/* ── FreeRTOS Tasks panel ────────────────────────────────────────────────── */
+
+typedef enum { TASK_RUN, TASK_RDY, TASK_DLY, TASK_SUSP } TuiTaskState;
+
+typedef struct {
+    char          name[FR_TASK_NAME_LEN];
+    uint32_t      tcb;
+    uint32_t      priority;
+    TuiTaskState  state;
+} TuiTask;
+
+#define TUI_TASK_MAX 32
+
+/* Decode a little-endian u32 from 4 bytes. */
+static uint32_t rl32(const uint8_t *b)
+{
+    return (uint32_t)b[0] | (uint32_t)b[1]<<8
+         | (uint32_t)b[2]<<16 | (uint32_t)b[3]<<24;
+}
+
+/* Read TCB name + priority into *t (tcb and state already set by caller). */
+static void fr_read_tcb(DebugSession *s, TuiTask *t)
+{
+    uint8_t buf[FR_TASK_NAME_LEN];
+    if (debug_session_read_mem(s, t->tcb + FR_TCB_NAME,
+                               FR_TASK_NAME_LEN, buf) == WIRE_OK) {
+        buf[FR_TASK_NAME_LEN - 1] = '\0';
+        memcpy(t->name, buf, FR_TASK_NAME_LEN);
+    } else {
+        snprintf(t->name, sizeof(t->name), "<?>");
+    }
+    uint8_t pb[4];
+    if (debug_session_read_mem(s, t->tcb + FR_TCB_PRIORITY, 4, pb) == WIRE_OK)
+        t->priority = rl32(pb);
+}
+
+/* Walk one FreeRTOS List_t, appending found TCBs to out[].
+ * exclude: TCB to skip (already added as current task). */
+static void fr_walk_list(DebugSession *s, uint32_t list_addr,
+                         TuiTaskState state, uint32_t exclude,
+                         TuiTask *out, int *n, int max)
+{
+    uint8_t buf[4];
+
+    /* uxNumberOfItems */
+    if (debug_session_read_mem(s, list_addr + FR_LIST_COUNT, 4, buf) != WIRE_OK)
+        return;
+    if (rl32(buf) == 0) return;
+
+    /* First real item = xListEnd.pxNext */
+    if (debug_session_read_mem(s, list_addr + FR_LIST_FIRST, 4, buf) != WIRE_OK)
+        return;
+    uint32_t item    = rl32(buf);
+    uint32_t sentinel = list_addr + FR_LIST_SENTINEL;
+
+    int guard = 0;
+    while (item != sentinel && item != 0 && *n < max && guard++ < 64) {
+        /* Bounds-check item pointer */
+        if (item < BACKTRACE_SRAM_BASE || item >= BACKTRACE_SRAM_END) break;
+
+        /* pvOwner → TCB */
+        if (debug_session_read_mem(s, item + FR_ITEM_OWNER, 4, buf) != WIRE_OK)
+            break;
+        uint32_t tcb = rl32(buf);
+
+        if (tcb && tcb != exclude) {
+            /* Check for duplicates */
+            int dup = 0;
+            for (int i = 0; i < *n; i++)
+                if (out[i].tcb == tcb) { dup = 1; break; }
+            if (!dup) {
+                TuiTask *t = &out[(*n)++];
+                t->tcb   = tcb;
+                t->state = state;
+                fr_read_tcb(s, t);
+            }
+        }
+
+        /* Advance: pxNext */
+        if (debug_session_read_mem(s, item + FR_ITEM_NEXT, 4, buf) != WIRE_OK)
+            break;
+        item = rl32(buf);
+    }
+}
+
+/* Collect all FreeRTOS tasks via symbol table + list walking.
+ * Returns number of tasks found (0 if no FreeRTOS or no ELF). */
+static int tui_read_tasks(DebugSession *s, DwarfDBI *dbi,
+                          TuiTask *out, int max)
+{
+    if (!dbi) return 0;
+    int n = 0;
+
+    /* ── Step 0: current running task ── */
+    uint32_t cur_tcb_sym, cur_tcb = 0;
+    if (dwarf_sym_to_addr(dbi, "pxCurrentTCB", &cur_tcb_sym) == 0) {
+        uint8_t buf[4];
+        if (debug_session_read_mem(s, cur_tcb_sym, 4, buf) == WIRE_OK) {
+            cur_tcb = rl32(buf);
+            if (cur_tcb && n < max) {
+                TuiTask *t = &out[n++];
+                t->tcb   = cur_tcb;
+                t->state = TASK_RUN;
+                fr_read_tcb(s, t);
+            }
+        }
+    }
+
+    /* ── Step 1: ready lists ── */
+    uint32_t rdy_base;
+    if (dwarf_sym_to_addr(dbi, "pxReadyTasksLists", &rdy_base) == 0) {
+        for (int pri = 0; pri < FR_MAX_PRIORITIES && n < max; pri++)
+            fr_walk_list(s, rdy_base + (uint32_t)pri * FR_LIST_SIZE,
+                         TASK_RDY, cur_tcb, out, &n, max);
+    }
+
+    /* ── Step 2: suspended + delayed lists ── */
+    static const char *const extra[] = {
+        "xSuspendedTaskList",
+        "xDelayedTaskList1", "xDelayedTaskList2",
+        "xOverflowDelayedTaskList",
+        NULL
+    };
+    static const TuiTaskState extra_st[] = {
+        TASK_SUSP, TASK_DLY, TASK_DLY, TASK_DLY
+    };
+    for (int i = 0; extra[i] && n < max; i++) {
+        uint32_t addr;
+        if (dwarf_sym_to_addr(dbi, extra[i], &addr) == 0)
+            fr_walk_list(s, addr, extra_st[i], cur_tcb, out, &n, max);
+    }
+
+    return n;
+}
+
+static void draw_tasks(int y0, int h, int w, DebugSession *s, DwarfDBI *dbi)
+{
+    /* Separator */
+    bchar(0, y0, "\xe2\x94\x9c");                          /* ├ */
+    tb_print(1, y0, TB_CYAN, TB_DEFAULT, "\xe2\x94\x80 Tasks ");
+    hline(y0, 9, w - 1);
+    bchar(w - 1, y0, "\xe2\x94\xa4");                      /* ┤ */
+
+    static TuiTask tasks[TUI_TASK_MAX];
+    int n = tui_read_tasks(s, dbi, tasks, TUI_TASK_MAX);
+
+    for (int r = 0; r < h; r++) {
+        bchar(0, y0 + 1 + r, "\xe2\x94\x82");              /* │ */
+
+        if (n == 0 && r == 0) {
+            tb_print(2, y0 + 1 + r, TB_YELLOW, TB_DEFAULT,
+                     "[pxReadyTasksLists not found — FreeRTOS ELF required]");
+        } else if (r < n) {
+            static const char *const state_str[] = { "RUN", "RDY", "DLY", "SUS" };
+            static const uintattr_t  state_fg[]  = {
+                TB_GREEN | TB_BOLD, TB_DEFAULT, TB_YELLOW, TB_BLUE
+            };
+            uintattr_t sfg = state_fg[tasks[r].state];
+            tb_printf(1, y0 + 1 + r, TB_DEFAULT, TB_DEFAULT,
+                      " %-16s", tasks[r].name);
+            tb_printf(18, y0 + 1 + r, sfg, TB_DEFAULT,
+                      "%s", state_str[tasks[r].state]);
+            tb_printf(22, y0 + 1 + r, TB_DEFAULT, TB_DEFAULT,
+                      "  pri=%-2u  tcb=0x%08x",
+                      tasks[r].priority, tasks[r].tcb);
+        }
+
+        bchar(w - 1, y0 + 1 + r, "\xe2\x94\x82");          /* │ */
+    }
+}
+
 /* ── Memory Watch panel ──────────────────────────────────────────────────── */
 
 static void draw_mem(int y0, int h, int w, DebugSession *s)
@@ -306,7 +814,7 @@ static void draw_bottom(int y_border, int y_hint, int w)
     bchar(w - 1, y_border, "\xe2\x94\x98");            /* ┘ */
 
     tb_print(0, y_hint, TB_YELLOW, TB_DEFAULT,
-             "[s]tep [c]ontinue [i]nterrupt [b]reak [d]el [w]atch [m]em [t]cli [q]uit");
+             "[s]tep [c]ontinue [i]nterrupt [b]reak [d]el [w]atch [m]em [t]cli [q]uit  [↑][↓] scroll asm");
 }
 
 /* ── Status bar (replaces hint bar during blocking ops) ──────────────────── */
@@ -330,18 +838,33 @@ static void redraw(DebugSession *s, DwarfDBI *dbi)
 
     /* Compute panel heights */
     int mem_h  = (s_ndisplay > 0) ? s_ndisplay : 1;
-    int src_h  = h - REG_ROWS - mem_h - 6;
-    /* 6 = top_border(1) + reg_sep(1) + mem_sep(1) + bottom_border(1) + hint(1) + 1 spare */
+    int asm_h  = ASM_ROWS;
+    int bt_h   = (debug_session_fp_reg(s) >= 0) ? BACKTRACE_ROWS : 0;
+    int tsk_h  = TASKS_ROWS;
+    /* overhead: top_border + asm_sep + reg_sep + [bt_sep] + tasks_sep + mem_sep
+     *         + bottom_border + hint + 1 spare */
+    int overhead = 8 + (bt_h ? 1 : 0);
+    int src_h = h - REG_ROWS - mem_h - asm_h - bt_h - tsk_h - overhead;
     if (src_h < 3) src_h = 3;
 
     int y_src_top  = 0;
-    int y_reg_sep  = y_src_top + 1 + src_h;
-    int y_mem_sep  = y_reg_sep + 1 + REG_ROWS;
+    int y_asm_sep  = y_src_top + 1 + src_h;
+    int y_reg_sep  = y_asm_sep + 1 + asm_h;
+    int y_bt_sep   = y_reg_sep + 1 + REG_ROWS;
+    int y_tsk_sep  = bt_h ? (y_bt_sep + 1 + bt_h) : y_bt_sep;
+    int y_mem_sep  = y_tsk_sep + 1 + tsk_h;
     int y_bottom   = y_mem_sep + 1 + mem_h;
     int y_hint     = y_bottom + 1;
 
+    int fp_reg = debug_session_fp_reg(s);
+    uint32_t fp_val = (s_regs_ok && fp_reg >= 0) ? s_regs[fp_reg] : 0;
+
     draw_source(y_src_top, src_h, w, dbi, s_pc);
+    draw_asm(y_asm_sep, asm_h, w, s, s_pc, s_asm_scroll);
     draw_reg_bp(y_reg_sep, REG_ROWS, w, s, dbi, s_pc);
+    if (bt_h)
+        draw_backtrace(y_bt_sep, bt_h, w, s, dbi, s_pc, fp_val);
+    draw_tasks(y_tsk_sep, tsk_h, w, s, dbi);
     draw_mem(y_mem_sep, mem_h, w, s);
     draw_bottom(y_bottom, y_hint, w);
 
@@ -444,8 +967,9 @@ int debug_tui_run(DebugSession *s, DwarfDBI *dbi)
     s_nwpts    = 0;
     s_wp_next  = 1;
     s_ndisplay = 0;
-    s_regs_ok  = 0;
-    s_pc       = 0;
+    s_regs_ok    = 0;
+    s_pc         = 0;
+    s_asm_scroll = 0;
     s_task_name[0] = '\0';
 
     /* Read initial register state */
@@ -473,8 +997,17 @@ int debug_tui_run(DebugSession *s, DwarfDBI *dbi)
         int y_hint = h - 1;
 
         /* ── Key dispatch ── */
-        if (ev.ch == 's') {
+        if (ev.key == TB_KEY_ARROW_UP) {
+            s_asm_scroll--;
+            redraw(s, dbi);
+
+        } else if (ev.key == TB_KEY_ARROW_DOWN) {
+            s_asm_scroll++;
+            redraw(s, dbi);
+
+        } else if (ev.ch == 's') {
             draw_status(y_hint, w, "Stepping...");
+            s_asm_scroll = 0;
             int rc = debug_session_step(s);
             if (rc == WIRE_OK && debug_session_read_regs(s, s_regs) == WIRE_OK) {
                 s_regs_ok = 1;
@@ -485,6 +1018,7 @@ int debug_tui_run(DebugSession *s, DwarfDBI *dbi)
 
         } else if (ev.ch == 'c') {
             draw_status(y_hint, w, "Running...  (waiting for breakpoint)");
+            s_asm_scroll = 0;
             int rc = debug_session_continue(s);
             if (rc == WIRE_OK && debug_session_read_regs(s, s_regs) == WIRE_OK) {
                 s_regs_ok = 1;
@@ -495,6 +1029,7 @@ int debug_tui_run(DebugSession *s, DwarfDBI *dbi)
 
         } else if (ev.ch == 'i') {
             draw_status(y_hint, w, "Sending break-in...  (waiting for halt)");
+            s_asm_scroll = 0;
             int rc = debug_session_interrupt(s);
             if (rc == WIRE_OK && debug_session_read_regs(s, s_regs) == WIRE_OK) {
                 s_regs_ok = 1;

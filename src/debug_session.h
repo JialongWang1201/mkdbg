@@ -116,6 +116,10 @@ const char *debug_session_reg_name(const DebugSession *s, int i);
 /* Index of the PC register (e.g. 15 for Cortex-M, 32 for RISC-V). */
 int debug_session_pc_reg(const DebugSession *s);
 
+/* Frame-pointer register index, or -1 if fp-chain backtracing is not supported
+ * by this arch (e.g. RISC-V bare-metal). */
+int debug_session_fp_reg(const DebugSession *s);
+
 /* ── Status ──────────────────────────────────────────────────────────────── */
 
 /* GDB signal number from the most recent stop reply (5=SIGTRAP, 11=SIGSEGV).
