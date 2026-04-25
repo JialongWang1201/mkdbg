@@ -37,12 +37,26 @@
 #define CTX_HALF          4   /* source context: ±4 lines around PC */
 #define ASM_ROWS          5   /* Asm panel visible instruction rows */
 #define BACKTRACE_ROWS    4   /* Backtrace panel visible frame rows */
+#define TASKS_ROWS        4   /* FreeRTOS Tasks panel visible rows */
 #define MAX_DISPLAY       4
 #define TUI_WP_MAX        4
 
 /* SRAM bounds for fp-chain validity (STM32F4/F7; edit for other targets). */
 #define BACKTRACE_SRAM_BASE 0x20000000u
 #define BACKTRACE_SRAM_END  0x20080000u   /* 512 KB */
+
+/* FreeRTOS 10.x struct offsets (no configUSE_LIST_DATA_INTEGRITY_CHECK_BYTES).
+ * Edit these if your FreeRTOS config differs. */
+#define FR_LIST_COUNT       0   /* List_t.uxNumberOfItems */
+#define FR_LIST_FIRST      12   /* List_t.xListEnd.pxNext (first item or sentinel) */
+#define FR_LIST_SENTINEL    8   /* offset of xListEnd within List_t (sentinel addr) */
+#define FR_LIST_SIZE       20   /* sizeof(List_t) */
+#define FR_ITEM_NEXT        4   /* ListItem_t.pxNext */
+#define FR_ITEM_OWNER      12   /* ListItem_t.pvOwner (→ TCB) */
+#define FR_TCB_NAME        52   /* TCB_t.pcTaskName */
+#define FR_TCB_PRIORITY    56   /* TCB_t.uxPriority */
+#define FR_MAX_PRIORITIES  32   /* configMAX_PRIORITIES */
+#define FR_TASK_NAME_LEN   16
 
 /* ── Local state ─────────────────────────────────────────────────────────── */
 
@@ -586,6 +600,177 @@ static void draw_backtrace(int y0, int h, int w,
     }
 }
 
+/* ── FreeRTOS Tasks panel ────────────────────────────────────────────────── */
+
+typedef enum { TASK_RUN, TASK_RDY, TASK_DLY, TASK_SUSP } TuiTaskState;
+
+typedef struct {
+    char          name[FR_TASK_NAME_LEN];
+    uint32_t      tcb;
+    uint32_t      priority;
+    TuiTaskState  state;
+} TuiTask;
+
+#define TUI_TASK_MAX 32
+
+/* Decode a little-endian u32 from 4 bytes. */
+static uint32_t rl32(const uint8_t *b)
+{
+    return (uint32_t)b[0] | (uint32_t)b[1]<<8
+         | (uint32_t)b[2]<<16 | (uint32_t)b[3]<<24;
+}
+
+/* Read TCB name + priority into *t (tcb and state already set by caller). */
+static void fr_read_tcb(DebugSession *s, TuiTask *t)
+{
+    uint8_t buf[FR_TASK_NAME_LEN];
+    if (debug_session_read_mem(s, t->tcb + FR_TCB_NAME,
+                               FR_TASK_NAME_LEN, buf) == WIRE_OK) {
+        buf[FR_TASK_NAME_LEN - 1] = '\0';
+        memcpy(t->name, buf, FR_TASK_NAME_LEN);
+    } else {
+        snprintf(t->name, sizeof(t->name), "<?>");
+    }
+    uint8_t pb[4];
+    if (debug_session_read_mem(s, t->tcb + FR_TCB_PRIORITY, 4, pb) == WIRE_OK)
+        t->priority = rl32(pb);
+}
+
+/* Walk one FreeRTOS List_t, appending found TCBs to out[].
+ * exclude: TCB to skip (already added as current task). */
+static void fr_walk_list(DebugSession *s, uint32_t list_addr,
+                         TuiTaskState state, uint32_t exclude,
+                         TuiTask *out, int *n, int max)
+{
+    uint8_t buf[4];
+
+    /* uxNumberOfItems */
+    if (debug_session_read_mem(s, list_addr + FR_LIST_COUNT, 4, buf) != WIRE_OK)
+        return;
+    if (rl32(buf) == 0) return;
+
+    /* First real item = xListEnd.pxNext */
+    if (debug_session_read_mem(s, list_addr + FR_LIST_FIRST, 4, buf) != WIRE_OK)
+        return;
+    uint32_t item    = rl32(buf);
+    uint32_t sentinel = list_addr + FR_LIST_SENTINEL;
+
+    int guard = 0;
+    while (item != sentinel && item != 0 && *n < max && guard++ < 64) {
+        /* Bounds-check item pointer */
+        if (item < BACKTRACE_SRAM_BASE || item >= BACKTRACE_SRAM_END) break;
+
+        /* pvOwner → TCB */
+        if (debug_session_read_mem(s, item + FR_ITEM_OWNER, 4, buf) != WIRE_OK)
+            break;
+        uint32_t tcb = rl32(buf);
+
+        if (tcb && tcb != exclude) {
+            /* Check for duplicates */
+            int dup = 0;
+            for (int i = 0; i < *n; i++)
+                if (out[i].tcb == tcb) { dup = 1; break; }
+            if (!dup) {
+                TuiTask *t = &out[(*n)++];
+                t->tcb   = tcb;
+                t->state = state;
+                fr_read_tcb(s, t);
+            }
+        }
+
+        /* Advance: pxNext */
+        if (debug_session_read_mem(s, item + FR_ITEM_NEXT, 4, buf) != WIRE_OK)
+            break;
+        item = rl32(buf);
+    }
+}
+
+/* Collect all FreeRTOS tasks via symbol table + list walking.
+ * Returns number of tasks found (0 if no FreeRTOS or no ELF). */
+static int tui_read_tasks(DebugSession *s, DwarfDBI *dbi,
+                          TuiTask *out, int max)
+{
+    if (!dbi) return 0;
+    int n = 0;
+
+    /* ── Step 0: current running task ── */
+    uint32_t cur_tcb_sym, cur_tcb = 0;
+    if (dwarf_sym_to_addr(dbi, "pxCurrentTCB", &cur_tcb_sym) == 0) {
+        uint8_t buf[4];
+        if (debug_session_read_mem(s, cur_tcb_sym, 4, buf) == WIRE_OK) {
+            cur_tcb = rl32(buf);
+            if (cur_tcb && n < max) {
+                TuiTask *t = &out[n++];
+                t->tcb   = cur_tcb;
+                t->state = TASK_RUN;
+                fr_read_tcb(s, t);
+            }
+        }
+    }
+
+    /* ── Step 1: ready lists ── */
+    uint32_t rdy_base;
+    if (dwarf_sym_to_addr(dbi, "pxReadyTasksLists", &rdy_base) == 0) {
+        for (int pri = 0; pri < FR_MAX_PRIORITIES && n < max; pri++)
+            fr_walk_list(s, rdy_base + (uint32_t)pri * FR_LIST_SIZE,
+                         TASK_RDY, cur_tcb, out, &n, max);
+    }
+
+    /* ── Step 2: suspended + delayed lists ── */
+    static const char *const extra[] = {
+        "xSuspendedTaskList",
+        "xDelayedTaskList1", "xDelayedTaskList2",
+        "xOverflowDelayedTaskList",
+        NULL
+    };
+    static const TuiTaskState extra_st[] = {
+        TASK_SUSP, TASK_DLY, TASK_DLY, TASK_DLY
+    };
+    for (int i = 0; extra[i] && n < max; i++) {
+        uint32_t addr;
+        if (dwarf_sym_to_addr(dbi, extra[i], &addr) == 0)
+            fr_walk_list(s, addr, extra_st[i], cur_tcb, out, &n, max);
+    }
+
+    return n;
+}
+
+static void draw_tasks(int y0, int h, int w, DebugSession *s, DwarfDBI *dbi)
+{
+    /* Separator */
+    bchar(0, y0, "\xe2\x94\x9c");                          /* ├ */
+    tb_print(1, y0, TB_CYAN, TB_DEFAULT, "\xe2\x94\x80 Tasks ");
+    hline(y0, 9, w - 1);
+    bchar(w - 1, y0, "\xe2\x94\xa4");                      /* ┤ */
+
+    static TuiTask tasks[TUI_TASK_MAX];
+    int n = tui_read_tasks(s, dbi, tasks, TUI_TASK_MAX);
+
+    for (int r = 0; r < h; r++) {
+        bchar(0, y0 + 1 + r, "\xe2\x94\x82");              /* │ */
+
+        if (n == 0 && r == 0) {
+            tb_print(2, y0 + 1 + r, TB_YELLOW, TB_DEFAULT,
+                     "[pxReadyTasksLists not found — FreeRTOS ELF required]");
+        } else if (r < n) {
+            static const char *const state_str[] = { "RUN", "RDY", "DLY", "SUS" };
+            static const uintattr_t  state_fg[]  = {
+                TB_GREEN | TB_BOLD, TB_DEFAULT, TB_YELLOW, TB_BLUE
+            };
+            uintattr_t sfg = state_fg[tasks[r].state];
+            tb_printf(1, y0 + 1 + r, TB_DEFAULT, TB_DEFAULT,
+                      " %-16s", tasks[r].name);
+            tb_printf(18, y0 + 1 + r, sfg, TB_DEFAULT,
+                      "%s", state_str[tasks[r].state]);
+            tb_printf(22, y0 + 1 + r, TB_DEFAULT, TB_DEFAULT,
+                      "  pri=%-2u  tcb=0x%08x",
+                      tasks[r].priority, tasks[r].tcb);
+        }
+
+        bchar(w - 1, y0 + 1 + r, "\xe2\x94\x82");          /* │ */
+    }
+}
+
 /* ── Memory Watch panel ──────────────────────────────────────────────────── */
 
 static void draw_mem(int y0, int h, int w, DebugSession *s)
@@ -652,19 +837,22 @@ static void redraw(DebugSession *s, DwarfDBI *dbi)
     tb_clear();
 
     /* Compute panel heights */
-    int mem_h = (s_ndisplay > 0) ? s_ndisplay : 1;
-    int asm_h = ASM_ROWS;
-    int bt_h  = (debug_session_fp_reg(s) >= 0) ? BACKTRACE_ROWS : 0;
-    int src_h = h - REG_ROWS - mem_h - asm_h - bt_h - (7 + (bt_h ? 1 : 0));
-    /* overhead = top_border(1) + asm_sep(1) + reg_sep(1) + [bt_sep(1)] + mem_sep(1)
-     *          + bottom_border(1) + hint(1) + 1 spare */
+    int mem_h  = (s_ndisplay > 0) ? s_ndisplay : 1;
+    int asm_h  = ASM_ROWS;
+    int bt_h   = (debug_session_fp_reg(s) >= 0) ? BACKTRACE_ROWS : 0;
+    int tsk_h  = TASKS_ROWS;
+    /* overhead: top_border + asm_sep + reg_sep + [bt_sep] + tasks_sep + mem_sep
+     *         + bottom_border + hint + 1 spare */
+    int overhead = 8 + (bt_h ? 1 : 0);
+    int src_h = h - REG_ROWS - mem_h - asm_h - bt_h - tsk_h - overhead;
     if (src_h < 3) src_h = 3;
 
     int y_src_top  = 0;
     int y_asm_sep  = y_src_top + 1 + src_h;
     int y_reg_sep  = y_asm_sep + 1 + asm_h;
     int y_bt_sep   = y_reg_sep + 1 + REG_ROWS;
-    int y_mem_sep  = bt_h ? (y_bt_sep + 1 + bt_h) : y_bt_sep;
+    int y_tsk_sep  = bt_h ? (y_bt_sep + 1 + bt_h) : y_bt_sep;
+    int y_mem_sep  = y_tsk_sep + 1 + tsk_h;
     int y_bottom   = y_mem_sep + 1 + mem_h;
     int y_hint     = y_bottom + 1;
 
@@ -676,6 +864,7 @@ static void redraw(DebugSession *s, DwarfDBI *dbi)
     draw_reg_bp(y_reg_sep, REG_ROWS, w, s, dbi, s_pc);
     if (bt_h)
         draw_backtrace(y_bt_sep, bt_h, w, s, dbi, s_pc, fp_val);
+    draw_tasks(y_tsk_sep, tsk_h, w, s, dbi);
     draw_mem(y_mem_sep, mem_h, w, s);
     draw_bottom(y_bottom, y_hint, w);
 
