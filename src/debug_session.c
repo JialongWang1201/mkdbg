@@ -1,10 +1,13 @@
-/* debug_session.c — Live debug session over UART (RSP client)
+/* debug_session.c — Live debug session over WireTransport (RSP client)
  *
  * SPDX-License-Identifier: MIT
  */
 
 #include "debug_session.h"
 #include "arch.h"
+#include "transport.h"
+#include "rsp_transport.h"
+#include "uart_transport.h"
 #include "wire_host.h"
 
 #include <stdio.h>
@@ -15,7 +18,7 @@
 /* ── Internal state ──────────────────────────────────────────────────────── */
 
 struct DebugSession {
-    int              fd;           /* serial port file descriptor */
+    WireTransport   *transport;    /* byte-stream backend (UART or probe) */
     int              last_signal;  /* GDB signal from most recent stop reply */
     const MkdbgArch *arch;         /* active architecture (live_debug guaranteed non-NULL) */
 };
@@ -42,27 +45,38 @@ static int parse_stop_signal(const char *reply)
 
 /* ── Lifecycle ───────────────────────────────────────────────────────────── */
 
+/*
+ * Open a session from a pre-constructed transport.  Takes ownership of t;
+ * transport_destroy() is called on debug_session_close().
+ * Used by debug_session_open() (UART) and in PR-3 by probe_transport.
+ */
+DebugSession *debug_session_open_transport(WireTransport *t,
+                                            const MkdbgArch *arch)
+{
+    if (!t || !arch) return NULL;
+    DebugSession *s = malloc(sizeof(DebugSession));
+    if (!s) return NULL;
+    s->transport   = t;
+    s->last_signal = 0;
+    s->arch        = arch;
+    return s;
+}
+
 DebugSession *debug_session_open(const char *port, int baud,
                                   const MkdbgArch *arch)
 {
-    int fd = wire_serial_open(port, baud);
-    if (fd < 0) return NULL;
+    WireTransport *t = uart_transport_open(port, baud);
+    if (!t) return NULL;
 
-    DebugSession *s = malloc(sizeof(DebugSession));
-    if (!s) {
-        close(fd);
-        return NULL;
-    }
-    s->fd          = fd;
-    s->last_signal = 0;
-    s->arch        = arch;
+    DebugSession *s = debug_session_open_transport(t, arch);
+    if (!s) { transport_destroy(t); return NULL; }
     return s;
 }
 
 void debug_session_close(DebugSession *s)
 {
     if (!s) return;
-    close(s->fd);
+    transport_destroy(s->transport);
     free(s);
 }
 
@@ -73,11 +87,11 @@ int debug_session_continue(DebugSession *s)
     char resp[16];
 
     /* 'c' gets S00 immediately (MCU resuming); then wait for halt stop reply. */
-    int rc = rsp_transaction(s->fd, "c", resp, sizeof(resp));
+    int rc = rsp_transaction_t(s->transport, "c", resp, sizeof(resp));
     if (rc != WIRE_OK) return rc;
 
     char stop[16];
-    rc = rsp_wait_for_stop(s->fd, stop, sizeof(stop));
+    rc = rsp_wait_for_stop_t(s->transport, stop, sizeof(stop));
     if (rc == WIRE_OK)
         s->last_signal = parse_stop_signal(stop);
     return rc;
@@ -86,7 +100,7 @@ int debug_session_continue(DebugSession *s)
 int debug_session_detach(DebugSession *s)
 {
     /* Send 'c' but do NOT wait — leave the MCU running and return. */
-    return rsp_send_packet(s->fd, "c");
+    return rsp_send_packet_t(s->transport, "c");
 }
 
 int debug_session_interrupt(DebugSession *s)
@@ -94,11 +108,11 @@ int debug_session_interrupt(DebugSession *s)
     /* Send raw Ctrl-C (0x03) — not an RSP packet, just one byte.
      * The firmware's wire_poll_break_in() detects it and pends DebugMonitor. */
     uint8_t ctrlc = 0x03u;
-    ssize_t n = write(s->fd, &ctrlc, 1);
+    int n = s->transport->write(s->transport->ctx, &ctrlc, 1);
     if (n != 1) return WIRE_ERR_IO;
 
     char stop[16];
-    int rc = rsp_wait_for_stop(s->fd, stop, sizeof(stop));
+    int rc = rsp_wait_for_stop_t(s->transport, stop, sizeof(stop));
     if (rc == WIRE_OK)
         s->last_signal = parse_stop_signal(stop);
     return rc;
@@ -107,13 +121,13 @@ int debug_session_interrupt(DebugSession *s)
 int debug_session_step(DebugSession *s)
 {
     /* 's' has NO immediate reply per RSP spec — send directly, not via
-     * rsp_transaction().  The stop-reply S05 arrives when DebugMonitor
+     * rsp_transaction_t().  The stop-reply S05 arrives when DebugMonitor
      * fires after the CPU executes one instruction. */
-    int rc = rsp_send_packet(s->fd, "s");
+    int rc = rsp_send_packet_t(s->transport, "s");
     if (rc != WIRE_OK) return rc;
 
     char stop[16];
-    rc = rsp_wait_for_stop(s->fd, stop, sizeof(stop));
+    rc = rsp_wait_for_stop_t(s->transport, stop, sizeof(stop));
     if (rc == WIRE_OK)
         s->last_signal = parse_stop_signal(stop);
     return rc;
@@ -127,7 +141,7 @@ int debug_session_set_hw_breakpoint(DebugSession *s, uint32_t addr)
     snprintf(cmd, sizeof(cmd), "Z1,%x,4", addr);
 
     char resp[16];
-    int rc = rsp_transaction(s->fd, cmd, resp, sizeof(resp));
+    int rc = rsp_transaction_t(s->transport, cmd, resp, sizeof(resp));
     if (rc != WIRE_OK) return rc;
     return (strcmp(resp, "OK") == 0) ? WIRE_OK : WIRE_ERR_IO;
 }
@@ -138,7 +152,7 @@ int debug_session_clear_hw_breakpoint(DebugSession *s, uint32_t addr)
     snprintf(cmd, sizeof(cmd), "z1,%x,4", addr);
 
     char resp[16];
-    int rc = rsp_transaction(s->fd, cmd, resp, sizeof(resp));
+    int rc = rsp_transaction_t(s->transport, cmd, resp, sizeof(resp));
     if (rc != WIRE_OK) return rc;
     return (strcmp(resp, "OK") == 0) ? WIRE_OK : WIRE_ERR_IO;
 }
@@ -152,7 +166,7 @@ int debug_session_set_watchpoint(DebugSession *s, uint32_t addr,
     snprintf(cmd, sizeof(cmd), "Z%d,%x,%x", (int)type, addr, len ? len : 1);
 
     char resp[16];
-    int rc = rsp_transaction(s->fd, cmd, resp, sizeof(resp));
+    int rc = rsp_transaction_t(s->transport, cmd, resp, sizeof(resp));
     if (rc != WIRE_OK) return rc;
     return (strcmp(resp, "OK") == 0) ? WIRE_OK : WIRE_ERR_IO;
 }
@@ -165,7 +179,7 @@ int debug_session_clear_watchpoint(DebugSession *s, uint32_t addr)
     int types[3] = { WATCHPOINT_WRITE, WATCHPOINT_READ, WATCHPOINT_ACCESS };
     for (int i = 0; i < 3; i++) {
         snprintf(cmd, sizeof(cmd), "z%d,%x,1", types[i], addr);
-        int rc = rsp_transaction(s->fd, cmd, resp, sizeof(resp));
+        int rc = rsp_transaction_t(s->transport, cmd, resp, sizeof(resp));
         if (rc == WIRE_OK && strcmp(resp, "OK") == 0) return WIRE_OK;
     }
     return WIRE_ERR_IO;
@@ -178,7 +192,7 @@ int debug_session_read_regs(DebugSession *s, uint32_t regs[DEBUG_SESSION_MAX_REG
     int nregs = s->arch->live_debug->nregs;
     /* RSP 'g': nregs registers × 8 hex chars each, little-endian. */
     char resp[DEBUG_SESSION_MAX_REGS * 8 + 4];
-    int rc = rsp_transaction(s->fd, "g", resp, sizeof(resp));
+    int rc = rsp_transaction_t(s->transport, "g", resp, sizeof(resp));
     if (rc != WIRE_OK) return rc;
     if (resp[0] == 'E') return WIRE_ERR_IO;
 
@@ -205,7 +219,7 @@ int debug_session_read_mem(DebugSession *s, uint32_t addr, size_t len, uint8_t *
     char resp[4096];
     if (len * 2 + 4 > sizeof(resp)) return WIRE_ERR_OVERFLOW;
 
-    int rc = rsp_transaction(s->fd, cmd, resp, sizeof(resp));
+    int rc = rsp_transaction_t(s->transport, cmd, resp, sizeof(resp));
     if (rc != WIRE_OK) return rc;
     if (resp[0] == 'E') return WIRE_ERR_IO;
 
@@ -233,7 +247,7 @@ int debug_session_write_mem(DebugSession *s, uint32_t addr, size_t len,
     cmd[hdr + len * 2] = '\0';
 
     char resp[16];
-    int rc = rsp_transaction(s->fd, cmd, resp, sizeof(resp));
+    int rc = rsp_transaction_t(s->transport, cmd, resp, sizeof(resp));
     if (rc != WIRE_OK) return rc;
     return (strcmp(resp, "OK") == 0) ? WIRE_OK : WIRE_ERR_IO;
 }
@@ -241,9 +255,9 @@ int debug_session_write_mem(DebugSession *s, uint32_t addr, size_t len,
 int debug_session_reset(DebugSession *s)
 {
     /* RSP 'R' packet: software system reset.
-     * The MCU resets immediately and sends NO reply — use rsp_send_packet,
-     * not rsp_transaction, to avoid blocking on a reply that never arrives. */
-    return rsp_send_packet(s->fd, "R00");
+     * The MCU resets immediately and sends NO reply — use rsp_send_packet_t,
+     * not rsp_transaction_t, to avoid blocking on a reply that never arrives. */
+    return rsp_send_packet_t(s->transport, "R00");
 }
 
 /* ── Arch metadata ───────────────────────────────────────────────────────── */

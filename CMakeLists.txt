@@ -68,6 +68,8 @@ add_executable(mkdbg-native
   src/seam.c
   src/dashboard.c
   src/wire.c
+  src/uart_transport.c
+  src/rsp_transport.c
   src/debug_session.c
   src/debug_cli.c
   src/debug_tui.c

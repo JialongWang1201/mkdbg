@@ -15,8 +15,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* Forward-declare MkdbgArch to avoid circular includes. */
-typedef struct MkdbgArch MkdbgArch;
+/* Forward-declare MkdbgArch and WireTransport to avoid circular includes. */
+typedef struct MkdbgArch    MkdbgArch;
+typedef struct WireTransport WireTransport;
 
 /* Opaque session handle. */
 typedef struct DebugSession DebugSession;
@@ -32,6 +33,12 @@ typedef struct DebugSession DebugSession;
  * Returns NULL on error (error printed to stderr). */
 DebugSession *debug_session_open(const char *port, int baud,
                                   const MkdbgArch *arch);
+
+/* Open a session from a pre-constructed WireTransport.
+ * Takes ownership of t; transport_destroy() is called on debug_session_close().
+ * Used by probe_transport.c (PR-3) to attach via hardware probe. */
+DebugSession *debug_session_open_transport(WireTransport *t,
+                                            const MkdbgArch *arch);
 
 /* Close UART and free the session. */
 void debug_session_close(DebugSession *s);
