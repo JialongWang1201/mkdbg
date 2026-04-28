@@ -85,14 +85,14 @@ jobs:
       - name: Install toolchain
         run: bash examples/stm32f446/scripts/ci_install_arm_toolchain_ubuntu.sh
 
-      - name: Run CI smoke
-        run: bash scripts/ci_smoke.sh
-
       - name: Install libudev-dev (required by probe-rs)
         run: sudo apt-get update -q && sudo apt-get install -y libudev-dev
 
       - name: Install Rust toolchain
         run: rustup toolchain install stable --no-self-update
+
+      - name: Run CI smoke
+        run: bash scripts/ci_smoke.sh
 
       - name: Build native mkdbg host binary
         run: |

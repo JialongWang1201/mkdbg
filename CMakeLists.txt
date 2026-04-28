@@ -160,6 +160,8 @@ if(CARGO AND NOT MKDBG_SKIP_PROBE)
       "-framework CoreFoundation"
       "-framework Security"
     )
+  elseif(UNIX)
+    target_link_libraries(mkdbg-native PRIVATE udev)
   endif()
 
   message(STATUS "probe-bridge: enabled (${CARGO})")
