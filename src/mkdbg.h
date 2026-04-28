@@ -151,6 +151,9 @@ typedef struct {
   const char *target;
   const char *port;
   const char *baud;
+  /* Probe flags: probe_idx=-1 means auto-detect; chip=NULL means auto IDCODE */
+  int         probe_idx;
+  const char *chip;
   const char *breakpoints[MAX_ATTACH_BREAKPOINTS];
   size_t breakpoint_count;
   const char *gdb_commands[MAX_ATTACH_COMMANDS];

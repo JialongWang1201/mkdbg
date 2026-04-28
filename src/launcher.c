@@ -1,4 +1,11 @@
 #include "mkdbg.h"
+#include "arch.h"
+#include "debug_session.h"
+#include "debug_tui.h"
+#ifdef MKDBG_PROBE_SUPPORT
+#include "probe_bridge.h"
+#include "probe_transport.h"
+#endif
 
 int cmd_capture_bundle(const CaptureBundleOptions *opts)
 {
@@ -216,8 +223,67 @@ int cmd_attach(const AttachOptions *opts)
     return run_process(shell_argv, repo_root, opts->dry_run);
   }
 
+#ifdef MKDBG_PROBE_SUPPORT
+  /* Probe path: auto-detect or use explicit --probe N */
+  {
+    ProbeInfo probes[16];
+    int n = probe_list(probes, 16);
+    if (n < 0) {
+      fprintf(stderr, "mkdbg: probe enumeration failed\n");
+      return 1;
+    }
+    if (n == 0) {
+      fprintf(stderr,
+              "mkdbg: no debug probe detected\n"
+              "       insert a CMSIS-DAP / ST-Link / J-Link probe, "
+              "or pass --port for UART\n");
+      return 1;
+    }
+    int idx = opts->probe_idx;
+    if (idx < 0) {
+      if (n > 1) {
+        int i;
+        fprintf(stderr, "mkdbg: %d probes found — select one with --probe N:\n", n);
+        for (i = 0; i < n; i++) {
+          fprintf(stderr, "  [%d] %s  serial: %s\n",
+                  i,
+                  probes[i].identifier[0] ? (char *)probes[i].identifier : "unknown",
+                  probes[i].serial[0]     ? (char *)probes[i].serial     : "(none)");
+        }
+        return 1;
+      }
+      idx = 0;
+    } else if (idx >= n) {
+      fprintf(stderr, "mkdbg: --probe %d out of range (%d probe(s) found)\n", idx, n);
+      return 1;
+    }
+    if (opts->dry_run) {
+      printf("[dry-run] probe_open(%d, %s) → open debug TUI\n",
+             idx, opts->chip ? opts->chip : "auto");
+      return 0;
+    }
+    {
+      const MkdbgArch *arch = mkdbg_arch_find("cortex-m");
+      WireTransport   *t;
+      DebugSession    *s;
+      if (!arch || !arch->live_debug) {
+        fprintf(stderr, "mkdbg: cortex-m arch does not support live debug\n");
+        return 1;
+      }
+      t = probe_transport_open(idx, opts->chip);
+      if (!t) return 1;
+      s = debug_session_open_transport(t, arch);
+      if (!s) { transport_destroy(t); return 1; }
+      printf("mkdbg probe debug  probe=%d  chip=%s\n",
+             idx, opts->chip ? opts->chip : "auto");
+      return debug_tui_run(s, NULL);
+    }
+  }
+#else
   fprintf(stderr,
           "mkdbg: attach requires --port to read a crash report over UART\n"
+          "       (probe support not compiled in; rebuild with cargo in PATH)\n"
           "       mkdbg attach --port /dev/ttyUSB0\n");
   return 1;
+#endif
 }

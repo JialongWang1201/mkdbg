@@ -233,6 +233,7 @@ int parse_attach_args(int argc, char **argv, AttachOptions *opts)
 {
   int i;
   memset(opts, 0, sizeof(*opts));
+  opts->probe_idx = -1; /* auto-detect */
   opts->server_wait_s = 1.2;
 
   for (i = 0; i < argc; ++i) {
@@ -267,6 +268,16 @@ int parse_attach_args(int argc, char **argv, AttachOptions *opts)
         die("too many --command arguments");
       }
       opts->gdb_commands[opts->gdb_command_count++] = argv[++i];
+    } else if (strcmp(argv[i], "--probe") == 0) {
+      char *end = NULL;
+      long v;
+      if (i + 1 >= argc) die("missing value for --probe");
+      v = strtol(argv[++i], &end, 10);
+      if (!end || *end != '\0' || v < 0) die("--probe requires a non-negative integer");
+      opts->probe_idx = (int)v;
+    } else if (strcmp(argv[i], "--chip") == 0) {
+      if (i + 1 >= argc) die("missing value for --chip");
+      opts->chip = argv[++i];
     } else if (strcmp(argv[i], "--batch") == 0) {
       opts->batch = 1;
     } else if (strcmp(argv[i], "--dry-run") == 0) {
