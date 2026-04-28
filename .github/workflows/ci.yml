@@ -28,6 +28,10 @@ jobs:
       - name: Install Rust toolchain
         run: rustup toolchain install stable --no-self-update
 
+      - name: Install libudev-dev (Linux only, required by probe-rs)
+        if: matrix.host_os == 'linux'
+        run: sudo apt-get update -q && sudo apt-get install -y libudev-dev
+
       - name: Build mkdbg-native and wire-host (CMake, with libgit2)
         run: |
           set -euxo pipefail
@@ -83,6 +87,12 @@ jobs:
 
       - name: Run CI smoke
         run: bash scripts/ci_smoke.sh
+
+      - name: Install libudev-dev (required by probe-rs)
+        run: sudo apt-get update -q && sudo apt-get install -y libudev-dev
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install stable --no-self-update
 
       - name: Build native mkdbg host binary
         run: |
