@@ -113,14 +113,31 @@ option(MKDBG_SKIP_PROBE "Disable probe-bridge integration" OFF)
 find_program(CARGO cargo PATHS "$ENV{HOME}/.cargo/bin" /usr/local/bin /opt/homebrew/bin)
 if(CARGO AND NOT MKDBG_SKIP_PROBE)
   set(PROBE_BRIDGE_DIR "${CMAKE_SOURCE_DIR}/probe-bridge")
-  set(PROBE_BRIDGE_LIB
-      "${CMAKE_BINARY_DIR}/probe-bridge/release/libprobe_bridge.a")
+
+  # When cross-compiling macOS x86_64 from an arm64 host, tell cargo to target
+  # x86_64-apple-darwin so the static lib is ABI-compatible with the C objects.
+  if(APPLE AND CMAKE_OSX_ARCHITECTURES STREQUAL "x86_64")
+    set(_PROBE_CARGO_TARGET "x86_64-apple-darwin")
+    set(PROBE_BRIDGE_LIB
+        "${CMAKE_BINARY_DIR}/probe-bridge/x86_64-apple-darwin/release/libprobe_bridge.a")
+  else()
+    set(_PROBE_CARGO_TARGET "")
+    set(PROBE_BRIDGE_LIB
+        "${CMAKE_BINARY_DIR}/probe-bridge/release/libprobe_bridge.a")
+  endif()
+
+  if(_PROBE_CARGO_TARGET)
+    set(_CARGO_TARGET_ARGS "--target" "${_PROBE_CARGO_TARGET}")
+  else()
+    set(_CARGO_TARGET_ARGS "")
+  endif()
 
   add_custom_command(
     OUTPUT  "${PROBE_BRIDGE_LIB}"
     COMMAND "${CARGO}" build --release
             --manifest-path "${PROBE_BRIDGE_DIR}/Cargo.toml"
             --target-dir    "${CMAKE_BINARY_DIR}/probe-bridge"
+            ${_CARGO_TARGET_ARGS}
     DEPENDS "${PROBE_BRIDGE_DIR}/Cargo.toml"
             "${PROBE_BRIDGE_DIR}/src/lib.rs"
             "${PROBE_BRIDGE_DIR}/src/rsp.rs"

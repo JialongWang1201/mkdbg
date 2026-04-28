@@ -1,4 +1,7 @@
 #include "mkdbg.h"
+#ifdef MKDBG_PROBE_SUPPORT
+#include "probe_bridge.h"
+#endif
 
 void init_default_repo_name(char *out, size_t out_size)
 {
@@ -136,6 +139,42 @@ int cmd_doctor(const DoctorOptions *opts)
   if (repo->gdb[0] != '\0') {
     print_check(command_available(repo->gdb), "gdb", repo->gdb, &failed);
   }
+
+#ifdef MKDBG_PROBE_SUPPORT
+  /* Probe diagnostics: enumerate USB debug probes. */
+  {
+    ProbeInfo probes[16];
+    int n = probe_list(probes, 16);
+    if (n < 0) {
+      print_check(0, "probe", "enumeration error", &failed);
+    } else if (n == 0) {
+      print_check(0, "probe",
+                  "no probe detected (insert CMSIS-DAP / ST-Link / J-Link)", &failed);
+    } else {
+      char probe_detail[256];
+      snprintf(probe_detail, sizeof(probe_detail), "%s (%d probe%s found)",
+               probes[0].identifier[0] ? (char *)probes[0].identifier : "unknown",
+               n, n == 1 ? "" : "s");
+      print_check(1, "probe", probe_detail, &failed);
+    }
+  }
+#ifdef __linux__
+  /* On Linux, libusb requires udev rules for non-root USB access. */
+  {
+    int udev_ok =
+        access("/etc/udev/rules.d/69-probe-rs.rules", F_OK) == 0 ||
+        access("/usr/lib/udev/rules.d/69-probe-rs.rules", F_OK) == 0;
+    if (!udev_ok) {
+      print_check(0, "udev",
+                  "69-probe-rs.rules not found — USB probe may need root", &failed);
+      printf("       fix: sudo cp tools/69-probe-rs.rules /etc/udev/rules.d/ "
+             "&& sudo udevadm control --reload\n");
+    } else {
+      print_check(1, "udev", "69-probe-rs.rules installed", &failed);
+    }
+  }
+#endif /* __linux__ */
+#endif /* MKDBG_PROBE_SUPPORT */
 
   return failed ? 1 : 0;
 }

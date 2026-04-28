@@ -1,0 +1,29 @@
+# udev rules for probe-rs USB debug probes.
+# Source: https://probe.rs/docs/getting-started/probe-setup/
+#
+# Install:
+#   sudo cp tools/69-probe-rs.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload
+
+# ST-Link V2
+ATTRS{idVendor}=="0483", ATTRS{idProduct}=="3748", TAG+="uaccess"
+# ST-Link V2-1 / Nucleo
+ATTRS{idVendor}=="0483", ATTRS{idProduct}=="374b", TAG+="uaccess"
+# ST-Link V3
+ATTRS{idVendor}=="0483", ATTRS{idProduct}=="374d", TAG+="uaccess"
+ATTRS{idVendor}=="0483", ATTRS{idProduct}=="374e", TAG+="uaccess"
+ATTRS{idVendor}=="0483", ATTRS{idProduct}=="374f", TAG+="uaccess"
+ATTRS{idVendor}=="0483", ATTRS{idProduct}=="3753", TAG+="uaccess"
+
+# CMSIS-DAP / DAPLink (generic HID VID:PID varies by board)
+ATTRS{idVendor}=="0d28", ATTRS{idProduct}=="0204", TAG+="uaccess"
+
+# J-Link (Segger)
+ATTRS{idVendor}=="1366", ATTRS{idProduct}=="0101", TAG+="uaccess"
+ATTRS{idVendor}=="1366", ATTRS{idProduct}=="0105", TAG+="uaccess"
+ATTRS{idVendor}=="1366", ATTRS{idProduct}=="1015", TAG+="uaccess"
+ATTRS{idVendor}=="1366", ATTRS{idProduct}=="1051", TAG+="uaccess"
+
+# WCH-Link
+ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="8010", TAG+="uaccess"
+ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="8012", TAG+="uaccess"

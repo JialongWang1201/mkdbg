@@ -50,6 +50,19 @@ jobs:
           sudo apt-get update -q
           sudo apt-get install -y gcc-aarch64-linux-gnu
 
+      # Rust is needed for probe-bridge on native builds.
+      # Cross-compile legs skip probe support (MKDBG_SKIP_PROBE=ON) to avoid
+      # requiring a cross-Rust toolchain in CI.
+      - name: Install Rust toolchain (native builds)
+        if: "!matrix.cross"
+        run: rustup toolchain install stable --no-self-update
+
+      # macOS x86_64 is cross-compiled from the arm64 runner; add the x86_64
+      # Rust target so cargo produces a compatible static lib.
+      - name: Add x86_64-apple-darwin Rust target (darwin-x86_64 leg)
+        if: matrix.osx_arch == 'x86_64'
+        run: rustup target add x86_64-apple-darwin
+
       - name: Configure (native)
         if: "!matrix.cross"
         run: |
@@ -69,7 +82,8 @@ jobs:
             -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc \
             -DCMAKE_SYSTEM_NAME=Linux \
             -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
-            -DMKDBG_SKIP_LG2=ON
+            -DMKDBG_SKIP_LG2=ON \
+            -DMKDBG_SKIP_PROBE=ON
 
       - name: Build
         run: cmake --build build --target mkdbg-native

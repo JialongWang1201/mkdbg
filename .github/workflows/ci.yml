@@ -25,6 +25,9 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Install Rust toolchain
+        run: rustup toolchain install stable --no-self-update
+
       - name: Build mkdbg-native and wire-host (CMake, with libgit2)
         run: |
           set -euxo pipefail
