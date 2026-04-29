@@ -19,6 +19,7 @@ mod rsp;
 
 use std::ffi::CStr;
 use std::os::raw::c_char;
+use std::panic;
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
 use std::sync::Mutex;
 use std::thread;
@@ -285,25 +286,35 @@ fn read_reg_u32(core: &mut probe_rs::Core<'_>, reg: u16) -> u32 {
 /// `out` must point to a buffer of at least `max` `ProbeInfo` entries.
 #[no_mangle]
 pub unsafe extern "C" fn probe_list(out: *mut ProbeInfo, max: i32) -> i32 {
-    let lister = Lister::new();
-    let probes = lister.list_all();
-    let n = probes.len();
-    let limit = (max.max(0) as usize).min(n);
+    let out_ptr = out as usize; // capture for use inside closure
+    let result = panic::catch_unwind(move || {
+        let out = out_ptr as *mut ProbeInfo;
+        let lister = Lister::new();
+        let probes = lister.list_all();
+        let n = probes.len();
+        let limit = (max.max(0) as usize).min(n);
 
-    for (i, info) in probes.iter().take(limit).enumerate() {
-        let slot = &mut *out.add(i);
-        *slot = ProbeInfo { identifier: [0u8; 128], serial: [0u8; 64], vid: info.vendor_id, pid: info.product_id };
+        for (i, info) in probes.iter().take(limit).enumerate() {
+            let slot = &mut *out.add(i);
+            *slot = ProbeInfo {
+                identifier: [0u8; 128],
+                serial: [0u8; 64],
+                vid: info.vendor_id,
+                pid: info.product_id,
+            };
 
-        let id_bytes = info.identifier.as_bytes();
-        let id_len = id_bytes.len().min(127);
-        slot.identifier[..id_len].copy_from_slice(&id_bytes[..id_len]);
+            let id_bytes = info.identifier.as_bytes();
+            let id_len = id_bytes.len().min(127);
+            slot.identifier[..id_len].copy_from_slice(&id_bytes[..id_len]);
 
-        let sn_bytes = info.serial_number.as_deref().unwrap_or("").as_bytes();
-        let sn_len = sn_bytes.len().min(63);
-        slot.serial[..sn_len].copy_from_slice(&sn_bytes[..sn_len]);
-    }
+            let sn_bytes = info.serial_number.as_deref().unwrap_or("").as_bytes();
+            let sn_len = sn_bytes.len().min(63);
+            slot.serial[..sn_len].copy_from_slice(&sn_bytes[..sn_len]);
+        }
 
-    n as i32
+        n as i32
+    });
+    result.unwrap_or(-1)
 }
 
 /// Connect to probe[`probe_idx`] and attach to target chip.
