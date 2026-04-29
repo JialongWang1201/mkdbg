@@ -202,7 +202,7 @@ int ensure_dir(const char *path)
 void print_check(int ok, const char *label, const char *detail, int *failed)
 {
   printf("[mkdbg] %-7s %s: %s\n", ok ? "ok" : "missing", label, detail);
-  if (!ok) {
+  if (!ok && failed != NULL) {
     *failed = 1;
   }
 }
