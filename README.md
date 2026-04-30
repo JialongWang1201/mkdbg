@@ -1,8 +1,10 @@
-<img src="docs/assets/logo.svg" alt="mkdbg" width="480"/>
+<img src="docs/assets/logo.svg" alt="mkdbg" width="400"/>
 
-**Crash diagnostics for embedded firmware — over UART, no debug probe needed.**
+[![CI](https://github.com/JialongWang1201/mkdbg/actions/workflows/ci.yml/badge.svg)](https://github.com/JialongWang1201/mkdbg/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/JialongWang1201/mkdbg?include_prereleases&label=release)](https://github.com/JialongWang1201/mkdbg/releases/latest)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Your board crashes at 3am. You have a serial cable. That's enough.
+Crash diagnostics and live debugging for embedded firmware over UART or hardware probe.
 
 ```
 $ mkdbg attach --port /dev/ttyUSB0
@@ -13,96 +15,105 @@ FAULT: HardFault (STKERR — stack overflow)
 
 Backtrace:
   #0  fault_handler
-  #1  task_sensor_run     ← likely culprit
+  #1  task_sensor_run
   #2  vTaskStartScheduler
 ```
 
 ---
 
-## How it works
+## Installation
 
-mkdbg is two things:
+Download a pre-built binary from the [latest release](https://github.com/JialongWang1201/mkdbg/releases/latest):
 
-**A firmware agent** (~300 lines of C) that you link into your RTOS. When the MCU faults, it halts and sends crash state over the UART you already use for logging.
+| Platform | Binary |
+|----------|--------|
+| Linux x86\_64 | `mkdbg-native-linux-x86_64` |
+| Linux arm64 | `mkdbg-native-linux-arm64` |
+| macOS Apple Silicon | `mkdbg-native-darwin-arm64` |
+| macOS Intel | `mkdbg-native-darwin-x86_64` |
 
-**A host CLI** that reads that crash state, decodes registers and the fault status register, and prints a human-readable report — in under a second.
-
-No J-Link. No ST-Link. No OpenOCD. No GDB required for a crash report.
-
----
-
-## Get started
-
-**1. Install the host tool**
+Or use the install script:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/JialongWang1201/mkdbg/main/scripts/install.sh | bash
 ```
 
-Or build from source (requires `cmake` and a C compiler):
+**Build from source** — requires `cmake`, a C compiler, and `cargo` for probe support:
 
 ```bash
 git clone --recurse-submodules https://github.com/JialongWang1201/mkdbg
-cmake -S mkdbg -B mkdbg/build && cmake --build mkdbg/build
+cmake -S mkdbg -B mkdbg/build -DCMAKE_BUILD_TYPE=Release
+cmake --build mkdbg/build --target mkdbg-native
 ```
 
-**2. Add the firmware agent**
-
-Drop two functions into your HardFault handler and UART HAL:
-
-```c
-// in your HardFault_Handler:
-wire_on_fault();          // halts CPU, sends crash state over UART
-
-// in your UART driver (send N bytes):
-void wire_uart_send(const uint8_t *buf, size_t len) { /* your HAL */ }
-void wire_uart_recv(uint8_t *buf, size_t len)       { /* your HAL */ }
-```
-
-That's it. See [`docs/PORTING.md`](docs/PORTING.md) for the full guide.
-The STM32F446RE reference is at [`examples/stm32f446/`](examples/stm32f446/).
-
-**3. Attach after a crash**
+**Linux udev rules** (required for ST-Link / CMSIS-DAP / J-Link without root):
 
 ```bash
-mkdbg attach --port /dev/ttyUSB0 --arch cortex-m
+sudo cp tools/69-probe-rs.rules /etc/udev/rules.d/ && sudo udevadm control --reload
 ```
 
 ---
 
-## What else it does
+## Firmware agent
 
-| Command | What you get |
-|---------|-------------|
-| `mkdbg attach` | Crash report: fault type, registers, heuristic backtrace |
-| `mkdbg debug --port /dev/ttyUSB0 --elf fw.elf` | Interactive live debugger: breakpoints, watchpoints, registers, step/continue, FreeRTOS task name |
-| `mkdbg seam analyze capture.cfl` | Causal chain from the fault event ring — *what led to the crash* |
-| `mkdbg dashboard` | Terminal UI: live probe status, build age, git state |
-| `wire-host --port /dev/ttyUSB0` | TCP↔UART bridge so `arm-none-eabi-gdb` connects without a probe |
+Link the `wire` agent into your firmware (~300 lines of C99, no OS dependencies):
+
+```c
+// HardFault_Handler:
+wire_on_fault();
+
+// UART driver:
+void wire_uart_send(const uint8_t *buf, size_t len) { /* HAL */ }
+void wire_uart_recv(uint8_t *buf, size_t len)       { /* HAL */ }
+```
+
+See [`docs/PORTING.md`](docs/PORTING.md). Reference implementation: [`examples/stm32f446/`](examples/stm32f446/).
 
 ---
 
-## Works on any MCU
+## Usage
 
-mkdbg is board-agnostic. The firmware agent is C99 with no OS dependencies — link it into FreeRTOS, Zephyr, bare-metal, anything.
+```bash
+# Crash report over UART
+mkdbg attach --port /dev/ttyUSB0
 
-Porting checklist: implement `wire_uart_send` / `wire_uart_recv`, call `wire_on_fault()` from your fault handler. Done.
+# Crash report via hardware probe (ST-Link / CMSIS-DAP / J-Link)
+mkdbg attach --probe --chip STM32F446RETx
 
-The host tool supports **Cortex-M** and **RISC-V 32-bit** out of the box. Pass `--arch riscv32` to `mkdbg debug` for RISC-V targets.
+# Interactive debug TUI
+mkdbg debug --port /dev/ttyUSB0 --elf build/firmware.elf
+mkdbg debug --probe --chip STM32F446RETx --elf build/firmware.elf
+
+# Causal analysis from fault event ring
+mkdbg seam analyze capture.cfl
+
+# GDB bridge (connects arm-none-eabi-gdb without a probe)
+wire-host --port /dev/ttyUSB0
+```
+
+---
+
+## Architecture support
+
+|  | Cortex-M0/M3/M4/M7 | RISC-V 32 |
+|--|:------------------:|:---------:|
+| `mkdbg attach` | ✓ | ✓ |
+| `mkdbg debug` (TUI) | ✓ | ✓ |
+| Hardware probe | ✓ | — |
+| FPU registers | ✓ | — |
 
 ---
 
 ## Documentation
 
-| Doc | What's in it |
-|-----|-------------|
-| [`docs/COMMANDS.md`](docs/COMMANDS.md) | Full command reference and config format |
-| [`docs/PORTING.md`](docs/PORTING.md) | Porting the firmware agent to a new MCU |
-| [`docs/DEVELOPER_GUIDE.md`](docs/DEVELOPER_GUIDE.md) | Source layout, build, testing, adding arch plugins |
-| [`examples/stm32f446/`](examples/stm32f446/) | STM32F446RE reference implementation |
+| | |
+|-|-|
+| [`docs/COMMANDS.md`](docs/COMMANDS.md) | Command reference and config format |
+| [`docs/PORTING.md`](docs/PORTING.md) | Porting the firmware agent |
+| [`docs/DEVELOPER_GUIDE.md`](docs/DEVELOPER_GUIDE.md) | Build system, testing, arch plugins |
 
 ---
 
 ## License
 
-MIT. The `seam` and `wire` submodules are also MIT. libgit2 is MIT.
+MIT. The `seam` and `wire` submodules are MIT. libgit2 is MIT.
