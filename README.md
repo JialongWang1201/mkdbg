@@ -1,10 +1,14 @@
-<img src="docs/assets/logo.svg" alt="mkdbg" width="400"/>
+<img src="docs/assets/logo.svg" alt="mkdbg" width="360"/>
 
 [![CI](https://github.com/JialongWang1201/mkdbg/actions/workflows/ci.yml/badge.svg)](https://github.com/JialongWang1201/mkdbg/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/JialongWang1201/mkdbg?include_prereleases&label=release)](https://github.com/JialongWang1201/mkdbg/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Crash diagnostics and live debugging for embedded firmware over UART or hardware probe.
+## Embedded firmware debugger. No debug probe required.
+
+mkdbg diagnoses crashes and runs a live debug session on your MCU over a **plain UART connection** — the same serial cable you already use for logs. If you do have an ST-Link or CMSIS-DAP, it works with that too.
+
+No OpenOCD configuration. No GDB install. No JTAG adapter.
 
 ```
 $ mkdbg attach --port /dev/ttyUSB0
@@ -15,15 +19,19 @@ FAULT: HardFault (STKERR — stack overflow)
 
 Backtrace:
   #0  fault_handler
-  #1  task_sensor_run
+  #1  task_sensor_run     ← likely culprit
   #2  vTaskStartScheduler
 ```
 
 ---
 
-## Installation
+## Install
 
-Download a pre-built binary from the [latest release](https://github.com/JialongWang1201/mkdbg/releases/latest):
+```bash
+curl -fsSL https://raw.githubusercontent.com/JialongWang1201/mkdbg/main/scripts/install.sh | bash
+```
+
+Or download a pre-built binary directly from the [latest release](https://github.com/JialongWang1201/mkdbg/releases/latest):
 
 | Platform | Binary |
 |----------|--------|
@@ -32,62 +40,48 @@ Download a pre-built binary from the [latest release](https://github.com/Jialong
 | macOS Apple Silicon | `mkdbg-native-darwin-arm64` |
 | macOS Intel | `mkdbg-native-darwin-x86_64` |
 
-Or use the install script:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/JialongWang1201/mkdbg/main/scripts/install.sh | bash
-```
-
-**Build from source** — requires `cmake`, a C compiler, and `cargo` for probe support:
-
-```bash
-git clone --recurse-submodules https://github.com/JialongWang1201/mkdbg
-cmake -S mkdbg -B mkdbg/build -DCMAKE_BUILD_TYPE=Release
-cmake --build mkdbg/build --target mkdbg-native
-```
-
-**Linux udev rules** (required for ST-Link / CMSIS-DAP / J-Link without root):
-
-```bash
-sudo cp tools/69-probe-rs.rules /etc/udev/rules.d/ && sudo udevadm control --reload
-```
-
 ---
 
-## Firmware agent
+## Add to your firmware
 
-Link the `wire` agent into your firmware (~300 lines of C99, no OS dependencies):
+Link the `wire` agent into your project — ~300 lines of C99, no OS dependencies:
 
 ```c
-// HardFault_Handler:
+// 1. Call from your fault handler:
 wire_on_fault();
 
-// UART driver:
-void wire_uart_send(const uint8_t *buf, size_t len) { /* HAL */ }
-void wire_uart_recv(uint8_t *buf, size_t len)       { /* HAL */ }
+// 2. Implement two UART functions:
+void wire_uart_send(const uint8_t *buf, size_t len) { /* your HAL */ }
+void wire_uart_recv(uint8_t *buf, size_t len)       { /* your HAL */ }
 ```
 
-See [`docs/PORTING.md`](docs/PORTING.md). Reference implementation: [`examples/stm32f446/`](examples/stm32f446/).
+That's the entire integration. Works with FreeRTOS, Zephyr, bare-metal, or any custom RTOS.
+
+Full porting guide: [`docs/PORTING.md`](docs/PORTING.md) · Reference implementation: [`examples/stm32f446/`](examples/stm32f446/)
 
 ---
 
-## Usage
+## What you can do
 
+**Crash report** — decode a fault the moment it happens:
 ```bash
-# Crash report over UART
 mkdbg attach --port /dev/ttyUSB0
+mkdbg attach --probe --chip STM32F446RETx   # hardware probe
+```
 
-# Crash report via hardware probe (ST-Link / CMSIS-DAP / J-Link)
-mkdbg attach --probe --chip STM32F446RETx
-
-# Interactive debug TUI
+**Live debug session** — breakpoints, step, registers, inline disassembly, FreeRTOS task names:
+```bash
 mkdbg debug --port /dev/ttyUSB0 --elf build/firmware.elf
 mkdbg debug --probe --chip STM32F446RETx --elf build/firmware.elf
+```
 
-# Causal analysis from fault event ring
+**Causal analysis** — trace the event chain that *led* to the crash:
+```bash
 mkdbg seam analyze capture.cfl
+```
 
-# GDB bridge (connects arm-none-eabi-gdb without a probe)
+**GDB bridge** — connect `arm-none-eabi-gdb` without a hardware probe:
+```bash
 wire-host --port /dev/ttyUSB0
 ```
 
@@ -95,12 +89,25 @@ wire-host --port /dev/ttyUSB0
 
 ## Architecture support
 
-|  | Cortex-M0/M3/M4/M7 | RISC-V 32 |
-|--|:------------------:|:---------:|
-| `mkdbg attach` | ✓ | ✓ |
-| `mkdbg debug` (TUI) | ✓ | ✓ |
-| Hardware probe | ✓ | — |
+| | Cortex-M (M0/M3/M4/M7) | RISC-V 32 |
+|--|:---:|:---:|
+| Crash report | ✓ | ✓ |
+| Live debug TUI | ✓ | ✓ |
 | FPU registers | ✓ | — |
+| Hardware probe | ✓ | — |
+
+The built-in disassembler covers the full Thumb/Thumb-2 instruction set including FPU (VFPv4). No dependency on `objdump` or `addr2line`.
+
+---
+
+## Hardware probe support
+
+mkdbg supports ST-Link, CMSIS-DAP, and J-Link via [probe-rs](https://probe.rs).
+
+On Linux, USB access requires a udev rule:
+```bash
+sudo cp tools/69-probe-rs.rules /etc/udev/rules.d/ && sudo udevadm control --reload
+```
 
 ---
 
@@ -108,12 +115,12 @@ wire-host --port /dev/ttyUSB0
 
 | | |
 |-|-|
-| [`docs/COMMANDS.md`](docs/COMMANDS.md) | Command reference and config format |
-| [`docs/PORTING.md`](docs/PORTING.md) | Porting the firmware agent |
-| [`docs/DEVELOPER_GUIDE.md`](docs/DEVELOPER_GUIDE.md) | Build system, testing, arch plugins |
+| [`docs/COMMANDS.md`](docs/COMMANDS.md) | Full command reference and config format |
+| [`docs/PORTING.md`](docs/PORTING.md) | Porting the firmware agent to a new board |
+| [`docs/DEVELOPER_GUIDE.md`](docs/DEVELOPER_GUIDE.md) | Build system, testing, adding arch plugins |
 
 ---
 
 ## License
 
-MIT. The `seam` and `wire` submodules are MIT. libgit2 is MIT.
+MIT. The `wire` and `seam` submodules are MIT. libgit2 is MIT.
