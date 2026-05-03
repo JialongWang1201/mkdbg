@@ -559,6 +559,8 @@ int parse_replay_args(int argc, char **argv, ReplayOptions *opts)
   for (i = 0; i < argc; ++i) {
     if (strcmp(argv[i], "--json") == 0) {
       opts->json = 1;
+    } else if (strcmp(argv[i], "--timeline") == 0) {
+      opts->timeline = 1;
     } else if (argv[i][0] == '-') {
       die("unknown replay argument: %s", argv[i]);
     } else if (opts->bundle == NULL) {

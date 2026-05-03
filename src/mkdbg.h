@@ -233,6 +233,7 @@ typedef struct {
 typedef struct {
   const char *bundle;
   int json;
+  int timeline;
 } ReplayOptions;
 
 typedef struct {
