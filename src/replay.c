@@ -1,5 +1,24 @@
 #include "mkdbg.h"
 
+#define REPLAY_TEXT_MAX 65536U
+#define TIMELINE_MAX_EVENTS 128U
+
+typedef struct {
+  int event_id;
+  int age_ms;
+  int ts_ms;
+  char corr_id[32];
+  char flags[32];
+  char stage[96];
+  char msg[256];
+} TimelineEvent;
+
+typedef struct {
+  TimelineEvent events[TIMELINE_MAX_EVENTS];
+  size_t count;
+  int truncated;
+} Timeline;
+
 static int read_file_text(const char *path, char *buf, size_t buf_size)
 {
   FILE *f;
@@ -23,6 +42,59 @@ static const char *json_key(const char *buf, const char *key)
   char needle[128];
   snprintf(needle, sizeof(needle), "\"%s\":", key);
   return strstr(buf, needle);
+}
+
+static const char *json_array_key(const char *buf, const char *key)
+{
+  const char *p = buf;
+
+  while ((p = json_key(p, key)) != NULL) {
+    const char *q = strchr(p, ':');
+    if (q == NULL) return NULL;
+    q++;
+    while (*q != '\0' && isspace((unsigned char)*q)) q++;
+    if (*q == '[') return q;
+    p = q;
+  }
+  return NULL;
+}
+
+static const char *json_next_array_key(const char *buf, const char *key,
+                                       const char *after)
+{
+  if (after == NULL) return json_array_key(buf, key);
+  return json_array_key(after, key);
+}
+
+static const char *matching_delim(const char *open, char left, char right)
+{
+  const char *p = open;
+  int depth = 0;
+  int in_string = 0;
+  int escape = 0;
+
+  if (open == NULL || *open != left) return NULL;
+  for (; *p != '\0'; p++) {
+    if (in_string) {
+      if (escape) {
+        escape = 0;
+      } else if (*p == '\\') {
+        escape = 1;
+      } else if (*p == '"') {
+        in_string = 0;
+      }
+      continue;
+    }
+    if (*p == '"') {
+      in_string = 1;
+    } else if (*p == left) {
+      depth++;
+    } else if (*p == right) {
+      depth--;
+      if (depth == 0) return p;
+    }
+  }
+  return NULL;
 }
 
 static void json_string_value(const char *buf, const char *key,
@@ -58,9 +130,105 @@ static int json_int_value(const char *buf, const char *key)
   return atoi(p);
 }
 
+static int timeline_event_is_fault(const TimelineEvent *ev)
+{
+  return strstr(ev->flags, "fault") != NULL ||
+         strstr(ev->msg, "Fault") != NULL ||
+         strstr(ev->msg, "HardFault") != NULL;
+}
+
+static void timeline_add_object(Timeline *tl, const char *start, const char *end)
+{
+  char obj[2048];
+  size_t len;
+  TimelineEvent *ev;
+
+  if (start == NULL || end == NULL || end <= start) return;
+  if (tl->count >= TIMELINE_MAX_EVENTS) {
+    tl->truncated = 1;
+    return;
+  }
+  len = (size_t)(end - start + 1);
+  if (len >= sizeof(obj)) len = sizeof(obj) - 1U;
+  memcpy(obj, start, len);
+  obj[len] = '\0';
+
+  ev = &tl->events[tl->count];
+  memset(ev, 0, sizeof(*ev));
+  json_string_value(obj, "msg", ev->msg, sizeof(ev->msg));
+  if (ev->msg[0] == '\0') return;
+
+  ev->event_id = json_int_value(obj, "event_id");
+  ev->age_ms = json_int_value(obj, "age_ms");
+  ev->ts_ms = json_int_value(obj, "ts_ms");
+  json_string_value(obj, "corr_id", ev->corr_id, sizeof(ev->corr_id));
+  json_string_value(obj, "flags", ev->flags, sizeof(ev->flags));
+  json_string_value(obj, "stage", ev->stage, sizeof(ev->stage));
+  tl->count++;
+}
+
+static void timeline_parse_array(Timeline *tl, const char *array_start)
+{
+  const char *array_end = matching_delim(array_start, '[', ']');
+  const char *p = array_start;
+
+  if (array_end == NULL) return;
+  while ((p = strchr(p, '{')) != NULL && p < array_end) {
+    const char *obj_end = matching_delim(p, '{', '}');
+    if (obj_end == NULL || obj_end > array_end) return;
+    timeline_add_object(tl, p, obj_end);
+    p = obj_end + 1;
+  }
+}
+
+static int load_timeline(const char *path, Timeline *timeline)
+{
+  char buf[REPLAY_TEXT_MAX];
+  const char *array;
+  const char *cursor = NULL;
+
+  memset(timeline, 0, sizeof(*timeline));
+  if (read_file_text(path, buf, sizeof(buf)) != 0) {
+    return -1;
+  }
+
+  while ((array = json_next_array_key(buf, "events", cursor)) != NULL) {
+    timeline_parse_array(timeline, array);
+    cursor = array + 1;
+  }
+  return 0;
+}
+
+static void print_timeline_text(const char *path, const Timeline *timeline)
+{
+  size_t i;
+
+  printf("bundle: %s\n", path);
+  printf("timeline_events: %zu", timeline->count);
+  if (timeline->truncated) printf(" (truncated)");
+  printf("\n");
+  if (timeline->count == 0U) {
+    printf("timeline: no events found\n");
+    return;
+  }
+  for (i = 0; i < timeline->count; i++) {
+    const TimelineEvent *ev = &timeline->events[i];
+    char marker = timeline_event_is_fault(ev) ? '!' : ' ';
+    printf("%c %03d", marker, ev->event_id);
+    if (ev->age_ms != 0) printf("  -%dms", ev->age_ms);
+    else if (ev->ts_ms != 0) printf("  t=%dms", ev->ts_ms);
+    else printf("  t=?");
+    printf("  %s", ev->msg);
+    if (ev->stage[0] != '\0') printf("  stage=%s", ev->stage);
+    if (ev->flags[0] != '\0') printf("  flags=%s", ev->flags);
+    if (ev->corr_id[0] != '\0') printf("  corr=%s", ev->corr_id);
+    printf("\n");
+  }
+}
+
 int load_bundle_summary(const char *path, BundleSummary *summary)
 {
-  char buf[16384];
+  char buf[REPLAY_TEXT_MAX];
 
   memset(summary, 0, sizeof(*summary));
   copy_string(summary->path, sizeof(summary->path), path);
@@ -82,6 +250,17 @@ int load_bundle_summary(const char *path, BundleSummary *summary)
 int cmd_replay(const ReplayOptions *opts)
 {
   BundleSummary s;
+  Timeline timeline;
+
+  if (opts->timeline) {
+    if (load_timeline(opts->bundle, &timeline) != 0) {
+      fprintf(stderr, "mkdbg: replay: cannot read %s\n", opts->bundle);
+      return 1;
+    }
+    print_timeline_text(opts->bundle, &timeline);
+    return 0;
+  }
+
   if (load_bundle_summary(opts->bundle, &s) != 0) {
     fprintf(stderr, "mkdbg: replay: cannot read %s\n", opts->bundle);
     return 1;
