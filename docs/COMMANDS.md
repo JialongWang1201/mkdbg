@@ -65,6 +65,7 @@ mkdbg hil --port /dev/cu.usbmodem21303
 mkdbg watch --target microkernel
 mkdbg watch --target microkernel --bundle-json tests/fixtures/triage/sample_bundle.json --render-once
 mkdbg replay build/mkdbg.bundle.json
+mkdbg replay build/mkdbg.bundle.json --timeline
 mkdbg diff before.bundle.json after.bundle.json
 ```
 
@@ -174,6 +175,7 @@ Current MVP supports:
 - `mkdbg snapshot`
 - `mkdbg attach`
 - `mkdbg replay`
+- `mkdbg replay --timeline`
 - `mkdbg diff`
 - `mkdbg run`
 - `mkdbg watch`
