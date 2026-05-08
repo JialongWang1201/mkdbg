@@ -130,6 +130,23 @@ static int json_int_value(const char *buf, const char *key)
   return atoi(p);
 }
 
+static void print_json_string(const char *s)
+{
+  putchar('"');
+  for (; *s != '\0'; s++) {
+    unsigned char c = (unsigned char)*s;
+    if (*s == '"' || *s == '\\') {
+      putchar('\\');
+      putchar(*s);
+    } else if (c < 0x20U) {
+      printf("\\u%04x", c);
+    } else {
+      putchar(*s);
+    }
+  }
+  putchar('"');
+}
+
 static int timeline_event_is_fault(const TimelineEvent *ev)
 {
   return strstr(ev->flags, "fault") != NULL ||
@@ -226,6 +243,34 @@ static void print_timeline_text(const char *path, const Timeline *timeline)
   }
 }
 
+static void print_timeline_json(const char *path, const Timeline *timeline)
+{
+  size_t i;
+
+  printf("{\"bundle\":");
+  print_json_string(path);
+  printf(",\"event_count\":%zu,\"truncated\":%s,\"events\":[",
+         timeline->count, timeline->truncated ? "true" : "false");
+  for (i = 0; i < timeline->count; i++) {
+    const TimelineEvent *ev = &timeline->events[i];
+    if (i != 0U) printf(",");
+    printf("{\"event_id\":%d,\"age_ms\":%d,\"ts_ms\":%d,"
+           "\"fault_anchor\":%s,",
+           ev->event_id, ev->age_ms, ev->ts_ms,
+           timeline_event_is_fault(ev) ? "true" : "false");
+    printf("\"stage\":");
+    print_json_string(ev->stage);
+    printf(",\"flags\":");
+    print_json_string(ev->flags);
+    printf(",\"corr_id\":");
+    print_json_string(ev->corr_id);
+    printf(",\"msg\":");
+    print_json_string(ev->msg);
+    printf("}");
+  }
+  printf("]}\n");
+}
+
 int load_bundle_summary(const char *path, BundleSummary *summary)
 {
   char buf[REPLAY_TEXT_MAX];
@@ -257,7 +302,11 @@ int cmd_replay(const ReplayOptions *opts)
       fprintf(stderr, "mkdbg: replay: cannot read %s\n", opts->bundle);
       return 1;
     }
-    print_timeline_text(opts->bundle, &timeline);
+    if (opts->json) {
+      print_timeline_json(opts->bundle, &timeline);
+    } else {
+      print_timeline_text(opts->bundle, &timeline);
+    }
     return 0;
   }
 
