@@ -77,5 +77,16 @@ check "arch_test"  bash -c "${ARCH_TEST} | grep -qE '[0-9]+/[0-9]+ tests passed'
 # dwarf symbol lookup
 check "dwarf_test"  bash -c "${DWARF_TEST} | grep -qE '[0-9]+/[0-9]+ tests passed'"
 
+# timeline replay from an existing triage bundle fixture
+TIMELINE_FIXTURE="${ROOT_DIR}/tests/fixtures/triage/sample_bundle.json"
+if [[ -f "${TIMELINE_FIXTURE}" ]]; then
+  check "mkdbg replay --timeline sample_bundle.json" \
+    bash -c "${MKDBG} replay ${TIMELINE_FIXTURE} --timeline | grep -q 'timeline_events:'"
+  check "mkdbg replay --timeline marks fault anchor" \
+    bash -c "${MKDBG} replay ${TIMELINE_FIXTURE} --timeline | grep -q '^!'"
+else
+  echo "  SKIP  replay timeline fixture"
+fi
+
 echo ""
 echo "smoke: OK"
