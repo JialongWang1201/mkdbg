@@ -216,6 +216,34 @@ static int load_timeline(const char *path, Timeline *timeline)
   return 0;
 }
 
+static const TimelineEvent *timeline_find_event(const Timeline *timeline,
+                                                int event_id)
+{
+  size_t i;
+
+  for (i = 0; i < timeline->count; i++) {
+    if (timeline->events[i].event_id == event_id) {
+      return &timeline->events[i];
+    }
+  }
+  return NULL;
+}
+
+static void print_timeline_event_text(const char *path,
+                                      const TimelineEvent *ev)
+{
+  printf("bundle: %s\n", path);
+  printf("event: %d\n", ev->event_id);
+  printf("fault_anchor: %s\n", timeline_event_is_fault(ev) ? "yes" : "no");
+  if (ev->age_ms != 0) printf("time: -%dms\n", ev->age_ms);
+  else if (ev->ts_ms != 0) printf("time: %dms\n", ev->ts_ms);
+  else printf("time: unknown\n");
+  printf("stage: %s\n", ev->stage[0] ? ev->stage : "unknown");
+  printf("flags: %s\n", ev->flags[0] ? ev->flags : "unknown");
+  printf("corr: %s\n", ev->corr_id[0] ? ev->corr_id : "unknown");
+  printf("msg: %s\n", ev->msg);
+}
+
 static void print_timeline_text(const char *path, const Timeline *timeline)
 {
   size_t i;
@@ -301,6 +329,15 @@ int cmd_replay(const ReplayOptions *opts)
     if (load_timeline(opts->bundle, &timeline) != 0) {
       fprintf(stderr, "mkdbg: replay: cannot read %s\n", opts->bundle);
       return 1;
+    }
+    if (opts->event_id >= 0) {
+      const TimelineEvent *ev = timeline_find_event(&timeline, opts->event_id);
+      if (ev == NULL) {
+        fprintf(stderr, "mkdbg: replay: event %d not found\n", opts->event_id);
+        return 1;
+      }
+      print_timeline_event_text(opts->bundle, ev);
+      return 0;
     }
     if (opts->json) {
       print_timeline_json(opts->bundle, &timeline);
