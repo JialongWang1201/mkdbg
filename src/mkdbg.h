@@ -234,6 +234,7 @@ typedef struct {
   const char *bundle;
   int json;
   int timeline;
+  int event_id;
 } ReplayOptions;
 
 typedef struct {
