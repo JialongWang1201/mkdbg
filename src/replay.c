@@ -271,6 +271,26 @@ static void print_timeline_text(const char *path, const Timeline *timeline)
   }
 }
 
+static void print_timeline_event_json(const char *path,
+                                      const TimelineEvent *ev)
+{
+  printf("{\"bundle\":");
+  print_json_string(path);
+  printf(",\"event\":{\"event_id\":%d,\"age_ms\":%d,\"ts_ms\":%d,"
+         "\"fault_anchor\":%s,",
+         ev->event_id, ev->age_ms, ev->ts_ms,
+         timeline_event_is_fault(ev) ? "true" : "false");
+  printf("\"stage\":");
+  print_json_string(ev->stage);
+  printf(",\"flags\":");
+  print_json_string(ev->flags);
+  printf(",\"corr_id\":");
+  print_json_string(ev->corr_id);
+  printf(",\"msg\":");
+  print_json_string(ev->msg);
+  printf("}}\n");
+}
+
 static void print_timeline_json(const char *path, const Timeline *timeline)
 {
   size_t i;
@@ -336,7 +356,11 @@ int cmd_replay(const ReplayOptions *opts)
         fprintf(stderr, "mkdbg: replay: event %d not found\n", opts->event_id);
         return 1;
       }
-      print_timeline_event_text(opts->bundle, ev);
+      if (opts->json) {
+        print_timeline_event_json(opts->bundle, ev);
+      } else {
+        print_timeline_event_text(opts->bundle, ev);
+      }
       return 0;
     }
     if (opts->json) {
