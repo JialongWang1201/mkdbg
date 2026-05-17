@@ -84,6 +84,10 @@ if [[ -f "${TIMELINE_FIXTURE}" ]]; then
     bash -c "${MKDBG} replay ${TIMELINE_FIXTURE} --timeline | grep -q 'timeline_events:'"
   check "mkdbg replay --timeline marks fault anchor" \
     bash -c "${MKDBG} replay ${TIMELINE_FIXTURE} --timeline | grep -q '^!'"
+  check "mkdbg replay --timeline --event selects event" \
+    bash -c "${MKDBG} replay ${TIMELINE_FIXTURE} --timeline --event 2 | grep -q '^event: 2$'"
+  check "mkdbg replay --timeline --event --json selects event" \
+    bash -c "${MKDBG} replay ${TIMELINE_FIXTURE} --timeline --event 2 --json | grep -q '\"event_id\":2'"
 else
   echo "  SKIP  replay timeline fixture"
 fi
