@@ -229,6 +229,19 @@ static const TimelineEvent *timeline_find_event(const Timeline *timeline,
   return NULL;
 }
 
+static const TimelineEvent *timeline_find_fault(const Timeline *timeline)
+{
+  size_t i;
+
+  for (i = 0; i < timeline->count; i++) {
+    const TimelineEvent *ev = &timeline->events[i];
+    if (timeline_event_is_fault(ev)) {
+      return ev;
+    }
+  }
+  return NULL;
+}
+
 static void print_timeline_event_text(const char *path,
                                       const TimelineEvent *ev)
 {
@@ -361,6 +374,15 @@ int cmd_replay(const ReplayOptions *opts)
       } else {
         print_timeline_event_text(opts->bundle, ev);
       }
+      return 0;
+    }
+    if (opts->fault) {
+      const TimelineEvent *ev = timeline_find_fault(&timeline);
+      if (ev == NULL) {
+        fprintf(stderr, "mkdbg: replay: no fault event found\n");
+        return 1;
+      }
+      print_timeline_event_text(opts->bundle, ev);
       return 0;
     }
     if (opts->json) {
