@@ -562,6 +562,8 @@ int parse_replay_args(int argc, char **argv, ReplayOptions *opts)
       opts->json = 1;
     } else if (strcmp(argv[i], "--timeline") == 0) {
       opts->timeline = 1;
+    } else if (strcmp(argv[i], "--fault") == 0) {
+      opts->fault = 1;
     } else if (strcmp(argv[i], "--event") == 0) {
       char *end = NULL;
       long v;
@@ -588,6 +590,12 @@ int parse_replay_args(int argc, char **argv, ReplayOptions *opts)
   }
   if (opts->event_id >= 0 && !opts->timeline) {
     die("replay --event requires --timeline");
+  }
+  if (opts->fault && !opts->timeline) {
+    die("replay --fault requires --timeline");
+  }
+  if (opts->fault && opts->event_id >= 0) {
+    die("replay accepts at most one of --fault or --event");
   }
   return 0;
 }

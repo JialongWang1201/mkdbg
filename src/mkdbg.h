@@ -235,6 +235,7 @@ typedef struct {
   int json;
   int timeline;
   int event_id;
+  int fault;
 } ReplayOptions;
 
 typedef struct {
