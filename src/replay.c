@@ -382,7 +382,11 @@ int cmd_replay(const ReplayOptions *opts)
         fprintf(stderr, "mkdbg: replay: no fault event found\n");
         return 1;
       }
-      print_timeline_event_text(opts->bundle, ev);
+      if (opts->json) {
+        print_timeline_event_json(opts->bundle, ev);
+      } else {
+        print_timeline_event_text(opts->bundle, ev);
+      }
       return 0;
     }
     if (opts->json) {
