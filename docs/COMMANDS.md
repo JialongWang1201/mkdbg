@@ -67,6 +67,7 @@ mkdbg watch --target microkernel --bundle-json tests/fixtures/triage/sample_bund
 mkdbg replay build/mkdbg.bundle.json
 mkdbg replay build/mkdbg.bundle.json --timeline
 mkdbg replay build/mkdbg.bundle.json --timeline --event 2
+mkdbg replay build/mkdbg.bundle.json --timeline --fault
 mkdbg diff before.bundle.json after.bundle.json
 ```
 
