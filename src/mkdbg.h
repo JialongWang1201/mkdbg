@@ -236,6 +236,7 @@ typedef struct {
   int timeline;
   int event_id;
   int fault;
+  int context_radius;
 } ReplayOptions;
 
 typedef struct {
