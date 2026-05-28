@@ -216,30 +216,28 @@ static int load_timeline(const char *path, Timeline *timeline)
   return 0;
 }
 
-static const TimelineEvent *timeline_find_event(const Timeline *timeline,
-                                                int event_id)
+static int timeline_find_event_index(const Timeline *timeline, int event_id)
 {
   size_t i;
 
   for (i = 0; i < timeline->count; i++) {
     if (timeline->events[i].event_id == event_id) {
-      return &timeline->events[i];
+      return (int)i;
     }
   }
-  return NULL;
+  return -1;
 }
 
-static const TimelineEvent *timeline_find_fault(const Timeline *timeline)
+static int timeline_find_fault_index(const Timeline *timeline)
 {
   size_t i;
 
   for (i = 0; i < timeline->count; i++) {
-    const TimelineEvent *ev = &timeline->events[i];
-    if (timeline_event_is_fault(ev)) {
-      return ev;
+    if (timeline_event_is_fault(&timeline->events[i])) {
+      return (int)i;
     }
   }
-  return NULL;
+  return -1;
 }
 
 static void print_timeline_event_text(const char *path,
@@ -257,6 +255,42 @@ static void print_timeline_event_text(const char *path,
   printf("msg: %s\n", ev->msg);
 }
 
+static void print_timeline_event_line(const TimelineEvent *ev, char marker)
+{
+  printf("%c %03d", marker, ev->event_id);
+  if (ev->age_ms != 0) printf("  -%dms", ev->age_ms);
+  else if (ev->ts_ms != 0) printf("  t=%dms", ev->ts_ms);
+  else printf("  t=?");
+  printf("  %s", ev->msg);
+  if (ev->stage[0] != '\0') printf("  stage=%s", ev->stage);
+  if (ev->flags[0] != '\0') printf("  flags=%s", ev->flags);
+  if (ev->corr_id[0] != '\0') printf("  corr=%s", ev->corr_id);
+  printf("\n");
+}
+
+static void print_timeline_context_text(const Timeline *timeline,
+                                        int selected_index,
+                                        int radius)
+{
+  size_t i;
+  size_t start;
+  size_t end;
+  size_t selected = (size_t)selected_index;
+  size_t r = (size_t)radius;
+
+  if (selected_index < 0 || timeline->count == 0U) return;
+  start = selected > r ? selected - r : 0U;
+  end = selected + r;
+  if (end >= timeline->count) end = timeline->count - 1U;
+
+  printf("context_events: %zu\n", end - start + 1U);
+  for (i = start; i <= end; i++) {
+    const TimelineEvent *ev = &timeline->events[i];
+    char marker = i == selected ? '>' : (timeline_event_is_fault(ev) ? '!' : ' ');
+    print_timeline_event_line(ev, marker);
+  }
+}
+
 static void print_timeline_text(const char *path, const Timeline *timeline)
 {
   size_t i;
@@ -272,15 +306,7 @@ static void print_timeline_text(const char *path, const Timeline *timeline)
   for (i = 0; i < timeline->count; i++) {
     const TimelineEvent *ev = &timeline->events[i];
     char marker = timeline_event_is_fault(ev) ? '!' : ' ';
-    printf("%c %03d", marker, ev->event_id);
-    if (ev->age_ms != 0) printf("  -%dms", ev->age_ms);
-    else if (ev->ts_ms != 0) printf("  t=%dms", ev->ts_ms);
-    else printf("  t=?");
-    printf("  %s", ev->msg);
-    if (ev->stage[0] != '\0') printf("  stage=%s", ev->stage);
-    if (ev->flags[0] != '\0') printf("  flags=%s", ev->flags);
-    if (ev->corr_id[0] != '\0') printf("  corr=%s", ev->corr_id);
-    printf("\n");
+    print_timeline_event_line(ev, marker);
   }
 }
 
@@ -364,28 +390,38 @@ int cmd_replay(const ReplayOptions *opts)
       return 1;
     }
     if (opts->event_id >= 0) {
-      const TimelineEvent *ev = timeline_find_event(&timeline, opts->event_id);
-      if (ev == NULL) {
+      int selected_index = timeline_find_event_index(&timeline, opts->event_id);
+      if (selected_index < 0) {
         fprintf(stderr, "mkdbg: replay: event %d not found\n", opts->event_id);
         return 1;
       }
+      const TimelineEvent *ev = &timeline.events[selected_index];
       if (opts->json) {
         print_timeline_event_json(opts->bundle, ev);
       } else {
         print_timeline_event_text(opts->bundle, ev);
+        if (opts->context_radius >= 0) {
+          print_timeline_context_text(&timeline, selected_index,
+                                      opts->context_radius);
+        }
       }
       return 0;
     }
     if (opts->fault) {
-      const TimelineEvent *ev = timeline_find_fault(&timeline);
-      if (ev == NULL) {
+      int selected_index = timeline_find_fault_index(&timeline);
+      if (selected_index < 0) {
         fprintf(stderr, "mkdbg: replay: no fault event found\n");
         return 1;
       }
+      const TimelineEvent *ev = &timeline.events[selected_index];
       if (opts->json) {
         print_timeline_event_json(opts->bundle, ev);
       } else {
         print_timeline_event_text(opts->bundle, ev);
+        if (opts->context_radius >= 0) {
+          print_timeline_context_text(&timeline, selected_index,
+                                      opts->context_radius);
+        }
       }
       return 0;
     }
