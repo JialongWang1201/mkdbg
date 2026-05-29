@@ -310,12 +310,9 @@ static void print_timeline_text(const char *path, const Timeline *timeline)
   }
 }
 
-static void print_timeline_event_json(const char *path,
-                                      const TimelineEvent *ev)
+static void print_timeline_event_json_object(const TimelineEvent *ev)
 {
-  printf("{\"bundle\":");
-  print_json_string(path);
-  printf(",\"event\":{\"event_id\":%d,\"age_ms\":%d,\"ts_ms\":%d,"
+  printf("{\"event_id\":%d,\"age_ms\":%d,\"ts_ms\":%d,"
          "\"fault_anchor\":%s,",
          ev->event_id, ev->age_ms, ev->ts_ms,
          timeline_event_is_fault(ev) ? "true" : "false");
@@ -327,7 +324,45 @@ static void print_timeline_event_json(const char *path,
   print_json_string(ev->corr_id);
   printf(",\"msg\":");
   print_json_string(ev->msg);
-  printf("}}\n");
+  printf("}");
+}
+
+static void print_timeline_event_json(const char *path,
+                                      const TimelineEvent *ev)
+{
+  printf("{\"bundle\":");
+  print_json_string(path);
+  printf(",\"event\":");
+  print_timeline_event_json_object(ev);
+  printf("}\n");
+}
+
+static void print_timeline_context_json(const char *path,
+                                        const Timeline *timeline,
+                                        int selected_index,
+                                        int radius)
+{
+  size_t i;
+  size_t start;
+  size_t end;
+  size_t selected = (size_t)selected_index;
+  size_t r = (size_t)radius;
+
+  if (selected_index < 0 || timeline->count == 0U) return;
+  start = selected > r ? selected - r : 0U;
+  end = selected + r;
+  if (end >= timeline->count) end = timeline->count - 1U;
+
+  printf("{\"bundle\":");
+  print_json_string(path);
+  printf(",\"selected_event_id\":%d,\"context_radius\":%d,"
+         "\"event_count\":%zu,\"events\":[",
+         timeline->events[selected].event_id, radius, end - start + 1U);
+  for (i = start; i <= end; i++) {
+    if (i != start) printf(",");
+    print_timeline_event_json_object(&timeline->events[i]);
+  }
+  printf("]}\n");
 }
 
 static void print_timeline_json(const char *path, const Timeline *timeline)
@@ -341,19 +376,7 @@ static void print_timeline_json(const char *path, const Timeline *timeline)
   for (i = 0; i < timeline->count; i++) {
     const TimelineEvent *ev = &timeline->events[i];
     if (i != 0U) printf(",");
-    printf("{\"event_id\":%d,\"age_ms\":%d,\"ts_ms\":%d,"
-           "\"fault_anchor\":%s,",
-           ev->event_id, ev->age_ms, ev->ts_ms,
-           timeline_event_is_fault(ev) ? "true" : "false");
-    printf("\"stage\":");
-    print_json_string(ev->stage);
-    printf(",\"flags\":");
-    print_json_string(ev->flags);
-    printf(",\"corr_id\":");
-    print_json_string(ev->corr_id);
-    printf(",\"msg\":");
-    print_json_string(ev->msg);
-    printf("}");
+    print_timeline_event_json_object(ev);
   }
   printf("]}\n");
 }
@@ -397,7 +420,12 @@ int cmd_replay(const ReplayOptions *opts)
       }
       const TimelineEvent *ev = &timeline.events[selected_index];
       if (opts->json) {
-        print_timeline_event_json(opts->bundle, ev);
+        if (opts->context_radius >= 0) {
+          print_timeline_context_json(opts->bundle, &timeline, selected_index,
+                                      opts->context_radius);
+        } else {
+          print_timeline_event_json(opts->bundle, ev);
+        }
       } else {
         print_timeline_event_text(opts->bundle, ev);
         if (opts->context_radius >= 0) {
@@ -415,7 +443,12 @@ int cmd_replay(const ReplayOptions *opts)
       }
       const TimelineEvent *ev = &timeline.events[selected_index];
       if (opts->json) {
-        print_timeline_event_json(opts->bundle, ev);
+        if (opts->context_radius >= 0) {
+          print_timeline_context_json(opts->bundle, &timeline, selected_index,
+                                      opts->context_radius);
+        } else {
+          print_timeline_event_json(opts->bundle, ev);
+        }
       } else {
         print_timeline_event_text(opts->bundle, ev);
         if (opts->context_radius >= 0) {
