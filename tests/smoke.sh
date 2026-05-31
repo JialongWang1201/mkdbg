@@ -92,6 +92,10 @@ if [[ -f "${TIMELINE_FIXTURE}" ]]; then
     bash -c "${MKDBG} replay ${TIMELINE_FIXTURE} --timeline --fault | grep -q '^fault_anchor: yes$'"
   check "mkdbg replay --timeline --fault --json selects first fault" \
     bash -c "${MKDBG} replay ${TIMELINE_FIXTURE} --timeline --fault --json | grep -q '\"fault_anchor\":true'"
+  check "mkdbg replay --timeline --event --context selects window" \
+    bash -c "${MKDBG} replay ${TIMELINE_FIXTURE} --timeline --event 2 --context 1 | grep -q '^context_events: 2$'"
+  check "mkdbg replay --timeline --fault --context --json selects window" \
+    bash -c "${MKDBG} replay ${TIMELINE_FIXTURE} --timeline --fault --context 1 --json | grep -q '\"event_count\":2'"
 else
   echo "  SKIP  replay timeline fixture"
 fi
