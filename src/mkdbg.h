@@ -233,6 +233,10 @@ typedef struct {
 typedef struct {
   const char *bundle;
   int json;
+  int timeline;
+  int event_id;
+  int fault;
+  int context_radius;
 } ReplayOptions;
 
 typedef struct {

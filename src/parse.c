@@ -556,9 +556,41 @@ int parse_replay_args(int argc, char **argv, ReplayOptions *opts)
 {
   int i;
   memset(opts, 0, sizeof(*opts));
+  opts->event_id = -1;
+  opts->context_radius = -1;
   for (i = 0; i < argc; ++i) {
     if (strcmp(argv[i], "--json") == 0) {
       opts->json = 1;
+    } else if (strcmp(argv[i], "--timeline") == 0) {
+      opts->timeline = 1;
+    } else if (strcmp(argv[i], "--fault") == 0) {
+      opts->fault = 1;
+    } else if (strcmp(argv[i], "--context") == 0) {
+      char *end = NULL;
+      long v;
+      if (i + 1 >= argc) {
+        die("missing value for --context");
+      }
+      errno = 0;
+      v = strtol(argv[++i], &end, 10);
+      if (errno != 0 || end == argv[i] || *end != '\0' ||
+          v < 0L || v > 64L) {
+        die("invalid --context value: %s", argv[i]);
+      }
+      opts->context_radius = (int)v;
+    } else if (strcmp(argv[i], "--event") == 0) {
+      char *end = NULL;
+      long v;
+      if (i + 1 >= argc) {
+        die("missing value for --event");
+      }
+      errno = 0;
+      v = strtol(argv[++i], &end, 10);
+      if (errno != 0 || end == argv[i] || *end != '\0' ||
+          v < 0L || v > INT_MAX) {
+        die("invalid --event value: %s", argv[i]);
+      }
+      opts->event_id = (int)v;
     } else if (argv[i][0] == '-') {
       die("unknown replay argument: %s", argv[i]);
     } else if (opts->bundle == NULL) {
@@ -569,6 +601,21 @@ int parse_replay_args(int argc, char **argv, ReplayOptions *opts)
   }
   if (opts->bundle == NULL) {
     die("replay requires a bundle path");
+  }
+  if (opts->event_id >= 0 && !opts->timeline) {
+    die("replay --event requires --timeline");
+  }
+  if (opts->fault && !opts->timeline) {
+    die("replay --fault requires --timeline");
+  }
+  if (opts->fault && opts->event_id >= 0) {
+    die("replay accepts at most one of --fault or --event");
+  }
+  if (opts->context_radius >= 0 && !opts->timeline) {
+    die("replay --context requires --timeline");
+  }
+  if (opts->context_radius >= 0 && !opts->fault && opts->event_id < 0) {
+    die("replay --context requires --event or --fault");
   }
   return 0;
 }

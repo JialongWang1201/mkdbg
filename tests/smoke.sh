@@ -77,5 +77,28 @@ check "arch_test"  bash -c "${ARCH_TEST} | grep -qE '[0-9]+/[0-9]+ tests passed'
 # dwarf symbol lookup
 check "dwarf_test"  bash -c "${DWARF_TEST} | grep -qE '[0-9]+/[0-9]+ tests passed'"
 
+# timeline replay from an existing triage bundle fixture
+TIMELINE_FIXTURE="${ROOT_DIR}/tests/fixtures/triage/sample_bundle.json"
+if [[ -f "${TIMELINE_FIXTURE}" ]]; then
+  check "mkdbg replay --timeline sample_bundle.json" \
+    bash -c "${MKDBG} replay ${TIMELINE_FIXTURE} --timeline | grep -q 'timeline_events:'"
+  check "mkdbg replay --timeline marks fault anchor" \
+    bash -c "${MKDBG} replay ${TIMELINE_FIXTURE} --timeline | grep -q '^!'"
+  check "mkdbg replay --timeline --event selects event" \
+    bash -c "${MKDBG} replay ${TIMELINE_FIXTURE} --timeline --event 2 | grep -q '^event: 2$'"
+  check "mkdbg replay --timeline --event --json selects event" \
+    bash -c "${MKDBG} replay ${TIMELINE_FIXTURE} --timeline --event 2 --json | grep -q '\"event_id\":2'"
+  check "mkdbg replay --timeline --fault selects first fault" \
+    bash -c "${MKDBG} replay ${TIMELINE_FIXTURE} --timeline --fault | grep -q '^fault_anchor: yes$'"
+  check "mkdbg replay --timeline --fault --json selects first fault" \
+    bash -c "${MKDBG} replay ${TIMELINE_FIXTURE} --timeline --fault --json | grep -q '\"fault_anchor\":true'"
+  check "mkdbg replay --timeline --event --context selects window" \
+    bash -c "${MKDBG} replay ${TIMELINE_FIXTURE} --timeline --event 2 --context 1 | grep -q '^context_events: 2$'"
+  check "mkdbg replay --timeline --fault --context --json selects window" \
+    bash -c "${MKDBG} replay ${TIMELINE_FIXTURE} --timeline --fault --context 1 --json | grep -q '\"event_count\":2'"
+else
+  echo "  SKIP  replay timeline fixture"
+fi
+
 echo ""
 echo "smoke: OK"
