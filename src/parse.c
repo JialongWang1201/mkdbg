@@ -1,5 +1,29 @@
 #include "mkdbg.h"
 
+static int parse_non_negative_int_arg(const char *s, const char *name)
+{
+  char *end = NULL;
+  long v;
+
+  errno = 0;
+  v = strtol(s, &end, 10);
+  if (errno != 0 || end == s || *end != '\0' || v < 0 || v > INT_MAX) {
+    die("%s requires a non-negative integer", name);
+  }
+  return (int)v;
+}
+
+static void parse_optional_probe_arg(int argc, char **argv, int *i,
+                                     int *use_probe, int *probe_idx)
+{
+  *use_probe = 1;
+  *probe_idx = -1;
+  if (*i + 1 < argc && isdigit((unsigned char)argv[*i + 1][0])) {
+    ++(*i);
+    *probe_idx = parse_non_negative_int_arg(argv[*i], "--probe");
+  }
+}
+
 int parse_init_args(int argc, char **argv, InitOptions *opts)
 {
   int i;
@@ -293,12 +317,7 @@ int parse_attach_args(int argc, char **argv, AttachOptions *opts)
       }
       opts->gdb_commands[opts->gdb_command_count++] = argv[++i];
     } else if (strcmp(argv[i], "--probe") == 0) {
-      char *end = NULL;
-      long v;
-      if (i + 1 >= argc) die("missing value for --probe");
-      v = strtol(argv[++i], &end, 10);
-      if (!end || *end != '\0' || v < 0) die("--probe requires a non-negative integer");
-      opts->probe_idx = (int)v;
+      parse_optional_probe_arg(argc, argv, &i, &opts->use_probe, &opts->probe_idx);
     } else if (strcmp(argv[i], "--chip") == 0) {
       if (i + 1 >= argc) die("missing value for --chip");
       opts->chip = argv[++i];
