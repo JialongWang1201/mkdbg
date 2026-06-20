@@ -545,6 +545,7 @@ int parse_debug_args(int argc, char **argv, DebugOptions *opts)
 {
   int i;
   memset(opts, 0, sizeof(*opts));
+  opts->probe_idx = -1;
 
   for (i = 0; i < argc; ++i) {
     if (strcmp(argv[i], "--port") == 0) {
@@ -559,6 +560,13 @@ int parse_debug_args(int argc, char **argv, DebugOptions *opts)
     } else if (strcmp(argv[i], "--arch") == 0) {
       if (i + 1 >= argc) die("missing value for --arch");
       opts->arch = argv[++i];
+    } else if (strcmp(argv[i], "--probe") == 0) {
+      parse_optional_probe_arg(argc, argv, &i, &opts->use_probe, &opts->probe_idx);
+    } else if (strcmp(argv[i], "--chip") == 0) {
+      if (i + 1 >= argc) die("missing value for --chip");
+      opts->chip = argv[++i];
+    } else if (strcmp(argv[i], "--dry-run") == 0) {
+      opts->dry_run = 1;
     } else if (strcmp(argv[i], "--freertos-tcb-offset") == 0) {
       if (i + 1 >= argc) die("missing value for --freertos-tcb-offset");
       opts->freertos_name_offset = atoi(argv[++i]);
