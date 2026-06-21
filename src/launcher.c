@@ -206,7 +206,7 @@ int cmd_attach(const AttachOptions *opts)
   resolve_repo_root(config_path, repo, repo_root, sizeof(repo_root));
 
   /* wire-host --dump path: triggered by --port flag (direct UART attach) */
-  if (opts->port != NULL) {
+  if (!opts->use_probe && opts->port != NULL) {
     if (opts->breakpoint_count > 0U || opts->gdb_command_count > 0U || opts->batch) {
       die("--port (wire dump mode) cannot be combined with --break, --command, or --batch");
     }
