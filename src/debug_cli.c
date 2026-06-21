@@ -20,6 +20,10 @@
 #include "dwarf.h"
 #include "wire_host.h"
 #include "arch.h"
+#ifdef MKDBG_PROBE_SUPPORT
+#include "probe_bridge.h"
+#include "probe_transport.h"
+#endif
 
 /* ── Session-scoped DWARF handle (NULL if no --elf provided) ─────────────── */
 
