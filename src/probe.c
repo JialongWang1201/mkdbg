@@ -60,6 +60,24 @@ static void u32_to_le_hex(uint32_t v, char out[9])
   out[8] = '\0';
 }
 
+static void openocd_quote_arg(const char *raw, char *out, size_t out_size)
+{
+  size_t pos = 0;
+
+  if (out_size == 0) return;
+  out[pos++] = '"';
+  for (size_t i = 0; raw[i] != '\0' && pos + 2 < out_size; i++) {
+    if (raw[i] == '"' || raw[i] == '\\') {
+      out[pos++] = '\\';
+    }
+    out[pos++] = raw[i];
+  }
+  if (pos + 1 < out_size) {
+    out[pos++] = '"';
+  }
+  out[pos] = '\0';
+}
+
 /* ── Probe commands ──────────────────────────────────────────────────────── */
 
 /* probe halt: query halt reason via RSP '?' */
