@@ -89,6 +89,10 @@ int debug_session_continue(DebugSession *s)
     /* 'c' gets S00 immediately (MCU resuming); then wait for halt stop reply. */
     int rc = rsp_transaction_t(s->transport, "c", resp, sizeof(resp));
     if (rc != WIRE_OK) return rc;
+    if ((resp[0] == 'S' || resp[0] == 'T') && strcmp(resp, "S00") != 0) {
+        s->last_signal = parse_stop_signal(resp);
+        return WIRE_OK;
+    }
 
     char stop[16];
     rc = rsp_wait_for_stop_t(s->transport, stop, sizeof(stop));
