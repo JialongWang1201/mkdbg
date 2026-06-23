@@ -18,6 +18,7 @@
 #include "debug_session.h"
 #include "debug_tui.h"
 #include "dwarf.h"
+#include "transport.h"
 #include "wire_host.h"
 #include "arch.h"
 #ifdef MKDBG_PROBE_SUPPORT
@@ -376,19 +377,69 @@ int cmd_debug(const DebugOptions *opts)
 {
     const char *port = opts->port;
     int         baud = opts->baud ? opts->baud : DEFAULT_BAUD;
-
-    if (!port || !*port)
-        die("debug requires --port; e.g. mkdbg debug --port /dev/ttyUSB0");
+    DebugSession *s = NULL;
 
     const char     *arch_name = opts->arch ? opts->arch : "cortex-m";
     const MkdbgArch *arch     = mkdbg_arch_find(arch_name);
     if (!arch || !arch->live_debug)
         die("arch '%s' does not support live debug", arch_name);
 
-    DebugSession *s = debug_session_open(port, baud, arch);
-    if (!s) return 1;
+    if (opts->use_probe) {
+#ifdef MKDBG_PROBE_SUPPORT
+        ProbeInfo probes[16];
+        int n = probe_list(probes, 16);
+        if (n < 0) {
+            fprintf(stderr, "mkdbg: probe enumeration failed\n");
+            return 1;
+        }
+        if (n == 0) {
+            fprintf(stderr, "mkdbg: no debug probe detected\n");
+            return 1;
+        }
+        int idx = opts->probe_idx;
+        if (idx < 0) {
+            if (n > 1) {
+                fprintf(stderr, "mkdbg: %d probes found — select one with --probe N:\n", n);
+                for (int i = 0; i < n; i++) {
+                    fprintf(stderr, "  [%d] %s  serial: %s\n",
+                            i,
+                            probes[i].identifier[0] ? probes[i].identifier : "unknown",
+                            probes[i].serial[0] ? probes[i].serial : "(none)");
+                }
+                return 1;
+            }
+            idx = 0;
+        } else if (idx >= n) {
+            fprintf(stderr, "mkdbg: --probe %d out of range (%d probe(s) found)\n", idx, n);
+            return 1;
+        }
+        if (opts->dry_run) {
+            printf("[dry-run] probe_open(%d, %s) -> debug session arch=%s\n",
+                   idx, opts->chip ? opts->chip : "auto", arch_name);
+            return 0;
+        }
+        WireTransport *t = probe_transport_open(idx, opts->chip);
+        if (!t) return 1;
+        s = debug_session_open_transport(t, arch);
+        if (!s) {
+            transport_destroy(t);
+            return 1;
+        }
+        printf("mkdbg live debug  probe=%d  chip=%s\n",
+               idx, opts->chip ? opts->chip : "auto");
+#else
+        fprintf(stderr,
+                "mkdbg: probe support not compiled in; rebuild with cargo in PATH\n");
+        return 1;
+#endif
+    } else {
+        if (!port || !*port)
+            die("debug requires --port or --probe; e.g. mkdbg debug --port /dev/ttyUSB0");
+        s = debug_session_open(port, baud, arch);
+        if (!s) return 1;
 
-    printf("mkdbg live debug  port=%s  baud=%d\n", port, baud);
+        printf("mkdbg live debug  port=%s  baud=%d\n", port, baud);
+    }
 
     /* Load DWARF line info if an ELF path was supplied */
     s_dbi = NULL;
