@@ -306,8 +306,8 @@ int main(int argc, char **argv)
       return cmd_probe_resume(&opts);
     }
     if (strcmp(argv[2], "flash") == 0) {
-      fprintf(stderr, "mkdbg: probe flash removed — use `mkdbg flash` instead\n");
-      return 1;
+      parse_probe_args(argc - 3, argv + 3, &opts);
+      return cmd_probe_flash(&opts);
     }
     if (strcmp(argv[2], "read32") == 0) {
       if (argc < 5) {
