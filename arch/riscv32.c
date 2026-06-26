@@ -62,6 +62,7 @@ static int riscv32_decode_crash(const uint8_t *raw, size_t len,
 
 static const ArchLiveDebug riscv32_live = {
     .nregs      = 33,
+    .required_nregs = 33,
     .pc_reg_idx = 32,
     .sp_reg_idx = 2,    /* x2 = sp */
     .fp_reg_idx = -1,   /* no standard fp-chain convention for RISC-V bare-metal */
