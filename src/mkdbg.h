@@ -263,7 +263,8 @@ typedef struct {
 
 #define WIRE_MAX_FRAMES   8
 #define WIRE_REG_HEX_LEN 12   /* "0x" + 8 hex digits + NUL */
-#define WIRE_NREGS       17
+#define WIRE_CM_NREGS    17
+#define WIRE_NREGS       33
 
 typedef struct {
   int  halt_signal;                          /* 0 = no halt / timeout  */
