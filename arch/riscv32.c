@@ -8,7 +8,11 @@
  *   x8=s0/fp, x9=s1, x10-x11=a0-a1, x12-x17=a2-a7, x18-x27=s2-s11,
  *   x28-x31=t3-t6, x32=pc.
  *
- * decode_crash: not yet implemented (no wire firmware port for RISC-V).
+ * Raw crash payload format (little-endian):
+ *   bytes   [0..3]    halt_signal
+ *   bytes   [4..131]  x0-x31
+ *   bytes [132..135]  pc
+ *   bytes [136..139]  mcause (optional)
  *
  * SPDX-License-Identifier: MIT
  */
@@ -17,12 +21,43 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <stdio.h>
 
 static int riscv32_decode_crash(const uint8_t *raw, size_t len,
                                  MkdbgCrashReport *out)
 {
-    (void)raw; (void)len; (void)out;
-    return -1;  /* not yet implemented */
+    if (!raw || !out || len < 136U) return -1;
+
+    uint32_t halt_signal = (uint32_t)raw[0]
+                         | ((uint32_t)raw[1] << 8)
+                         | ((uint32_t)raw[2] << 16)
+                         | ((uint32_t)raw[3] << 24);
+    out->halt_signal = (int)halt_signal;
+    out->timeout = (halt_signal == 0U) ? 1 : 0;
+
+    for (int i = 0; i < 33; i++) {
+        size_t off = 4U + (size_t)i * 4U;
+        uint32_t v = (uint32_t)raw[off]
+                   | ((uint32_t)raw[off + 1U] << 8)
+                   | ((uint32_t)raw[off + 2U] << 16)
+                   | ((uint32_t)raw[off + 3U] << 24);
+        snprintf(out->regs[i], sizeof(out->regs[i]), "0x%08x", v);
+    }
+
+    if (len >= 140U) {
+        uint32_t mcause = (uint32_t)raw[136]
+                        | ((uint32_t)raw[137] << 8)
+                        | ((uint32_t)raw[138] << 16)
+                        | ((uint32_t)raw[139] << 24);
+        snprintf(out->cfsr, sizeof(out->cfsr), "0x%08x", mcause);
+        snprintf(out->cfsr_decoded, sizeof(out->cfsr_decoded),
+                 "mcause=0x%08x", mcause);
+    } else {
+        copy_string(out->cfsr, sizeof(out->cfsr), "0x00000000");
+        copy_string(out->cfsr_decoded, sizeof(out->cfsr_decoded),
+                    "mcause unavailable");
+    }
+    return 0;
 }
 
 static const ArchLiveDebug riscv32_live = {
