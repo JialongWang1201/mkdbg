@@ -194,13 +194,19 @@ int debug_session_clear_watchpoint(DebugSession *s, uint32_t addr)
 int debug_session_read_regs(DebugSession *s, uint32_t regs[DEBUG_SESSION_MAX_REGS])
 {
     int nregs = s->arch->live_debug->nregs;
+    int required_nregs = s->arch->live_debug->required_nregs;
     /* RSP 'g': nregs registers × 8 hex chars each, little-endian. */
     char resp[DEBUG_SESSION_MAX_REGS * 8 + 4];
     int rc = rsp_transaction_t(s->transport, "g", resp, sizeof(resp));
     if (rc != WIRE_OK) return rc;
     if (resp[0] == 'E') return WIRE_ERR_IO;
 
-    for (int i = 0; i < nregs; i++) {
+    int available_nregs = (int)(strlen(resp) / 8U);
+    if (available_nregs < required_nregs) return WIRE_ERR_PARSE;
+    if (available_nregs > nregs) available_nregs = nregs;
+
+    for (int i = 0; i < nregs; i++) regs[i] = 0;
+    for (int i = 0; i < available_nregs; i++) {
         const char *p = resp + i * 8;
         uint32_t v = 0;
         for (int b = 0; b < 4; b++) {
