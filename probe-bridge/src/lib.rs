@@ -65,9 +65,10 @@ unsafe impl Sync for ProbeHandle {}
 // RSP interpreter thread
 // ---------------------------------------------------------------------------
 
-/// ARM Cortex-M GDB register layout for the 'g' packet:
-///   r0–r15 (16 regs × 4 bytes) + xpsr (4 bytes) = 68 bytes = 136 hex chars.
+/// mkdbg Cortex-M register layout for the 'g' packet:
+///   r0-r15 + xpsr + s0-s31 + fpscr = 50 32-bit registers.
 const CORTEX_M_REG_COUNT: usize = 17;
+const CORTEX_M_FPU_REG_COUNT: usize = 33;
 
 /// probe-rs RegisterId for xPSR on ARM Cortex-M.
 /// GDB numbers it as register slot 16 immediately after r0–r15.
@@ -156,17 +157,42 @@ fn handle_command(core: &mut probe_rs::Core<'_>, cmd: &str) -> String {
 // Command handlers
 // ---------------------------------------------------------------------------
 
-/// `g` — read all core registers; reply is 136 hex chars (17 × 4 bytes LE).
+/// `g` — read all core registers plus optional FPU registers.
 fn cmd_read_registers(core: &mut probe_rs::Core<'_>) -> String {
-    let mut out = String::with_capacity(CORTEX_M_REG_COUNT * 8);
+    let mut out = String::with_capacity((CORTEX_M_REG_COUNT + CORTEX_M_FPU_REG_COUNT) * 8);
     for i in 0..CORTEX_M_REG_COUNT as u16 {
         let reg_id = if i < 16 { i } else { XPSR_REG_SLOT };
         let word = read_reg_u32(core, reg_id);
-        for b in word.to_le_bytes() {
-            out.push_str(&format!("{:02x}", b));
+        append_u32_le_hex(&mut out, word);
+    }
+
+    let mut emitted_fpu = 0usize;
+    if let Some(fpu_regs) = core.registers().fpu_registers() {
+        for reg in fpu_regs.take(32) {
+            let word = core.read_core_reg::<u32>(reg.id()).unwrap_or(0);
+            append_u32_le_hex(&mut out, word);
+            emitted_fpu += 1;
         }
     }
+    while emitted_fpu < 32 {
+        append_u32_le_hex(&mut out, 0);
+        emitted_fpu += 1;
+    }
+
+    let fpscr = core
+        .registers()
+        .fpsr()
+        .and_then(|reg| core.read_core_reg::<u32>(reg.id()).ok())
+        .unwrap_or(0);
+    append_u32_le_hex(&mut out, fpscr);
+
     out
+}
+
+fn append_u32_le_hex(out: &mut String, word: u32) {
+    for b in word.to_le_bytes() {
+        out.push_str(&format!("{:02x}", b));
+    }
 }
 
 /// `G<hex-registers>` — write all core registers; reply `OK` or `E01`.
