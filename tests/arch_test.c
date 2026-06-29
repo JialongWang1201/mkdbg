@@ -63,8 +63,10 @@ int main(void)
     /* cortex-m live_debug descriptor */
     CHECK(cm != NULL && cm->live_debug != NULL,
           "cortex-m has live_debug descriptor");
-    CHECK(cm != NULL && cm->live_debug != NULL && cm->live_debug->nregs == 17,
-          "cortex-m live_debug->nregs == 17");
+    CHECK(cm != NULL && cm->live_debug != NULL && cm->live_debug->nregs == 50,
+          "cortex-m live_debug->nregs == 50");
+    CHECK(cm != NULL && cm->live_debug != NULL && cm->live_debug->required_nregs == 17,
+          "cortex-m live_debug->required_nregs == 17");
     CHECK(cm != NULL && cm->live_debug != NULL && cm->live_debug->pc_reg_idx == 15,
           "cortex-m live_debug->pc_reg_idx == 15");
 
