@@ -449,20 +449,16 @@ for item in checks:
         raise SystemExit(f"missing expected probe halt output: {item}")
 PY
 
-# probe flash is removed — must fail
-if PATH="${BIN_DIR}:${PATH}" "${NATIVE_BIN}" probe flash --target microkernel --dry-run \
-    > "${PROBE_FLASH_OUT}" 2>&1; then
-  echo "mkdbg_native_host_tests: expected probe flash to fail (removed command)" >&2
-  exit 1
-fi
+PATH="${BIN_DIR}:${PATH}" "${NATIVE_BIN}" probe flash --target microkernel --dry-run \
+    > "${PROBE_FLASH_OUT}" 2>&1
 python3 - "${PROBE_FLASH_OUT}" <<'PY'
 import sys
 from pathlib import Path
 
 text = Path(sys.argv[1]).read_text(encoding="utf-8")
-needle = "probe flash removed"
-if needle not in text:
-    raise SystemExit(f"missing expected probe flash error text: {needle}")
+for needle in ("openocd", "program", "verify reset exit"):
+    if needle not in text:
+        raise SystemExit(f"missing expected probe flash text: {needle}")
 PY
 
 # probe read32 dry-run: wire RSP path
