@@ -386,6 +386,12 @@ int cmd_debug(const DebugOptions *opts)
 
     if (opts->use_probe) {
 #ifdef MKDBG_PROBE_SUPPORT
+        if (opts->dry_run) {
+            printf("[dry-run] probe_open(%s, %s) -> debug session arch=%s\n",
+                   opts->probe_idx >= 0 ? "selected" : "auto",
+                   opts->chip ? opts->chip : "auto", arch_name);
+            return 0;
+        }
         ProbeInfo probes[16];
         int n = probe_list(probes, 16);
         if (n < 0) {
@@ -412,11 +418,6 @@ int cmd_debug(const DebugOptions *opts)
         } else if (idx >= n) {
             fprintf(stderr, "mkdbg: --probe %d out of range (%d probe(s) found)\n", idx, n);
             return 1;
-        }
-        if (opts->dry_run) {
-            printf("[dry-run] probe_open(%d, %s) -> debug session arch=%s\n",
-                   idx, opts->chip ? opts->chip : "auto", arch_name);
-            return 0;
         }
         WireTransport *t = probe_transport_open(idx, opts->chip);
         if (!t) return 1;
