@@ -65,6 +65,10 @@ static void openocd_quote_arg(const char *raw, char *out, size_t out_size)
   size_t pos = 0;
 
   if (out_size == 0) return;
+  if (out_size == 1) {
+    out[0] = '\0';
+    return;
+  }
   out[pos++] = '"';
   for (size_t i = 0; raw[i] != '\0' && pos + 2 < out_size; i++) {
     if (raw[i] == '"' || raw[i] == '\\') {
