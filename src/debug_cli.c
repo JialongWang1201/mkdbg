@@ -385,13 +385,13 @@ int cmd_debug(const DebugOptions *opts)
         die("arch '%s' does not support live debug", arch_name);
 
     if (opts->use_probe) {
-#ifdef MKDBG_PROBE_SUPPORT
         if (opts->dry_run) {
             printf("[dry-run] probe_open(%s, %s) -> debug session arch=%s\n",
                    opts->probe_idx >= 0 ? "selected" : "auto",
                    opts->chip ? opts->chip : "auto", arch_name);
             return 0;
         }
+#ifdef MKDBG_PROBE_SUPPORT
         ProbeInfo probes[16];
         int n = probe_list(probes, 16);
         if (n < 0) {
