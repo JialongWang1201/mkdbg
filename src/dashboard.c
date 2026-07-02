@@ -663,7 +663,7 @@ static void do_redraw(const SerialRing *ring, const GitState *gs,
         pclip(sx, sy, TB_WHITE, TB_DEFAULT, tmp, sw2);
         sy++;
       }
-    } else if (!port || !port[0]) {
+    } else if (!port_label || !port_label[0]) {
       if (sy < bot_y - 1) {
         pclip(sx, sy, TB_DEFAULT, TB_DEFAULT, "no port configured", sw2);
         sy++;
