@@ -23,6 +23,7 @@ ATTACH_DRY_OUT="${TMP_DIR}/attach-dry.out"
 ATTACH_ERR_OUT="${TMP_DIR}/attach.err"
 PROBE_HALT_OUT="${TMP_DIR}/probe-halt.out"
 PROBE_FLASH_OUT="${TMP_DIR}/probe-flash.out"
+DEBUG_PROBE_OUT="${TMP_DIR}/debug-probe.out"
 PROBE_READ32_OUT="${TMP_DIR}/probe-read32.out"
 PROBE_WRITE32_OUT="${TMP_DIR}/probe-write32.out"
 RUN_OUT="${TMP_DIR}/run.out"
@@ -459,6 +460,18 @@ text = Path(sys.argv[1]).read_text(encoding="utf-8")
 for needle in ("openocd", "program", "verify reset exit"):
     if needle not in text:
         raise SystemExit(f"missing expected probe flash text: {needle}")
+PY
+
+PATH="${BIN_DIR}:${PATH}" "${NATIVE_BIN}" debug --probe --chip STM32F446RETx --dry-run \
+    > "${DEBUG_PROBE_OUT}" 2>&1
+python3 - "${DEBUG_PROBE_OUT}" <<'PY'
+import sys
+from pathlib import Path
+
+text = Path(sys.argv[1]).read_text(encoding="utf-8")
+for needle in ("[dry-run]", "probe_open(auto, STM32F446RETx)", "arch=cortex-m"):
+    if needle not in text:
+        raise SystemExit(f"missing expected debug probe text: {needle}")
 PY
 
 # probe read32 dry-run: wire RSP path
