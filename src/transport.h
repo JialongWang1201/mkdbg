@@ -21,6 +21,8 @@
 #define TRANSPORT_ERR_TIMEOUT (-2)
 #define TRANSPORT_ERR_CLOSED  (-3)
 
+#define TRANSPORT_CAP_FPU_REGS (1u << 0)
+
 /*
  * WireTransport — pluggable byte-stream backend.
  *
@@ -36,6 +38,8 @@ typedef struct WireTransport {
     int  (*write)(void *ctx, const uint8_t *buf, int len);
     void (*close)(void *ctx);
     void *ctx;
+    uint32_t capabilities;
+    int register_count; /* zero when the backend cannot declare it */
 } WireTransport;
 
 /* Free the WireTransport struct itself after calling t->close(t->ctx). */

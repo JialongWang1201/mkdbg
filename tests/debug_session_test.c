@@ -93,6 +93,24 @@ static DebugSession *open_fake(FakeTransport *fake, const char *arch_name)
     return s;
 }
 
+static void test_declared_register_mismatch(void)
+{
+    FakeTransport fake = {0};
+    WireTransport *t = malloc(sizeof(*t));
+    expect(t != NULL, "transport allocation succeeds");
+    *t = (WireTransport){
+        .read = fake_read,
+        .write = fake_write,
+        .close = fake_close,
+        .ctx = &fake,
+        .register_count = 16,
+    };
+
+    expect(debug_session_open_transport(t, mkdbg_arch_find("cortex-m")) == NULL,
+           "declared register mismatch rejects session");
+    expect(fake.closed, "rejected transport is closed");
+}
+
 static void append_registers(char *out, size_t out_size, int count)
 {
     size_t pos = 0;
@@ -173,6 +191,7 @@ static void test_immediate_stop_reply(void)
 
 int main(void)
 {
+    test_declared_register_mismatch();
     test_required_cortex_registers();
     test_short_register_reply();
     test_misaligned_register_reply();

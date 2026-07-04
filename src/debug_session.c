@@ -55,6 +55,15 @@ DebugSession *debug_session_open_transport(WireTransport *t,
 {
     if (!t || !arch || !arch->live_debug ||
         !t->read || !t->write) return NULL;
+    if (t->register_count > 0 &&
+        t->register_count < arch->live_debug->required_nregs) {
+        fprintf(stderr,
+                "mkdbg: target exposes %d registers; %s requires at least %d\n",
+                t->register_count, arch->name,
+                arch->live_debug->required_nregs);
+        transport_destroy(t);
+        return NULL;
+    }
     DebugSession *s = malloc(sizeof(DebugSession));
     if (!s) return NULL;
     s->transport   = t;

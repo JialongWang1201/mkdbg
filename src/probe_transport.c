@@ -54,5 +54,13 @@ WireTransport *probe_transport_open(int probe_idx, const char *chip)
     t->write = pt_write;
     t->close = pt_close;
     t->ctx   = h;
+    ProbeCapabilities caps = {0};
+    if (probe_get_capabilities(h, &caps) != 0) {
+        free(t);
+        probe_close(h);
+        return NULL;
+    }
+    t->capabilities = caps.flags;
+    t->register_count = (int)caps.register_count;
     return t;
 }
