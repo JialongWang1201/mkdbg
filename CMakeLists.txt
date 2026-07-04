@@ -251,3 +251,15 @@ target_include_directories(thumb_dis_test PRIVATE
   ${CMAKE_CURRENT_LIST_DIR}/src
 )
 add_test(NAME thumb_dis COMMAND thumb_dis_test)
+
+# ── ctest: RSP byte-stream framing ───────────────────────────────────────────
+add_executable(rsp_transport_test
+  tests/rsp_transport_test.c
+  src/rsp_transport.c
+)
+target_compile_options(rsp_transport_test PRIVATE -Wall -Wextra -Werror -O2)
+target_include_directories(rsp_transport_test PRIVATE
+  ${CMAKE_CURRENT_LIST_DIR}/src
+  ${CMAKE_CURRENT_LIST_DIR}/deps/wire/host
+)
+add_test(NAME rsp_transport COMMAND rsp_transport_test)
