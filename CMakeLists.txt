@@ -263,3 +263,20 @@ target_include_directories(rsp_transport_test PRIVATE
   ${CMAKE_CURRENT_LIST_DIR}/deps/wire/host
 )
 add_test(NAME rsp_transport COMMAND rsp_transport_test)
+
+# ── ctest: live debug session contract ───────────────────────────────────────
+add_executable(debug_session_test
+  tests/debug_session_test.c
+  src/debug_session.c
+  src/rsp_transport.c
+  arch/cortex_m.c
+  arch/riscv32.c
+  arch/arch_registry.c
+)
+target_compile_options(debug_session_test PRIVATE -Wall -Wextra -Werror -O2)
+target_include_directories(debug_session_test PRIVATE
+  ${CMAKE_CURRENT_LIST_DIR}/src
+  ${CMAKE_CURRENT_LIST_DIR}/arch
+  ${CMAKE_CURRENT_LIST_DIR}/deps/wire/host
+)
+add_test(NAME debug_session COMMAND debug_session_test)

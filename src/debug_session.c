@@ -53,7 +53,8 @@ static int parse_stop_signal(const char *reply)
 DebugSession *debug_session_open_transport(WireTransport *t,
                                             const MkdbgArch *arch)
 {
-    if (!t || !arch) return NULL;
+    if (!t || !arch || !arch->live_debug ||
+        !t->read || !t->write) return NULL;
     DebugSession *s = malloc(sizeof(DebugSession));
     if (!s) return NULL;
     s->transport   = t;
@@ -193,6 +194,7 @@ int debug_session_clear_watchpoint(DebugSession *s, uint32_t addr)
 
 int debug_session_read_regs(DebugSession *s, uint32_t regs[DEBUG_SESSION_MAX_REGS])
 {
+    if (!s || !regs) return WIRE_ERR_IO;
     int nregs = s->arch->live_debug->nregs;
     int required_nregs = s->arch->live_debug->required_nregs;
     /* RSP 'g': nregs registers × 8 hex chars each, little-endian. */
@@ -201,7 +203,9 @@ int debug_session_read_regs(DebugSession *s, uint32_t regs[DEBUG_SESSION_MAX_REG
     if (rc != WIRE_OK) return rc;
     if (resp[0] == 'E') return WIRE_ERR_IO;
 
-    int available_nregs = (int)(strlen(resp) / 8U);
+    size_t response_len = strlen(resp);
+    if (response_len % 8U != 0U) return WIRE_ERR_PARSE;
+    int available_nregs = (int)(response_len / 8U);
     if (available_nregs < required_nregs) return WIRE_ERR_PARSE;
     if (available_nregs > nregs) available_nregs = nregs;
 
@@ -222,6 +226,8 @@ int debug_session_read_regs(DebugSession *s, uint32_t regs[DEBUG_SESSION_MAX_REG
 
 int debug_session_read_mem(DebugSession *s, uint32_t addr, size_t len, uint8_t *out)
 {
+    if (!s || (!out && len != 0U)) return WIRE_ERR_IO;
+    if (len > (SIZE_MAX - 4U) / 2U) return WIRE_ERR_OVERFLOW;
     char cmd[32];
     snprintf(cmd, sizeof(cmd), "m%x,%zx", addr, len);
 
@@ -232,6 +238,7 @@ int debug_session_read_mem(DebugSession *s, uint32_t addr, size_t len, uint8_t *
     int rc = rsp_transaction_t(s->transport, cmd, resp, sizeof(resp));
     if (rc != WIRE_OK) return rc;
     if (resp[0] == 'E') return WIRE_ERR_IO;
+    if (strlen(resp) != len * 2U) return WIRE_ERR_PARSE;
 
     for (size_t i = 0; i < len; i++) {
         int hi = hex_nibble(resp[i * 2]);
@@ -245,6 +252,8 @@ int debug_session_read_mem(DebugSession *s, uint32_t addr, size_t len, uint8_t *
 int debug_session_write_mem(DebugSession *s, uint32_t addr, size_t len,
                              const uint8_t *data)
 {
+    if (!s || (!data && len != 0U)) return WIRE_ERR_IO;
+    if (len > (SIZE_MAX - 33U) / 2U) return WIRE_ERR_OVERFLOW;
     /* RSP 'M addr,len:hexdata' — hexdata is one byte per two hex chars. */
     static const char hex[] = "0123456789abcdef";
     char cmd[32 + len * 2 + 1];  /* header + hex payload + NUL */
