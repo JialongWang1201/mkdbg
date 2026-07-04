@@ -53,9 +53,9 @@ static int riscv32_decode_crash(const uint8_t *raw, size_t len,
         snprintf(out->cfsr_decoded, sizeof(out->cfsr_decoded),
                  "mcause=0x%08x", mcause);
     } else {
-        copy_string(out->cfsr, sizeof(out->cfsr), "0x00000000");
-        copy_string(out->cfsr_decoded, sizeof(out->cfsr_decoded),
-                    "mcause unavailable");
+        snprintf(out->cfsr, sizeof(out->cfsr), "0x00000000");
+        snprintf(out->cfsr_decoded, sizeof(out->cfsr_decoded),
+                 "mcause unavailable");
     }
     return 0;
 }
