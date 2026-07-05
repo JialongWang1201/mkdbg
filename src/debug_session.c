@@ -53,8 +53,11 @@ static int parse_stop_signal(const char *reply)
 DebugSession *debug_session_open_transport(WireTransport *t,
                                             const MkdbgArch *arch)
 {
-    if (!t || !arch || !arch->live_debug ||
-        !t->read || !t->write) return NULL;
+    if (!t) return NULL;
+    if (!arch || !arch->live_debug || !t->read || !t->write) {
+        transport_destroy(t);
+        return NULL;
+    }
     if (t->register_count > 0 &&
         t->register_count < arch->live_debug->required_nregs) {
         fprintf(stderr,
@@ -65,7 +68,10 @@ DebugSession *debug_session_open_transport(WireTransport *t,
         return NULL;
     }
     DebugSession *s = malloc(sizeof(DebugSession));
-    if (!s) return NULL;
+    if (!s) {
+        transport_destroy(t);
+        return NULL;
+    }
     s->transport   = t;
     s->last_signal = 0;
     s->arch        = arch;
@@ -79,7 +85,6 @@ DebugSession *debug_session_open(const char *port, int baud,
     if (!t) return NULL;
 
     DebugSession *s = debug_session_open_transport(t, arch);
-    if (!s) { transport_destroy(t); return NULL; }
     return s;
 }
 

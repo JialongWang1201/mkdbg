@@ -474,6 +474,29 @@ for needle in ("[dry-run]", "probe_open(auto, STM32F446RETx)", "arch=cortex-m"):
         raise SystemExit(f"missing expected debug probe text: {needle}")
 PY
 
+PATH="${BIN_DIR}:${PATH}" "${NATIVE_BIN}" debug --port /dev/ttyTEST0 \
+    --record-debug session.mkdbgcap --dry-run > "${DEBUG_PROBE_OUT}" 2>&1
+python3 - "${DEBUG_PROBE_OUT}" <<'PY'
+import sys
+from pathlib import Path
+
+text = Path(sys.argv[1]).read_text(encoding="utf-8")
+for needle in ("uart_open(/dev/ttyTEST0, 115200)", "capture=session.mkdbgcap"):
+    if needle not in text:
+        raise SystemExit(f"missing expected debug capture text: {needle}")
+PY
+
+PATH="${BIN_DIR}:${PATH}" "${NATIVE_BIN}" debug \
+    --replay-debug session.mkdbgcap --dry-run > "${DEBUG_PROBE_OUT}" 2>&1
+grep -q "replay debug capture=session.mkdbgcap arch=cortex-m" "${DEBUG_PROBE_OUT}"
+
+if PATH="${BIN_DIR}:${PATH}" "${NATIVE_BIN}" debug --port /dev/ttyTEST0 \
+    --replay-debug session.mkdbgcap --dry-run > /dev/null 2> "${ATTACH_ERR_OUT}"; then
+  echo "mkdbg_native_host_tests: expected replay with port to fail" >&2
+  exit 1
+fi
+grep -q -- "--replay-debug cannot be combined with --port or --probe" "${ATTACH_ERR_OUT}"
+
 # probe read32 dry-run: wire RSP path
 PATH="${BIN_DIR}:${PATH}" "${NATIVE_BIN}" probe read32 --port /dev/ttyACM0 --dry-run 0xE000ED28 > "${PROBE_READ32_OUT}"
 python3 - "${PROBE_READ32_OUT}" <<'PY'

@@ -565,6 +565,12 @@ int parse_debug_args(int argc, char **argv, DebugOptions *opts)
     } else if (strcmp(argv[i], "--chip") == 0) {
       if (i + 1 >= argc) die("missing value for --chip");
       opts->chip = argv[++i];
+    } else if (strcmp(argv[i], "--record-debug") == 0) {
+      if (i + 1 >= argc) die("missing value for --record-debug");
+      opts->record_debug = argv[++i];
+    } else if (strcmp(argv[i], "--replay-debug") == 0) {
+      if (i + 1 >= argc) die("missing value for --replay-debug");
+      opts->replay_debug = argv[++i];
     } else if (strcmp(argv[i], "--dry-run") == 0) {
       opts->dry_run = 1;
     } else if (strcmp(argv[i], "--freertos-tcb-offset") == 0) {
@@ -576,6 +582,10 @@ int parse_debug_args(int argc, char **argv, DebugOptions *opts)
       die("debug takes no positional arguments");
     }
   }
+  if (opts->record_debug && opts->replay_debug)
+    die("--record-debug and --replay-debug are mutually exclusive");
+  if (opts->replay_debug && (opts->port || opts->use_probe))
+    die("--replay-debug cannot be combined with --port or --probe");
   return 0;
 }
 

@@ -231,6 +231,8 @@ typedef struct {
   int         use_probe;
   int         probe_idx; /* -1 means auto-detect */
   const char *chip;
+  const char *record_debug;
+  const char *replay_debug;
   int         dry_run;
   int freertos_name_offset; /* pcTaskName offset in TCB; 0=disable, -1=auto(52) */
 } DebugOptions;

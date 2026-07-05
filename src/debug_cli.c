@@ -21,6 +21,8 @@
 #include "transport.h"
 #include "wire_host.h"
 #include "arch.h"
+#include "capture_transport.h"
+#include "uart_transport.h"
 #ifdef MKDBG_PROBE_SUPPORT
 #include "probe_bridge.h"
 #include "probe_transport.h"
@@ -378,19 +380,44 @@ int cmd_debug(const DebugOptions *opts)
     const char *port = opts->port;
     int         baud = opts->baud ? opts->baud : DEFAULT_BAUD;
     DebugSession *s = NULL;
+    WireTransport *transport = NULL;
 
     const char     *arch_name = opts->arch ? opts->arch : "cortex-m";
     const MkdbgArch *arch     = mkdbg_arch_find(arch_name);
     if (!arch || !arch->live_debug)
         die("arch '%s' does not support live debug", arch_name);
 
-    if (opts->use_probe) {
-        if (opts->dry_run) {
-            printf("[dry-run] probe_open(%s, %s) -> debug session arch=%s\n",
+    if (opts->dry_run) {
+        if (opts->replay_debug) {
+            printf("[dry-run] replay debug capture=%s arch=%s\n",
+                   opts->replay_debug, arch_name);
+        } else if (opts->use_probe) {
+            printf("[dry-run] probe_open(%s, %s) -> debug session arch=%s",
                    opts->probe_idx >= 0 ? "selected" : "auto",
                    opts->chip ? opts->chip : "auto", arch_name);
-            return 0;
+            if (opts->record_debug) printf(" capture=%s", opts->record_debug);
+            putchar('\n');
+        } else {
+            if (!port || !*port)
+                die("debug requires --port or --probe; e.g. mkdbg debug --port /dev/ttyUSB0");
+            printf("[dry-run] uart_open(%s, %d) -> debug session arch=%s",
+                   port, baud, arch_name);
+            if (opts->record_debug) printf(" capture=%s", opts->record_debug);
+            putchar('\n');
         }
+        return 0;
+    }
+
+    if (opts->replay_debug) {
+        transport = capture_replay_transport_open(opts->replay_debug, arch_name);
+        if (!transport) {
+            fprintf(stderr, "mkdbg: cannot replay debug capture %s for arch %s\n",
+                    opts->replay_debug, arch_name);
+            return 1;
+        }
+        printf("mkdbg debug replay  capture=%s  arch=%s\n",
+               opts->replay_debug, arch_name);
+    } else if (opts->use_probe) {
 #ifdef MKDBG_PROBE_SUPPORT
         ProbeInfo probes[16];
         int n = probe_list(probes, 16);
@@ -419,13 +446,8 @@ int cmd_debug(const DebugOptions *opts)
             fprintf(stderr, "mkdbg: --probe %d out of range (%d probe(s) found)\n", idx, n);
             return 1;
         }
-        WireTransport *t = probe_transport_open(idx, opts->chip);
-        if (!t) return 1;
-        s = debug_session_open_transport(t, arch);
-        if (!s) {
-            transport_destroy(t);
-            return 1;
-        }
+        transport = probe_transport_open(idx, opts->chip);
+        if (!transport) return 1;
         printf("mkdbg live debug  probe=%d  chip=%s\n",
                idx, opts->chip ? opts->chip : "auto");
 #else
@@ -436,11 +458,19 @@ int cmd_debug(const DebugOptions *opts)
     } else {
         if (!port || !*port)
             die("debug requires --port or --probe; e.g. mkdbg debug --port /dev/ttyUSB0");
-        s = debug_session_open(port, baud, arch);
-        if (!s) return 1;
+        transport = uart_transport_open(port, baud);
+        if (!transport) return 1;
 
         printf("mkdbg live debug  port=%s  baud=%d\n", port, baud);
     }
+
+    if (opts->record_debug) {
+        transport = capture_transport_wrap(transport, opts->record_debug, arch_name);
+        if (!transport) return 1;
+        printf("debug capture=%s\n", opts->record_debug);
+    }
+    s = debug_session_open_transport(transport, arch);
+    if (!s) return 1;
 
     /* Load DWARF line info if an ELF path was supplied */
     s_dbi = NULL;
