@@ -71,6 +71,7 @@ add_executable(mkdbg-native
   src/wire.c
   src/uart_transport.c
   src/rsp_transport.c
+  src/capture_transport.c
   src/debug_session.c
   src/debug_cli.c
   src/debug_tui.c
@@ -280,3 +281,14 @@ target_include_directories(debug_session_test PRIVATE
   ${CMAKE_CURRENT_LIST_DIR}/deps/wire/host
 )
 add_test(NAME debug_session COMMAND debug_session_test)
+
+# ── ctest: deterministic debug capture/replay ────────────────────────────────
+add_executable(capture_transport_test
+  tests/capture_transport_test.c
+  src/capture_transport.c
+)
+target_compile_options(capture_transport_test PRIVATE -Wall -Wextra -Werror -O2)
+target_include_directories(capture_transport_test PRIVATE
+  ${CMAKE_CURRENT_LIST_DIR}/src
+)
+add_test(NAME capture_transport COMMAND capture_transport_test)
