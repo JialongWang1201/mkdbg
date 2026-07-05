@@ -136,11 +136,12 @@ if(CARGO AND NOT MKDBG_SKIP_PROBE)
 
   add_custom_command(
     OUTPUT  "${PROBE_BRIDGE_LIB}"
-    COMMAND "${CARGO}" build --release
+    COMMAND "${CARGO}" build --release --locked
             --manifest-path "${PROBE_BRIDGE_DIR}/Cargo.toml"
             --target-dir    "${CMAKE_BINARY_DIR}/probe-bridge"
             ${_CARGO_TARGET_ARGS}
     DEPENDS "${PROBE_BRIDGE_DIR}/Cargo.toml"
+            "${PROBE_BRIDGE_DIR}/Cargo.lock"
             "${PROBE_BRIDGE_DIR}/src/lib.rs"
             "${PROBE_BRIDGE_DIR}/src/rsp.rs"
     COMMENT "Building probe-bridge (Rust)"
