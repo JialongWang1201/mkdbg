@@ -157,14 +157,28 @@ if(CARGO AND NOT MKDBG_SKIP_PROBE)
   target_link_libraries(mkdbg-native PRIVATE "${PROBE_BRIDGE_LIB}")
   add_dependencies(mkdbg-native probe_bridge_target)
 
+  add_executable(probe_hardware_test tests/probe_hardware_test.c)
+  target_compile_options(probe_hardware_test PRIVATE -Wall -Wextra -Werror -O2)
+  target_include_directories(probe_hardware_test PRIVATE
+    "${PROBE_BRIDGE_DIR}/include"
+  )
+  target_link_libraries(probe_hardware_test PRIVATE "${PROBE_BRIDGE_LIB}")
+  add_dependencies(probe_hardware_test probe_bridge_target)
+
   if(APPLE)
     target_link_libraries(mkdbg-native PRIVATE
       "-framework IOKit"
       "-framework CoreFoundation"
       "-framework Security"
     )
+    target_link_libraries(probe_hardware_test PRIVATE
+      "-framework IOKit"
+      "-framework CoreFoundation"
+      "-framework Security"
+    )
   elseif(UNIX)
     target_link_libraries(mkdbg-native PRIVATE udev)
+    target_link_libraries(probe_hardware_test PRIVATE udev)
   endif()
 
   message(STATUS "probe-bridge: enabled (${CARGO})")
