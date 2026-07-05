@@ -353,6 +353,9 @@ fn cmd_breakpoint(core: &mut probe_rs::Core<'_>, args: &str, set: bool) -> Strin
 /// `out` must point to a buffer of at least `max` `ProbeInfo` entries.
 #[no_mangle]
 pub unsafe extern "C" fn probe_list(out: *mut ProbeInfo, max: i32) -> i32 {
+    if max < 0 || (max > 0 && out.is_null()) {
+        return -1;
+    }
     let out_ptr = out as usize; // capture for use inside closure
     let result = panic::catch_unwind(move || {
         let out = out_ptr as *mut ProbeInfo;
@@ -393,6 +396,9 @@ pub unsafe extern "C" fn probe_list(out: *mut ProbeInfo, max: i32) -> i32 {
 /// `chip` must be a valid NUL-terminated C string or NULL.
 #[no_mangle]
 pub unsafe extern "C" fn probe_open(probe_idx: i32, chip: *const c_char) -> *mut ProbeHandle {
+    if probe_idx < 0 {
+        return std::ptr::null_mut();
+    }
     let chip_str: Option<String> = if chip.is_null() {
         None
     } else {
@@ -456,7 +462,7 @@ pub unsafe extern "C" fn probe_get_capabilities(
 /// `h` must be a valid non-NULL handle.  `buf` must be readable for `len` bytes.
 #[no_mangle]
 pub unsafe extern "C" fn probe_write(h: *mut ProbeHandle, buf: *const u8, len: i32) -> i32 {
-    if h.is_null() {
+    if h.is_null() || len < 0 || (len > 0 && buf.is_null()) {
         return -3;
     }
     let h = &*h;
@@ -481,7 +487,7 @@ pub unsafe extern "C" fn probe_read(
     len: i32,
     timeout_ms: i32,
 ) -> i32 {
-    if h.is_null() {
+    if h.is_null() || len < 0 || (len > 0 && buf.is_null()) {
         return -3;
     }
     let h = &*h;
@@ -509,7 +515,7 @@ pub unsafe extern "C" fn probe_read(
 
 /// Detach from target and release all resources.
 ///
-/// Blocks until the RSP thread exits.  Safe to call multiple times.
+/// Blocks until the RSP thread exits. NULL is accepted as a no-op.
 ///
 /// # Safety
 /// `h` must be a valid pointer returned by `probe_open`.  After this call the
@@ -527,4 +533,40 @@ pub unsafe extern "C" fn probe_close(h: *mut ProbeHandle) {
         }
     }; // semicolon drops the MutexGuard before h (Box) is freed
        // Box drops here, releasing all resources.
+}
+
+#[cfg(test)]
+mod ffi_tests {
+    use super::*;
+
+    #[test]
+    fn list_rejects_invalid_output() {
+        assert_eq!(unsafe { probe_list(std::ptr::null_mut(), 1) }, -1);
+        assert_eq!(unsafe { probe_list(std::ptr::null_mut(), -1) }, -1);
+    }
+
+    #[test]
+    fn open_rejects_negative_index() {
+        assert!(unsafe { probe_open(-1, std::ptr::null()) }.is_null());
+    }
+
+    #[test]
+    fn io_rejects_null_handles() {
+        assert_eq!(
+            unsafe { probe_write(std::ptr::null_mut(), std::ptr::null(), 0) },
+            -3
+        );
+        assert_eq!(
+            unsafe { probe_read(std::ptr::null_mut(), std::ptr::null_mut(), 0, 0) },
+            -3
+        );
+    }
+
+    #[test]
+    fn capabilities_reject_null_arguments() {
+        assert_eq!(
+            unsafe { probe_get_capabilities(std::ptr::null_mut(), std::ptr::null_mut()) },
+            -1
+        );
+    }
 }

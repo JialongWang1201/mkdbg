@@ -19,7 +19,9 @@
 /// acknowledgement bytes are skipped before scanning for `$`.
 pub fn parse_rsp_packet(buf: &[u8]) -> Option<(String, usize)> {
     let start = buf.iter().position(|&b| b == b'$')?;
-    let hash = buf[start + 1..].iter().position(|&b| b == b'#')
+    let hash = buf[start + 1..]
+        .iter()
+        .position(|&b| b == b'#')
         .map(|p| start + 1 + p)?;
     if buf.len() < hash + 3 {
         return None; // checksum bytes not yet received
@@ -100,7 +102,7 @@ mod tests {
     #[test]
     fn parse_incomplete_returns_none() {
         assert!(parse_rsp_packet(b"$g#6").is_none()); // missing second checksum nibble
-        assert!(parse_rsp_packet(b"$g").is_none());   // no hash yet
+        assert!(parse_rsp_packet(b"$g").is_none()); // no hash yet
         assert!(parse_rsp_packet(b"").is_none());
     }
 
@@ -158,7 +160,10 @@ mod tests {
 
     #[test]
     fn decode_hex_bytes_basic() {
-        assert_eq!(decode_hex_bytes("deadbeef").unwrap(), &[0xde, 0xad, 0xbe, 0xef]);
+        assert_eq!(
+            decode_hex_bytes("deadbeef").unwrap(),
+            &[0xde, 0xad, 0xbe, 0xef]
+        );
     }
 
     #[test]
