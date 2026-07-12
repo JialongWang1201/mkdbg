@@ -158,6 +158,7 @@ typedef struct {
   const char *port;
   const char *baud;
   /* Probe flags: probe_idx=-1 means auto-detect; chip=NULL means auto IDCODE */
+  int         use_probe;
   int         probe_idx;
   const char *chip;
   const char *breakpoints[MAX_ATTACH_BREAKPOINTS];
@@ -227,6 +228,12 @@ typedef struct {
   int         baud;
   const char *elf_path;
   const char *arch;  /* --arch name, e.g. "cortex-m"; NULL defaults to "cortex-m" */
+  int         use_probe;
+  int         probe_idx; /* -1 means auto-detect */
+  const char *chip;
+  const char *record_debug;
+  const char *replay_debug;
+  int         dry_run;
   int freertos_name_offset; /* pcTaskName offset in TCB; 0=disable, -1=auto(52) */
 } DebugOptions;
 
@@ -258,7 +265,8 @@ typedef struct {
 
 #define WIRE_MAX_FRAMES   8
 #define WIRE_REG_HEX_LEN 12   /* "0x" + 8 hex digits + NUL */
-#define WIRE_NREGS       17
+#define WIRE_CM_NREGS    17
+#define WIRE_NREGS       33
 
 typedef struct {
   int  halt_signal;                          /* 0 = no halt / timeout  */
@@ -393,6 +401,7 @@ int cmd_git_push_current(const GitOptions *opts);
 int cmd_probe_halt(const ProbeOptions *opts);
 int cmd_probe_resume(const ProbeOptions *opts);
 int cmd_probe_reset(const ProbeOptions *opts);
+int cmd_probe_flash(const ProbeOptions *opts);
 int cmd_probe_read32(const ProbeOptions *opts);
 int cmd_probe_write32(const ProbeOptions *opts);
 

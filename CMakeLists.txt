@@ -71,6 +71,7 @@ add_executable(mkdbg-native
   src/wire.c
   src/uart_transport.c
   src/rsp_transport.c
+  src/capture_transport.c
   src/debug_session.c
   src/debug_cli.c
   src/debug_tui.c
@@ -135,11 +136,12 @@ if(CARGO AND NOT MKDBG_SKIP_PROBE)
 
   add_custom_command(
     OUTPUT  "${PROBE_BRIDGE_LIB}"
-    COMMAND "${CARGO}" build --release
+    COMMAND "${CARGO}" build --release --locked
             --manifest-path "${PROBE_BRIDGE_DIR}/Cargo.toml"
             --target-dir    "${CMAKE_BINARY_DIR}/probe-bridge"
             ${_CARGO_TARGET_ARGS}
     DEPENDS "${PROBE_BRIDGE_DIR}/Cargo.toml"
+            "${PROBE_BRIDGE_DIR}/Cargo.lock"
             "${PROBE_BRIDGE_DIR}/src/lib.rs"
             "${PROBE_BRIDGE_DIR}/src/rsp.rs"
     COMMENT "Building probe-bridge (Rust)"
@@ -155,14 +157,28 @@ if(CARGO AND NOT MKDBG_SKIP_PROBE)
   target_link_libraries(mkdbg-native PRIVATE "${PROBE_BRIDGE_LIB}")
   add_dependencies(mkdbg-native probe_bridge_target)
 
+  add_executable(probe_hardware_test tests/probe_hardware_test.c)
+  target_compile_options(probe_hardware_test PRIVATE -Wall -Wextra -Werror -O2)
+  target_include_directories(probe_hardware_test PRIVATE
+    "${PROBE_BRIDGE_DIR}/include"
+  )
+  target_link_libraries(probe_hardware_test PRIVATE "${PROBE_BRIDGE_LIB}")
+  add_dependencies(probe_hardware_test probe_bridge_target)
+
   if(APPLE)
     target_link_libraries(mkdbg-native PRIVATE
       "-framework IOKit"
       "-framework CoreFoundation"
       "-framework Security"
     )
+    target_link_libraries(probe_hardware_test PRIVATE
+      "-framework IOKit"
+      "-framework CoreFoundation"
+      "-framework Security"
+    )
   elseif(UNIX)
     target_link_libraries(mkdbg-native PRIVATE udev)
+    target_link_libraries(probe_hardware_test PRIVATE udev)
   endif()
 
   message(STATUS "probe-bridge: enabled (${CARGO})")
@@ -251,3 +267,43 @@ target_include_directories(thumb_dis_test PRIVATE
   ${CMAKE_CURRENT_LIST_DIR}/src
 )
 add_test(NAME thumb_dis COMMAND thumb_dis_test)
+
+# ── ctest: RSP byte-stream framing ───────────────────────────────────────────
+add_executable(rsp_transport_test
+  tests/rsp_transport_test.c
+  src/rsp_transport.c
+)
+target_compile_options(rsp_transport_test PRIVATE -Wall -Wextra -Werror -O2)
+target_include_directories(rsp_transport_test PRIVATE
+  ${CMAKE_CURRENT_LIST_DIR}/src
+  ${CMAKE_CURRENT_LIST_DIR}/deps/wire/host
+)
+add_test(NAME rsp_transport COMMAND rsp_transport_test)
+
+# ── ctest: live debug session contract ───────────────────────────────────────
+add_executable(debug_session_test
+  tests/debug_session_test.c
+  src/debug_session.c
+  src/rsp_transport.c
+  arch/cortex_m.c
+  arch/riscv32.c
+  arch/arch_registry.c
+)
+target_compile_options(debug_session_test PRIVATE -Wall -Wextra -Werror -O2)
+target_include_directories(debug_session_test PRIVATE
+  ${CMAKE_CURRENT_LIST_DIR}/src
+  ${CMAKE_CURRENT_LIST_DIR}/arch
+  ${CMAKE_CURRENT_LIST_DIR}/deps/wire/host
+)
+add_test(NAME debug_session COMMAND debug_session_test)
+
+# ── ctest: deterministic debug capture/replay ────────────────────────────────
+add_executable(capture_transport_test
+  tests/capture_transport_test.c
+  src/capture_transport.c
+)
+target_compile_options(capture_transport_test PRIVATE -Wall -Wextra -Werror -O2)
+target_include_directories(capture_transport_test PRIVATE
+  ${CMAKE_CURRENT_LIST_DIR}/src
+)
+add_test(NAME capture_transport COMMAND capture_transport_test)

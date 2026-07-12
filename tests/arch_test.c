@@ -63,8 +63,10 @@ int main(void)
     /* cortex-m live_debug descriptor */
     CHECK(cm != NULL && cm->live_debug != NULL,
           "cortex-m has live_debug descriptor");
-    CHECK(cm != NULL && cm->live_debug != NULL && cm->live_debug->nregs == 17,
-          "cortex-m live_debug->nregs == 17");
+    CHECK(cm != NULL && cm->live_debug != NULL && cm->live_debug->nregs == 50,
+          "cortex-m live_debug->nregs == 50");
+    CHECK(cm != NULL && cm->live_debug != NULL && cm->live_debug->required_nregs == 17,
+          "cortex-m live_debug->required_nregs == 17");
     CHECK(cm != NULL && cm->live_debug != NULL && cm->live_debug->pc_reg_idx == 15,
           "cortex-m live_debug->pc_reg_idx == 15");
 
@@ -79,6 +81,27 @@ int main(void)
           "riscv32 live_debug->nregs == 33");
     CHECK(rv != NULL && rv->live_debug != NULL && rv->live_debug->pc_reg_idx == 32,
           "riscv32 live_debug->pc_reg_idx == 32");
+    if (rv && rv->decode_crash) {
+        MkdbgCrashReport rv_report;
+        unsigned char raw[140];
+        memset(raw, 0, sizeof(raw));
+        raw[0] = 5;          /* halt_signal */
+        raw[4 + 31 * 4] = 31; /* x31 */
+        raw[4 + 32 * 4] = 0x78;
+        raw[4 + 32 * 4 + 1] = 0x56;
+        raw[4 + 32 * 4 + 2] = 0x34;
+        raw[4 + 32 * 4 + 3] = 0x12;
+        raw[136] = 2;        /* mcause */
+        memset(&rv_report, 0, sizeof(rv_report));
+        int rc = rv->decode_crash(raw, sizeof(raw), &rv_report);
+        CHECK(rc == 0, "riscv32 decode_crash(valid payload) returns 0");
+        CHECK(strcmp(rv_report.regs[31], "0x0000001f") == 0,
+              "riscv32 decode_crash captures x31");
+        CHECK(strcmp(rv_report.regs[32], "0x12345678") == 0,
+              "riscv32 decode_crash captures pc");
+        CHECK(strcmp(rv_report.cfsr, "0x00000002") == 0,
+              "riscv32 decode_crash captures mcause");
+    }
 
     printf("\n%d/%d tests passed\n", tests_passed, tests_run);
     return (tests_passed == tests_run) ? 0 : 1;

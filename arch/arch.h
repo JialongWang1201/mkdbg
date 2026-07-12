@@ -25,6 +25,7 @@ typedef WireCrashReport MkdbgCrashReport;
  * Used by debug_session and debug_tui to avoid hardcoding Cortex-M specifics. */
 typedef struct {
     int         nregs;         /* total registers returned by RSP 'g' command */
+    int         required_nregs; /* minimum registers required for this arch */
     int         pc_reg_idx;    /* index of PC in the register array */
     int         sp_reg_idx;    /* index of SP in the register array */
     int         fp_reg_idx;    /* frame-pointer register index; -1 if fp backtracing unsupported */
