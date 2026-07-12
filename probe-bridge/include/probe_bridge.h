@@ -42,6 +42,13 @@ int probe_list(ProbeInfo *out, int max);
 
 typedef struct ProbeHandle ProbeHandle;
 
+typedef struct ProbeCapabilities {
+    uint32_t flags;
+    uint32_t register_count;
+} ProbeCapabilities;
+
+#define PROBE_CAP_FPU_REGS (1u << 0)
+
 /*
  * probe_open — connect to probe[probe_idx] and attach to target chip.
  *
@@ -55,6 +62,9 @@ typedef struct ProbeHandle ProbeHandle;
  * Returns NULL on failure.
  */
 ProbeHandle *probe_open(int probe_idx, const char *chip);
+
+/* Copy target capabilities discovered during probe_open(). */
+int probe_get_capabilities(ProbeHandle *h, ProbeCapabilities *out);
 
 /*
  * probe_write — push RSP bytes from mkdbg into the bridge.

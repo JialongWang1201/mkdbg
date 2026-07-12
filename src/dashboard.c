@@ -3,7 +3,7 @@
  * Live TUI showing three panels:
  *   - Serial output  (real data when a serial port is configured / specified)
  *   - Git status     (branch + clean/dirty, via libgit2 or subprocess)
- *   - Probe status   (stub: "no probe connected" until Phase 3)
+ *   - Probe status   (wire crash poll over the configured serial port)
  *
  * Uses termbox2 (vendored at tools/termbox2.h) for all terminal control.
  * Single-threaded select/poll design — no threads, no signals to catch.
@@ -661,6 +661,11 @@ static void do_redraw(const SerialRing *ring, const GitState *gs,
           append_string(tmp, sizeof(tmp), f);
         }
         pclip(sx, sy, TB_WHITE, TB_DEFAULT, tmp, sw2);
+        sy++;
+      }
+    } else if (!port_label || !port_label[0]) {
+      if (sy < bot_y - 1) {
+        pclip(sx, sy, TB_DEFAULT, TB_DEFAULT, "no port configured", sw2);
         sy++;
       }
     } else if (ps && ps->subprocess > 0) {

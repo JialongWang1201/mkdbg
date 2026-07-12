@@ -41,6 +41,15 @@ pub struct ProbeInfo {
     pid: u16,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ProbeCapabilities {
+    flags: u32,
+    register_count: u32,
+}
+
+const PROBE_CAP_FPU_REGS: u32 = 1 << 0;
+
 pub struct ProbeHandle {
     /// C → RSP thread: raw RSP bytes
     write_tx: SyncSender<Vec<u8>>,
@@ -48,6 +57,7 @@ pub struct ProbeHandle {
     read_state: Mutex<ReadState>,
     shutdown_tx: SyncSender<()>,
     thread_handle: Mutex<Option<thread::JoinHandle<()>>>,
+    capabilities: ProbeCapabilities,
 }
 
 struct ReadState {
@@ -65,9 +75,10 @@ unsafe impl Sync for ProbeHandle {}
 // RSP interpreter thread
 // ---------------------------------------------------------------------------
 
-/// ARM Cortex-M GDB register layout for the 'g' packet:
-///   r0–r15 (16 regs × 4 bytes) + xpsr (4 bytes) = 68 bytes = 136 hex chars.
+/// mkdbg Cortex-M register layout for the 'g' packet:
+///   r0-r15 + xpsr + s0-s31 + fpscr = 50 32-bit registers.
 const CORTEX_M_REG_COUNT: usize = 17;
+const CORTEX_M_FPU_REG_COUNT: usize = 33;
 
 /// probe-rs RegisterId for xPSR on ARM Cortex-M.
 /// GDB numbers it as register slot 16 immediately after r0–r15.
@@ -79,17 +90,24 @@ fn rsp_thread(
     write_rx: Receiver<Vec<u8>>,
     read_tx: Sender<Vec<u8>>,
     shutdown_rx: Receiver<()>,
+    startup_tx: SyncSender<Result<ProbeCapabilities, String>>,
 ) {
     let lister = Lister::new();
     let probes = lister.list_all();
     let probe_info = match probes.get(probe_idx) {
         Some(p) => p,
-        None => return,
+        None => {
+            let _ = startup_tx.send(Err(format!("probe index {probe_idx} is unavailable")));
+            return;
+        }
     };
 
     let probe = match probe_info.open() {
         Ok(p) => p,
-        Err(_) => return,
+        Err(err) => {
+            let _ = startup_tx.send(Err(format!("open failed: {err}")));
+            return;
+        }
     };
 
     let target: TargetSelector = match chip {
@@ -99,13 +117,32 @@ fn rsp_thread(
 
     let mut session = match probe.attach(target, Permissions::default()) {
         Ok(s) => s,
-        Err(_) => return,
+        Err(err) => {
+            let _ = startup_tx.send(Err(format!("target attach failed: {err}")));
+            return;
+        }
     };
 
     let mut core = match session.core(0) {
         Ok(c) => c,
-        Err(_) => return,
+        Err(err) => {
+            let _ = startup_tx.send(Err(format!("core 0 unavailable: {err}")));
+            return;
+        }
     };
+
+    let has_fpu = core.registers().fpu_registers().is_some();
+    let capabilities = ProbeCapabilities {
+        flags: if has_fpu { PROBE_CAP_FPU_REGS } else { 0 },
+        register_count: if has_fpu {
+            (CORTEX_M_REG_COUNT + CORTEX_M_FPU_REG_COUNT) as u32
+        } else {
+            CORTEX_M_REG_COUNT as u32
+        },
+    };
+    if startup_tx.send(Ok(capabilities)).is_err() {
+        return;
+    }
 
     // Halt the core so it is in a known state when the RSP loop starts.
     let _ = core.halt(Duration::from_secs(1));
@@ -156,17 +193,51 @@ fn handle_command(core: &mut probe_rs::Core<'_>, cmd: &str) -> String {
 // Command handlers
 // ---------------------------------------------------------------------------
 
-/// `g` — read all core registers; reply is 136 hex chars (17 × 4 bytes LE).
+/// `g` — read all core registers plus optional FPU registers.
 fn cmd_read_registers(core: &mut probe_rs::Core<'_>) -> String {
-    let mut out = String::with_capacity(CORTEX_M_REG_COUNT * 8);
+    let mut out = String::with_capacity((CORTEX_M_REG_COUNT + CORTEX_M_FPU_REG_COUNT) * 8);
     for i in 0..CORTEX_M_REG_COUNT as u16 {
         let reg_id = if i < 16 { i } else { XPSR_REG_SLOT };
-        let word = read_reg_u32(core, reg_id);
-        for b in word.to_le_bytes() {
-            out.push_str(&format!("{:02x}", b));
+        let word = match core.read_core_reg::<u32>(RegisterId(reg_id)) {
+            Ok(word) => word,
+            Err(_) => return "E01".to_string(),
+        };
+        append_u32_le_hex(&mut out, word);
+    }
+
+    let mut emitted_fpu = 0usize;
+    if let Some(fpu_regs) = core.registers().fpu_registers() {
+        for reg in fpu_regs.take(32) {
+            let word = match core.read_core_reg::<u32>(reg.id()) {
+                Ok(word) => word,
+                Err(_) => return "E01".to_string(),
+            };
+            append_u32_le_hex(&mut out, word);
+            emitted_fpu += 1;
         }
     }
+    if emitted_fpu != 0 {
+        if emitted_fpu != 32 {
+            return "E01".to_string();
+        }
+        let fpscr = match core
+            .registers()
+            .fpsr()
+            .and_then(|reg| core.read_core_reg::<u32>(reg.id()).ok())
+        {
+            Some(word) => word,
+            None => return "E01".to_string(),
+        };
+        append_u32_le_hex(&mut out, fpscr);
+    }
+
     out
+}
+
+fn append_u32_le_hex(out: &mut String, word: u32) {
+    for b in word.to_le_bytes() {
+        out.push_str(&format!("{:02x}", b));
+    }
 }
 
 /// `G<hex-registers>` — write all core registers; reply `OK` or `E01`.
@@ -272,10 +343,6 @@ fn cmd_breakpoint(core: &mut probe_rs::Core<'_>, args: &str, set: bool) -> Strin
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn read_reg_u32(core: &mut probe_rs::Core<'_>, reg: u16) -> u32 {
-    core.read_core_reg::<u32>(RegisterId(reg)).unwrap_or(0)
-}
-
 // ---------------------------------------------------------------------------
 // C FFI exports
 // ---------------------------------------------------------------------------
@@ -286,6 +353,9 @@ fn read_reg_u32(core: &mut probe_rs::Core<'_>, reg: u16) -> u32 {
 /// `out` must point to a buffer of at least `max` `ProbeInfo` entries.
 #[no_mangle]
 pub unsafe extern "C" fn probe_list(out: *mut ProbeInfo, max: i32) -> i32 {
+    if max < 0 || (max > 0 && out.is_null()) {
+        return -1;
+    }
     let out_ptr = out as usize; // capture for use inside closure
     let result = panic::catch_unwind(move || {
         let out = out_ptr as *mut ProbeInfo;
@@ -326,6 +396,9 @@ pub unsafe extern "C" fn probe_list(out: *mut ProbeInfo, max: i32) -> i32 {
 /// `chip` must be a valid NUL-terminated C string or NULL.
 #[no_mangle]
 pub unsafe extern "C" fn probe_open(probe_idx: i32, chip: *const c_char) -> *mut ProbeHandle {
+    if probe_idx < 0 {
+        return std::ptr::null_mut();
+    }
     let chip_str: Option<String> = if chip.is_null() {
         None
     } else {
@@ -335,19 +408,52 @@ pub unsafe extern "C" fn probe_open(probe_idx: i32, chip: *const c_char) -> *mut
     let (write_tx, write_rx) = mpsc::sync_channel::<Vec<u8>>(64);
     let (read_tx, read_rx) = mpsc::channel::<Vec<u8>>();
     let (shutdown_tx, shutdown_rx) = mpsc::sync_channel::<()>(1);
+    let (startup_tx, startup_rx) = mpsc::sync_channel(1);
 
     let idx = probe_idx as usize;
     let jh = thread::spawn(move || {
-        rsp_thread(idx, chip_str, write_rx, read_tx, shutdown_rx);
+        rsp_thread(idx, chip_str, write_rx, read_tx, shutdown_rx, startup_tx);
     });
+
+    let capabilities = match startup_rx.recv_timeout(Duration::from_secs(10)) {
+        Ok(Ok(capabilities)) => capabilities,
+        Ok(Err(message)) => {
+            eprintln!("mkdbg: probe {message}");
+            let _ = jh.join();
+            return std::ptr::null_mut();
+        }
+        Err(_) => {
+            eprintln!("mkdbg: probe connection timed out");
+            let _ = shutdown_tx.try_send(());
+            let _ = jh.join();
+            return std::ptr::null_mut();
+        }
+    };
 
     let h = Box::new(ProbeHandle {
         write_tx,
-        read_state: Mutex::new(ReadState { rx: read_rx, leftover: Vec::new() }),
+        read_state: Mutex::new(ReadState {
+            rx: read_rx,
+            leftover: Vec::new(),
+        }),
         shutdown_tx,
         thread_handle: Mutex::new(Some(jh)),
+        capabilities,
     });
     Box::into_raw(h)
+}
+
+/// Return capabilities discovered while attaching to the target.
+#[no_mangle]
+pub unsafe extern "C" fn probe_get_capabilities(
+    h: *mut ProbeHandle,
+    out: *mut ProbeCapabilities,
+) -> i32 {
+    if h.is_null() || out.is_null() {
+        return -1;
+    }
+    *out = (*h).capabilities;
+    0
 }
 
 /// Push RSP bytes from mkdbg into the bridge.
@@ -355,12 +461,8 @@ pub unsafe extern "C" fn probe_open(probe_idx: i32, chip: *const c_char) -> *mut
 /// # Safety
 /// `h` must be a valid non-NULL handle.  `buf` must be readable for `len` bytes.
 #[no_mangle]
-pub unsafe extern "C" fn probe_write(
-    h: *mut ProbeHandle,
-    buf: *const u8,
-    len: i32,
-) -> i32 {
-    if h.is_null() {
+pub unsafe extern "C" fn probe_write(h: *mut ProbeHandle, buf: *const u8, len: i32) -> i32 {
+    if h.is_null() || len < 0 || (len > 0 && buf.is_null()) {
         return -3;
     }
     let h = &*h;
@@ -385,7 +487,7 @@ pub unsafe extern "C" fn probe_read(
     len: i32,
     timeout_ms: i32,
 ) -> i32 {
-    if h.is_null() {
+    if h.is_null() || len < 0 || (len > 0 && buf.is_null()) {
         return -3;
     }
     let h = &*h;
@@ -413,7 +515,7 @@ pub unsafe extern "C" fn probe_read(
 
 /// Detach from target and release all resources.
 ///
-/// Blocks until the RSP thread exits.  Safe to call multiple times.
+/// Blocks until the RSP thread exits. NULL is accepted as a no-op.
 ///
 /// # Safety
 /// `h` must be a valid pointer returned by `probe_open`.  After this call the
@@ -429,6 +531,42 @@ pub unsafe extern "C" fn probe_close(h: *mut ProbeHandle) {
         if let Some(jh) = guard.take() {
             let _ = jh.join();
         }
-    };  // semicolon drops the MutexGuard before h (Box) is freed
-    // Box drops here, releasing all resources.
+    }; // semicolon drops the MutexGuard before h (Box) is freed
+       // Box drops here, releasing all resources.
+}
+
+#[cfg(test)]
+mod ffi_tests {
+    use super::*;
+
+    #[test]
+    fn list_rejects_invalid_output() {
+        assert_eq!(unsafe { probe_list(std::ptr::null_mut(), 1) }, -1);
+        assert_eq!(unsafe { probe_list(std::ptr::null_mut(), -1) }, -1);
+    }
+
+    #[test]
+    fn open_rejects_negative_index() {
+        assert!(unsafe { probe_open(-1, std::ptr::null()) }.is_null());
+    }
+
+    #[test]
+    fn io_rejects_null_handles() {
+        assert_eq!(
+            unsafe { probe_write(std::ptr::null_mut(), std::ptr::null(), 0) },
+            -3
+        );
+        assert_eq!(
+            unsafe { probe_read(std::ptr::null_mut(), std::ptr::null_mut(), 0, 0) },
+            -3
+        );
+    }
+
+    #[test]
+    fn capabilities_reject_null_arguments() {
+        assert_eq!(
+            unsafe { probe_get_capabilities(std::ptr::null_mut(), std::ptr::null_mut()) },
+            -1
+        );
+    }
 }

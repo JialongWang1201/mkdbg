@@ -94,7 +94,7 @@ static void parse_stack_frames(const char *buf, WireCrashReport *r)
 }
 
 /* Parse "registers": { "r0": "0x...", ... } */
-static const char *reg_names[WIRE_NREGS] = {
+static const char *reg_names[WIRE_CM_NREGS] = {
     "r0","r1","r2","r3","r4","r5","r6","r7",
     "r8","r9","r10","r11","r12","sp","lr","pc","xpsr"
 };
@@ -113,7 +113,7 @@ static void parse_registers(const char *buf, WireCrashReport *r)
     } else {
         copy_string(tmp, sizeof(tmp), regs_section);
     }
-    for (int i = 0; i < WIRE_NREGS; i++)
+    for (int i = 0; i < WIRE_CM_NREGS; i++)
         json_find_string(tmp, reg_names[i], r->regs[i], WIRE_REG_HEX_LEN);
 }
 

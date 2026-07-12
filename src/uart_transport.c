@@ -89,5 +89,7 @@ WireTransport *uart_transport_open(const char *port, int baud)
     t->write = uart_write;
     t->close = uart_close;
     t->ctx   = ctx;
+    t->capabilities = 0;
+    t->register_count = 0;
     return t;
 }

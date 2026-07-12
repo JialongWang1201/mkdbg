@@ -60,6 +60,28 @@ static void u32_to_le_hex(uint32_t v, char out[9])
   out[8] = '\0';
 }
 
+static void openocd_quote_arg(const char *raw, char *out, size_t out_size)
+{
+  size_t pos = 0;
+
+  if (out_size == 0) return;
+  if (out_size == 1) {
+    out[0] = '\0';
+    return;
+  }
+  out[pos++] = '"';
+  for (size_t i = 0; raw[i] != '\0' && pos + 2 < out_size; i++) {
+    if (raw[i] == '"' || raw[i] == '\\') {
+      out[pos++] = '\\';
+    }
+    out[pos++] = raw[i];
+  }
+  if (pos + 1 < out_size) {
+    out[pos++] = '"';
+  }
+  out[pos] = '\0';
+}
+
 /* ── Probe commands ──────────────────────────────────────────────────────── */
 
 /* probe halt: query halt reason via RSP '?' */
@@ -134,6 +156,54 @@ int cmd_probe_reset(const ProbeOptions *opts)
   }
   printf("reset sent\n");
   return 0;
+}
+
+/* probe flash: program configured ELF via OpenOCD. */
+int cmd_probe_flash(const ProbeOptions *opts)
+{
+  char config_path[PATH_MAX];
+  char repo_root[PATH_MAX];
+  char openocd_cfg[PATH_MAX];
+  char elf_path[PATH_MAX];
+  char quoted_elf[PATH_MAX + 8];
+  char command[PATH_MAX + 64];
+  char *argv[6];
+  const char *repo_name;
+  const RepoConfig *repo;
+  MkdbgConfig config;
+
+  if (find_config_upward(config_path, sizeof(config_path)) != 0) {
+    die("missing %s; run `mkdbg init` first", CONFIG_NAME);
+  }
+  if (load_config_file(config_path, &config) != 0) {
+    die("invalid config: %s", config_path);
+  }
+  resolve_repo_name(&config, opts->repo, opts->target, &repo_name);
+  repo = find_repo_const(&config, repo_name);
+  if (repo == NULL) {
+    die("repo `%s` not found in %s", repo_name, config_path);
+  }
+  if (repo->openocd_cfg[0] == '\0') {
+    die("repo `%s` has no `openocd_cfg` configured", repo_name);
+  }
+  if (repo->elf_path[0] == '\0') {
+    die("repo `%s` has no `elf_path` configured", repo_name);
+  }
+
+  resolve_repo_root(config_path, repo, repo_root, sizeof(repo_root));
+  resolve_path(repo_root, repo->openocd_cfg, openocd_cfg, sizeof(openocd_cfg));
+  resolve_path(repo_root, repo->elf_path, elf_path, sizeof(elf_path));
+  openocd_quote_arg(elf_path, quoted_elf, sizeof(quoted_elf));
+  snprintf(command, sizeof(command),
+           "program %s verify reset exit", quoted_elf);
+
+  argv[0] = "openocd";
+  argv[1] = "-f";
+  argv[2] = openocd_cfg;
+  argv[3] = "-c";
+  argv[4] = command;
+  argv[5] = NULL;
+  return run_process(argv, repo_root, opts->dry_run);
 }
 
 /* probe read32: read 4 bytes via RSP 'm addr,4' */
