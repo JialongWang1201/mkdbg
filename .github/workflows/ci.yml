@@ -7,6 +7,32 @@ on:
     branches: ["main"]
 
 jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust and probe build dependencies
+        run: |
+          rustup toolchain install stable --no-self-update
+          sudo apt-get update -q
+          sudo apt-get install -y libudev-dev
+
+      - name: Build and run CMake unit tests
+        run: |
+          set -euxo pipefail
+          cmake -S . -B build_unit \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DMKDBG_SKIP_LG2=ON \
+            -DMKDBG_SKIP_PROBE=ON
+          cmake --build build_unit --parallel
+          ctest --test-dir build_unit --output-on-failure
+
+      - name: Run probe bridge unit tests
+        run: cargo test --locked --manifest-path probe-bridge/Cargo.toml
+
   # ── CMake host build: mkdbg-native (with libgit2) + wire-host ────────────
   native-host-artifacts:
     strategy:
