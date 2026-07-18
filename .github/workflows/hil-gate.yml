@@ -19,7 +19,17 @@ on:
         default: "60"
 
 jobs:
+  validate-workflow:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify HIL gate script exists
+        run: test -f examples/stm32f446/scripts/hil_gate.sh
+
   hil-gate:
+    needs: validate-workflow
     if: github.event_name == 'workflow_dispatch' || (vars.HIL_GATE_ENABLED == 'true' && github.event.pull_request.head.repo.fork == false)
     runs-on: [self-hosted, microkernel-mpu-hil]
     timeout-minutes: 75
@@ -76,7 +86,7 @@ jobs:
 
           REPORT_PATH="logs/hil_gate_ci_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}.json"
 
-          bash tools/hil_gate.sh \
+          bash examples/stm32f446/scripts/hil_gate.sh \
             --port "${{ steps.port.outputs.port }}" \
             --baud "${BAUD}" \
             --snapshot-timeout-s "${SNAPSHOT_TIMEOUT_S}" \
