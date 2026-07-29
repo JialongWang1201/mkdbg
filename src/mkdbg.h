@@ -327,6 +327,8 @@ int command_available(const char *command);
 /* ---- process.c ---- */
 void print_shell_arg(FILE *f, const char *arg);
 int run_process(char *const argv[], const char *cwd, int dry_run);
+int capture_process_output(char *const argv[], const char *cwd,
+                           char *out, size_t out_size);
 void print_command_label(const char *label, char *const argv[]);
 void sleep_seconds(double seconds);
 int wait_status_to_rc(int status);

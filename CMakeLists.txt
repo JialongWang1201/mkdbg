@@ -324,3 +324,15 @@ target_include_directories(capture_transport_test PRIVATE
   ${CMAKE_CURRENT_LIST_DIR}/src
 )
 add_test(NAME capture_transport COMMAND capture_transport_test)
+
+# ── ctest: argv subprocess capture ───────────────────────────────────────────
+add_executable(process_test
+  tests/process_test.c
+  src/process.c
+  src/util.c
+)
+target_compile_options(process_test PRIVATE -Wall -Wextra -Werror -O2)
+target_include_directories(process_test PRIVATE
+  ${CMAKE_CURRENT_LIST_DIR}/src
+)
+add_test(NAME process_argv_capture COMMAND process_test)
