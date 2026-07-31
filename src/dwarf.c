@@ -15,6 +15,7 @@
 #include "dwarf.h"
 
 #include <fcntl.h>
+#include <limits.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -89,38 +90,69 @@ static uint32_t le32(const uint8_t *p)
 
 /* ── LEB128 decoders ─────────────────────────────────────────────────────── */
 
-static uint64_t uleb128(const uint8_t *p, const uint8_t *end, size_t *out_n)
+static int read_uleb128(const uint8_t **cursor, const uint8_t *end, uint64_t *out)
 {
+    const uint8_t *p = *cursor;
     uint64_t val = 0;
-    int shift = 0;
-    size_t n = 0;
-    while (p + n < end) {
-        uint8_t b = p[n++];
-        val |= (uint64_t)(b & 0x7f) << shift;
-        shift += 7;
-        if (!(b & 0x80)) break;
+    for (unsigned int i = 0; i < 10 && p < end; i++) {
+        uint8_t b = *p++;
+        if (i == 9 && ((b & 0x7fu) > 1u || (b & 0x80u))) return -1;
+        val |= (uint64_t)(b & 0x7fu) << (i * 7u);
+        if (!(b & 0x80u)) {
+            *cursor = p;
+            *out = val;
+            return 0;
+        }
     }
-    *out_n = n;
-    return val;
+    return -1;
 }
 
-static int64_t sleb128(const uint8_t *p, const uint8_t *end, size_t *out_n)
+static int read_sleb128(const uint8_t **cursor, const uint8_t *end, int64_t *out)
 {
-    int64_t val = 0;
-    int shift = 0;
-    size_t n = 0;
-    uint8_t b = 0;
-    while (p + n < end) {
-        b = p[n++];
-        val |= (int64_t)(b & 0x7f) << shift;
-        shift += 7;
-        if (!(b & 0x80)) break;
+    const uint8_t *p = *cursor;
+    uint64_t bits = 0;
+    for (unsigned int i = 0; i < 10 && p < end; i++) {
+        uint8_t b = *p++;
+        unsigned int shift = i * 7u;
+        if (i == 9 && (b != 0x00u && b != 0x7fu)) return -1;
+        bits |= (uint64_t)(b & 0x7fu) << shift;
+        if (!(b & 0x80u)) {
+            if (i < 9 && (b & 0x40u)) bits |= UINT64_MAX << (shift + 7u);
+            memcpy(out, &bits, sizeof(bits));
+            *cursor = p;
+            return 0;
+        }
     }
-    /* Sign-extend */
-    if (shift < 64 && (b & 0x40))
-        val |= -(int64_t)((uint64_t)1 << shift);
-    *out_n = n;
-    return val;
+    return -1;
+}
+
+static int read_bounded_string(const uint8_t **cursor, const uint8_t *end,
+                               const char **out)
+{
+    const uint8_t *p = *cursor;
+    const uint8_t *nul;
+    if (p >= end) return -1;
+    nul = memchr(p, '\0', (size_t)(end - p));
+    if (!nul) return -1;
+    *out = (const char *)p;
+    *cursor = nul + 1;
+    return 0;
+}
+
+static int bounded_string_equals(const uint8_t *table, size_t table_size,
+                                 size_t offset, const char *expected)
+{
+    const uint8_t *start;
+    const uint8_t *nul;
+    size_t actual_len;
+    size_t expected_len;
+    if (offset >= table_size) return -1;
+    start = table + offset;
+    nul = memchr(start, '\0', table_size - offset);
+    if (!nul) return -1;
+    actual_len = (size_t)(nul - start);
+    expected_len = strlen(expected);
+    return actual_len == expected_len && memcmp(start, expected, actual_len) == 0;
 }
 
 /* ── DBI row and file management ─────────────────────────────────────────── */
@@ -169,15 +201,15 @@ static ptrdiff_t parse_line_cu(DwarfDBI *dbi,
     const uint8_t *cu_start = p;
 
     /* unit_length (32-bit form; 0xffffffff would indicate DWARF64) */
-    if (p + 4 > sect_end) return -1;
+    if ((size_t)(sect_end - p) < 4u) return -1;
     uint32_t unit_length = le32(p);
     if (unit_length == 0xffffffffu) return -1;  /* DWARF64 not supported */
     p += 4;
+    if ((uint64_t)unit_length > (uint64_t)(sect_end - p)) return -1;
     const uint8_t *cu_end = p + unit_length;
-    if (cu_end > sect_end || cu_end < p) return -1;
 
     /* version */
-    if (p + 2 > cu_end) return -1;
+    if ((size_t)(cu_end - p) < 2u) return -1;
     uint16_t version = le16(p); p += 2;
     if (version < 2 || version > 4) {
         /* Unknown version — skip this CU without error */
@@ -185,10 +217,10 @@ static ptrdiff_t parse_line_cu(DwarfDBI *dbi,
     }
 
     /* header_length */
-    if (p + 4 > cu_end) return -1;
+    if ((size_t)(cu_end - p) < 4u) return -1;
     uint32_t hdr_len = le32(p); p += 4;
+    if ((uint64_t)hdr_len > (uint64_t)(cu_end - p)) return -1;
     const uint8_t *prog = p + hdr_len;  /* start of the line program */
-    if (prog > cu_end || prog < p) return -1;
 
     /* minimum_instruction_length */
     if (p >= cu_end) return -1;
@@ -212,9 +244,10 @@ static ptrdiff_t parse_line_cu(DwarfDBI *dbi,
     /* opcode_base */
     if (p >= cu_end) return -1;
     uint8_t opcode_base = *p++;
+    if (!opcode_base) return -1;
 
     /* standard_opcode_lengths[opcode_base - 1] */
-    if (p + (opcode_base - 1) > cu_end) return -1;
+    if ((size_t)(cu_end - p) < (size_t)(opcode_base - 1u)) return -1;
     const uint8_t *opcode_lengths = p;
     p += opcode_base - 1;
 
@@ -223,28 +256,31 @@ static ptrdiff_t parse_line_cu(DwarfDBI *dbi,
 #define MAX_DIRS 512
     const char *dirs[MAX_DIRS];
     size_t ndirs = 0;
-    while (p < cu_end && *p) {
-        if (ndirs < MAX_DIRS) dirs[ndirs++] = (const char *)p;
-        while (p < cu_end && *p) p++;
-        p++;  /* consume NUL */
+    for (;;) {
+        const char *dir;
+        if (read_bounded_string(&p, cu_end, &dir) != 0) return -1;
+        if (!dir[0]) break;
+        if (ndirs < MAX_DIRS) dirs[ndirs++] = dir;
     }
-    if (p >= cu_end) return -1;
-    p++;  /* consume final empty-string terminator */
 
     /* file_names: map CU-local (1-based) indices to global DBI file indices */
     uint32_t *file_map   = NULL;
     size_t    nfiles_cu  = 0;
     size_t    fmap_cap   = 0;
 
-    while (p < cu_end && *p) {
-        const char *fname = (const char *)p;
-        while (p < cu_end && *p) p++;
-        p++;  /* consume NUL */
-
-        size_t n;
-        uint64_t dir_idx = uleb128(p, cu_end, &n); p += n;
-        uleb128(p, cu_end, &n); p += n;  /* mtime — ignored */
-        uleb128(p, cu_end, &n); p += n;  /* file size — ignored */
+    for (;;) {
+        const char *fname;
+        uint64_t dir_idx;
+        uint64_t ignored;
+        if (read_bounded_string(&p, cu_end, &fname) != 0) {
+            free(file_map); return -1;
+        }
+        if (!fname[0]) break;
+        if (read_uleb128(&p, cu_end, &dir_idx) != 0 ||
+            read_uleb128(&p, cu_end, &ignored) != 0 ||
+            read_uleb128(&p, cu_end, &ignored) != 0) {
+            free(file_map); return -1;
+        }
 
         char path_buf[1024];
         if (dir_idx > 0 && dir_idx <= ndirs)
@@ -270,9 +306,6 @@ static ptrdiff_t parse_line_cu(DwarfDBI *dbi,
         }
         file_map[nfiles_cu++] = gidx;
     }
-    if (p >= cu_end) { free(file_map); return -1; }
-    p++;  /* consume final empty-name terminator */
-
     /* ── Run the line number program ─────────────────────────────────────── */
     p = prog;
 
@@ -286,12 +319,14 @@ static ptrdiff_t parse_line_cu(DwarfDBI *dbi,
 
     while (p < cu_end) {
         uint8_t op = *p++;
-        size_t  n;
 
         if (op == 0) {
             /* Extended opcode: length ULEB128, then 1-byte opcode, then operands */
-            uint64_t ext_len = uleb128(p, cu_end, &n); p += n;
-            if (!ext_len || p + ext_len > cu_end) { free(file_map); return -1; }
+            uint64_t ext_len;
+            if (read_uleb128(&p, cu_end, &ext_len) != 0 || !ext_len ||
+                ext_len > (uint64_t)(cu_end - p)) {
+                free(file_map); return -1;
+            }
 
             uint8_t ext_op = *p++;  /* consume opcode byte */
 
@@ -330,25 +365,42 @@ static ptrdiff_t parse_line_cu(DwarfDBI *dbi,
                 break;
 
             case DW_LNS_advance_pc: {
-                uint64_t delta = uleb128(p, cu_end, &n); p += n;
+                uint64_t delta;
+                if (read_uleb128(&p, cu_end, &delta) != 0) {
+                    free(file_map); return -1;
+                }
                 address += (uint32_t)(delta * min_insn);
                 break;
             }
 
             case DW_LNS_advance_line: {
-                int64_t delta = sleb128(p, cu_end, &n); p += n;
+                int64_t delta;
+                if (read_sleb128(&p, cu_end, &delta) != 0) {
+                    free(file_map); return -1;
+                }
+                if (delta < INT_MIN || delta > INT_MAX ||
+                    (delta > 0 && line_reg > INT_MAX - (int)delta) ||
+                    (delta < 0 && line_reg < INT_MIN - (int)delta)) {
+                    free(file_map); return -1;
+                }
                 line_reg += (int)delta;
                 break;
             }
 
             case DW_LNS_set_file: {
-                uint64_t f = uleb128(p, cu_end, &n); p += n;
+                uint64_t f;
+                if (read_uleb128(&p, cu_end, &f) != 0) {
+                    free(file_map); return -1;
+                }
                 file_reg = (uint32_t)f;
                 break;
             }
 
             case DW_LNS_set_column: {
-                uint64_t c = uleb128(p, cu_end, &n); p += n;
+                uint64_t c;
+                if (read_uleb128(&p, cu_end, &c) != 0) {
+                    free(file_map); return -1;
+                }
                 col_reg = (int)c;
                 break;
             }
@@ -367,7 +419,7 @@ static ptrdiff_t parse_line_cu(DwarfDBI *dbi,
             }
 
             case DW_LNS_fixed_advance_pc: {
-                if (p + 2 > cu_end) { free(file_map); return -1; }
+                if ((size_t)(cu_end - p) < 2u) { free(file_map); return -1; }
                 uint16_t delta = le16(p); p += 2;
                 address += delta;
                 break;
@@ -378,7 +430,12 @@ static ptrdiff_t parse_line_cu(DwarfDBI *dbi,
                 break;
 
             case DW_LNS_set_isa:
-                uleb128(p, cu_end, &n); p += n;
+                {
+                    uint64_t ignored;
+                    if (read_uleb128(&p, cu_end, &ignored) != 0) {
+                        free(file_map); return -1;
+                    }
+                }
                 break;
 
             default:
@@ -386,7 +443,10 @@ static ptrdiff_t parse_line_cu(DwarfDBI *dbi,
                 if (op >= 1 && (size_t)(op - 1) < (size_t)(opcode_base - 1)) {
                     uint8_t nops = opcode_lengths[op - 1];
                     for (uint8_t i = 0; i < nops; i++) {
-                        uleb128(p, cu_end, &n); p += n;
+                        uint64_t ignored;
+                        if (read_uleb128(&p, cu_end, &ignored) != 0) {
+                            free(file_map); return -1;
+                        }
                     }
                 }
                 break;
@@ -444,8 +504,10 @@ static int find_elf_section(const uint8_t *data, size_t size,
         uint32_t sh_offset = le32(shdr + 16);
         uint32_t sh_size   = le32(shdr + 20);
 
-        if (sh_name >= strtab_size) continue;
-        if (strcmp(strtab + sh_name, name) != 0) continue;
+        int name_match = bounded_string_equals((const uint8_t *)strtab,
+                                               strtab_size, sh_name, name);
+        if (name_match < 0) return -1;
+        if (!name_match) continue;
 
         if ((uint64_t)sh_offset + sh_size > size) return -1;
         *out_p  = data + sh_offset;
@@ -468,28 +530,13 @@ static int row_cmp(const void *a, const void *b)
 
 /* ── Public API ──────────────────────────────────────────────────────────── */
 
-DwarfDBI *dwarf_open(const char *elf_path)
+static DwarfDBI *dwarf_open_owned(uint8_t *data, size_t size)
 {
-    int fd = open(elf_path, O_RDONLY);
-    if (fd < 0) { perror(elf_path); return NULL; }
-
-    struct stat st;
-    if (fstat(fd, &st) < 0 || st.st_size <= 0) { close(fd); return NULL; }
-    size_t size = (size_t)st.st_size;
-
-    uint8_t *data = malloc(size);
-    if (!data) { close(fd); return NULL; }
-
-    ssize_t nr = read(fd, data, size);
-    close(fd);
-    if (nr < 0 || (size_t)nr != size) { free(data); return NULL; }
-
     /* Find .debug_line */
     const uint8_t *dl_p;
     size_t dl_sz;
     int rc = find_elf_section(data, size, ".debug_line", &dl_p, &dl_sz);
     if (rc != 0) {
-        if (rc == 1) fprintf(stderr, "%s: no .debug_line section\n", elf_path);
         free(data);
         return NULL;
     }
@@ -504,7 +551,10 @@ DwarfDBI *dwarf_open(const char *elf_path)
     const uint8_t *end = dl_p + dl_sz;
     while (p < end) {
         ptrdiff_t consumed = parse_line_cu(dbi, p, end);
-        if (consumed <= 0) break;
+        if (consumed <= 0) {
+            dwarf_close(dbi);
+            return NULL;
+        }
         p += consumed;
     }
 
@@ -526,6 +576,34 @@ DwarfDBI *dwarf_open(const char *elf_path)
     }
 
     return dbi;
+}
+
+DwarfDBI *dwarf_open_memory(const uint8_t *data, size_t size)
+{
+    uint8_t *copy;
+    if (!data || size == 0) return NULL;
+    copy = malloc(size);
+    if (!copy) return NULL;
+    memcpy(copy, data, size);
+    return dwarf_open_owned(copy, size);
+}
+
+DwarfDBI *dwarf_open(const char *elf_path)
+{
+    int fd = open(elf_path, O_RDONLY);
+    if (fd < 0) { perror(elf_path); return NULL; }
+
+    struct stat st;
+    if (fstat(fd, &st) < 0 || st.st_size <= 0) { close(fd); return NULL; }
+    size_t size = (size_t)st.st_size;
+
+    uint8_t *data = malloc(size);
+    if (!data) { close(fd); return NULL; }
+
+    ssize_t nr = read(fd, data, size);
+    close(fd);
+    if (nr < 0 || (size_t)nr != size) { free(data); return NULL; }
+    return dwarf_open_owned(data, size);
 }
 
 void dwarf_close(DwarfDBI *dbi)
@@ -581,8 +659,10 @@ int dwarf_sym_to_addr(DwarfDBI *dbi, const char *name, uint32_t *addr)
         uint8_t        st_inf = e[12];
         uint8_t        stt    = st_inf & 0xfu;
         if (stt != 1u && stt != 2u) continue;          /* skip non-FUNC/OBJECT */
-        if (st_nm >= (uint32_t)dbi->str_size) continue;
-        if (strcmp((const char *)dbi->str_data + st_nm, name) == 0) {
+        int name_match = bounded_string_equals(dbi->str_data, dbi->str_size,
+                                               st_nm, name);
+        if (name_match < 0) return -1;
+        if (name_match) {
             *addr = st_val;
             return 0;
         }
@@ -603,9 +683,10 @@ int dwarf_addr_to_sym(DwarfDBI *dbi, uint32_t pc,
         uint8_t        stt    = e[12] & 0xfu;
         if (stt != 2u) continue;                          /* STT_FUNC only */
         if (st_sz == 0) continue;                         /* skip size-0 entries */
-        if (pc >= st_val && pc < st_val + st_sz) {
+        if (pc >= st_val && (uint64_t)pc < (uint64_t)st_val + st_sz) {
             uint32_t st_nm = le32(e + 0);
-            if (st_nm >= (uint32_t)dbi->str_size) continue;
+            if (bounded_string_equals(dbi->str_data, dbi->str_size,
+                                      st_nm, "") < 0) continue;
             *out_name   = (const char *)dbi->str_data + st_nm;
             *out_offset = pc - st_val;
             return 0;
@@ -629,7 +710,8 @@ int dwarf_addr_to_sym(DwarfDBI *dbi, uint32_t pc,
     if (!best) return -1;
 
     uint32_t st_nm = le32(best + 0);
-    if (st_nm >= (uint32_t)dbi->str_size) return -1;
+    if (bounded_string_equals(dbi->str_data, dbi->str_size, st_nm, "") < 0)
+        return -1;
     *out_name   = (const char *)dbi->str_data + st_nm;
     *out_offset = pc - best_v;
     return 0;

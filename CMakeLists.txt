@@ -129,6 +129,7 @@ endif()
 # ── probe-bridge: Rust staticlib (optional, requires cargo) ──────────────────
 # Pass -DMKDBG_SKIP_PROBE=ON to disable even when cargo is available.
 option(MKDBG_SKIP_PROBE "Disable probe-bridge integration" OFF)
+option(MKDBG_BUILD_FUZZERS "Build libFuzzer targets (Clang only)" OFF)
 find_program(CARGO cargo PATHS "$ENV{HOME}/.cargo/bin" /usr/local/bin /opt/homebrew/bin)
 if(CARGO AND NOT MKDBG_SKIP_PROBE)
   set(PROBE_BRIDGE_DIR "${CMAKE_SOURCE_DIR}/probe-bridge")
@@ -273,6 +274,23 @@ target_include_directories(dwarf_test PRIVATE
   ${CMAKE_CURRENT_LIST_DIR}/src
 )
 add_test(NAME dwarf_sym_lookup COMMAND dwarf_test)
+
+if(MKDBG_BUILD_FUZZERS)
+  if(NOT CMAKE_C_COMPILER_ID MATCHES "Clang")
+    message(FATAL_ERROR "MKDBG_BUILD_FUZZERS requires Clang")
+  endif()
+  add_executable(dwarf_fuzz
+    tests/fuzz/dwarf_fuzz.c
+    src/dwarf.c
+  )
+  target_compile_options(dwarf_fuzz PRIVATE
+    -Wall -Wextra -Werror -O1 -g -fsanitize=fuzzer,address,undefined
+  )
+  target_link_options(dwarf_fuzz PRIVATE -fsanitize=fuzzer,address,undefined)
+  target_include_directories(dwarf_fuzz PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/src
+  )
+endif()
 
 # ── ctest: Thumb/Thumb-2 disassembler ────────────────────────────────────────
 add_executable(thumb_dis_test
