@@ -75,6 +75,7 @@ add_executable(mkdbg-native
   src/serial.c
   src/seam.c
   src/replay.c
+  src/json.c
   src/dashboard.c
   src/wire.c
   src/uart_transport.c
@@ -354,3 +355,16 @@ target_include_directories(process_test PRIVATE
   ${CMAKE_CURRENT_LIST_DIR}/src
 )
 add_test(NAME process_argv_capture COMMAND process_test)
+
+# ── ctest: streaming replay JSON ─────────────────────────────────────────────
+add_executable(replay_test
+  tests/replay_test.c
+  src/replay.c
+  src/json.c
+  src/util.c
+)
+target_compile_options(replay_test PRIVATE -Wall -Wextra -Werror -O2)
+target_include_directories(replay_test PRIVATE
+  ${CMAKE_CURRENT_LIST_DIR}/src
+)
+add_test(NAME replay_streaming_json COMMAND replay_test)
