@@ -259,6 +259,7 @@ typedef struct {
   char repo[MAX_NAME];
   char port[MAX_VALUE];
   long opened_at;
+  long closed_at;
 } IncidentMetadata;
 
 /* ---- wire probe (mkdbg_wire.c) ---- */
@@ -361,6 +362,9 @@ void sanitize_slug(const char *input, char *out, size_t out_size);
 int load_current_incident_id(const char *config_path, char *out, size_t out_size);
 int load_incident_metadata(const char *meta_path, IncidentMetadata *meta);
 int write_incident_metadata(const char *meta_path, const IncidentMetadata *meta, long closed_at);
+int write_current_incident_id(const char *current_path, const char *incident_id);
+int close_incident_state(const char *current_path, const char *meta_path,
+                         IncidentMetadata *meta, long closed_at);
 int load_current_incident_dir(const char *config_path, char *out, size_t out_size);
 int cmd_incident_open(const IncidentOpenOptions *opts);
 int cmd_incident_status(const IncidentStatusOptions *opts);

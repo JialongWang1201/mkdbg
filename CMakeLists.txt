@@ -368,3 +368,18 @@ target_include_directories(replay_test PRIVATE
   ${CMAKE_CURRENT_LIST_DIR}/src
 )
 add_test(NAME replay_streaming_json COMMAND replay_test)
+
+# ── ctest: atomic incident state ─────────────────────────────────────────────
+add_executable(incident_test
+  tests/incident_test.c
+  src/incident.c
+  src/json.c
+  src/config.c
+  src/process.c
+  src/util.c
+)
+target_compile_options(incident_test PRIVATE -Wall -Wextra -Werror -O2)
+target_include_directories(incident_test PRIVATE
+  ${CMAKE_CURRENT_LIST_DIR}/src
+)
+add_test(NAME incident_atomic_state COMMAND incident_test)
