@@ -19,8 +19,14 @@ static int probe_open(const ProbeOptions *opts)
     return -1;
   }
   int baud = 115200;
-  if (opts->baud != NULL && opts->baud[0] != '\0')
-    baud = atoi(opts->baud);
+  if (opts->baud != NULL && opts->baud[0] != '\0') {
+    long value;
+    if (parse_long_range(opts->baud, 10, 1L, INT_MAX, &value) != 0) {
+      fprintf(stderr, "mkdbg: invalid baud: %s\n", opts->baud);
+      return -1;
+    }
+    baud = (int)value;
+  }
   int fd = wire_serial_open(opts->port, baud);
   if (fd < 0)
     fprintf(stderr, "mkdbg: cannot open %s\n", opts->port);
@@ -214,13 +220,12 @@ int cmd_probe_read32(const ProbeOptions *opts)
     return 1;
   }
 
-  char *end;
-  errno = 0;
-  uint32_t addr = (uint32_t)strtoul(opts->address, &end, 0);
-  if (errno != 0 || *end != '\0') {
+  unsigned long parsed_addr;
+  if (parse_ulong_range(opts->address, 0, UINT32_MAX, &parsed_addr) != 0) {
     fprintf(stderr, "mkdbg: invalid address: %s\n", opts->address);
     return 1;
   }
+  uint32_t addr = (uint32_t)parsed_addr;
 
   if (opts->dry_run) {
     printf("[dry-run] port=%s  rsp=m%x,4\n",
@@ -259,19 +264,18 @@ int cmd_probe_write32(const ProbeOptions *opts)
     return 1;
   }
 
-  char *end;
-  errno = 0;
-  uint32_t addr = (uint32_t)strtoul(opts->address, &end, 0);
-  if (errno != 0 || *end != '\0') {
+  unsigned long parsed_addr;
+  unsigned long parsed_value;
+  if (parse_ulong_range(opts->address, 0, UINT32_MAX, &parsed_addr) != 0) {
     fprintf(stderr, "mkdbg: invalid address: %s\n", opts->address);
     return 1;
   }
-  errno = 0;
-  uint32_t val = (uint32_t)strtoul(opts->value, &end, 0);
-  if (errno != 0 || *end != '\0') {
+  if (parse_ulong_range(opts->value, 0, UINT32_MAX, &parsed_value) != 0) {
     fprintf(stderr, "mkdbg: invalid value: %s\n", opts->value);
     return 1;
   }
+  uint32_t addr = (uint32_t)parsed_addr;
+  uint32_t val = (uint32_t)parsed_value;
 
   if (opts->dry_run) {
     char hexdata[9];

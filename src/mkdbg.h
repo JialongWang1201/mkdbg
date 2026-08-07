@@ -17,6 +17,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include <limits.h>
+#include <stdint.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdbool.h>
@@ -312,6 +313,12 @@ void copy_string(char *dst, size_t dst_size, const char *src);
 void append_string(char *dst, size_t dst_size, const char *src);
 void replace_all(char *dst, size_t dst_size, const char *src,
                  const char *needle, const char *replacement);
+int parse_long_range(const char *input, int base, long min_value,
+                     long max_value, long *value_out);
+int parse_ulong_range(const char *input, int base, unsigned long max_value,
+                      unsigned long *value_out);
+int parse_double_range(const char *input, double min_value, double max_value,
+                       double *value_out);
 void format_u32_hex(const char *input, const char *label, char *out, size_t out_size);
 const char *path_basename(const char *path);
 void path_dirname(const char *path, char *out, size_t out_size);

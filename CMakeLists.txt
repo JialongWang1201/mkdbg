@@ -383,3 +383,15 @@ target_include_directories(incident_test PRIVATE
   ${CMAKE_CURRENT_LIST_DIR}/src
 )
 add_test(NAME incident_atomic_state COMMAND incident_test)
+
+# ── ctest: strict numeric CLI parsing ────────────────────────────────────────
+add_executable(parse_test
+  tests/parse_test.c
+  src/parse.c
+  src/util.c
+)
+target_compile_options(parse_test PRIVATE -Wall -Wextra -Werror -O2)
+target_include_directories(parse_test PRIVATE
+  ${CMAKE_CURRENT_LIST_DIR}/src
+)
+add_test(NAME strict_numeric_args COMMAND parse_test)
