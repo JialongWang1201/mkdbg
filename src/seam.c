@@ -29,6 +29,7 @@
 /* Maximum decoded bundle size — one bundle can't exceed 255 records × 24 B
  * + 12 B header = 6132 B; add a small pad for safety */
 #define SEAM_MAX_BUNDLE 8192u
+#define SEAM_MAX_FRAME (SEAM_MAX_BUNDLE + SEAM_MAX_BUNDLE / 254u + 2u)
 
 /* ── Read entire file into a heap buffer ─────────────────────────────────── */
 static uint8_t *read_all(FILE *fp, size_t *out_len)
@@ -90,10 +91,11 @@ static int scan_cobs_frames(const uint8_t *raw, size_t raw_len)
                                ? (size_t)(delim - frame_start)
                                : (size_t)(end - frame_start);
 
-        if (frame_len > 0) {
+        if (frame_len > 0 && frame_len <= SEAM_MAX_FRAME) {
             size_t dec_len = seam_cobs_decode(frame_start, frame_len,
-                                              decoded);
-            if (dec_len != SIZE_MAX && dec_len >= sizeof(cfl_bundle_t)) {
+                                              decoded, sizeof(decoded));
+            if (dec_len != SEAM_COBS_INVALID &&
+                dec_len >= sizeof(cfl_bundle_t)) {
                 int rc = try_analyze(decoded, dec_len);
                 if (rc == SEAM_OK) return SEAM_OK;
             }
