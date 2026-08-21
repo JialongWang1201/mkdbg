@@ -274,6 +274,12 @@ if(Python3_Interpreter_FOUND)
             $<TARGET_FILE:mkdbg-native>
   )
   set_tests_properties(debug_run_control PROPERTIES TIMEOUT 30)
+  add_test(NAME debug_breakpoint_state
+    COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/debug_breakpoint_state_test.py
+            $<TARGET_FILE:mkdbg-native>
+  )
+  set_tests_properties(debug_breakpoint_state PROPERTIES TIMEOUT 30)
   add_test(NAME seam_frame_bounds
     COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/seam_frame_bounds_test.py

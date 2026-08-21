@@ -91,14 +91,10 @@ static int wp_add(uint32_t addr, WatchpointType type)
     return s_wp[s_wp_count - 1].id;
 }
 
-static int wp_remove(int id, uint32_t *addr_out)
+static int wp_find(int id)
 {
     for (int i = 0; i < s_wp_count; i++) {
-        if (s_wp[i].id == id) {
-            *addr_out = s_wp[i].addr;
-            s_wp[i]   = s_wp[--s_wp_count];
-            return 0;
-        }
+        if (s_wp[i].id == id) return i;
     }
     return -1;
 }
@@ -119,15 +115,11 @@ static int bp_add(uint32_t addr)
     return s_bp[s_bp_count - 1].id;
 }
 
-/* Remove entry by id; return 0 and fill addr_out on success, -1 if not found. */
-static int bp_remove(int id, uint32_t *addr_out)
+/* Find an entry without changing the list; return -1 if not found. */
+static int bp_find(int id)
 {
     for (int i = 0; i < s_bp_count; i++) {
-        if (s_bp[i].id == id) {
-            *addr_out = s_bp[i].addr;
-            s_bp[i]   = s_bp[--s_bp_count];  /* swap with last */
-            return 0;
-        }
+        if (s_bp[i].id == id) return i;
     }
     return -1;
 }
@@ -253,15 +245,19 @@ static void do_clear(DebugSession *s, const char *args)
     if (!*args) { printf("usage: clear <id>\n"); return; }
 
     int id = atoi(args);
-    uint32_t addr;
-    if (bp_remove(id, &addr) != 0) {
+    int idx = bp_find(id);
+    if (idx < 0) {
         printf("error: no breakpoint %d\n", id);
         return;
     }
-    if (debug_session_clear_hw_breakpoint(s, addr) != WIRE_OK)
-        printf("warning: target returned error clearing breakpoint\n");
-    else
-        printf("Breakpoint %d (0x%08x) cleared.\n", id, addr);
+    uint32_t addr = s_bp[idx].addr;
+    int rc = debug_session_clear_hw_breakpoint(s, addr);
+    if (rc != WIRE_OK) {
+        printf("warning: could not clear breakpoint %d (rc=%d); record retained\n", id, rc);
+        return;
+    }
+    s_bp[idx] = s_bp[--s_bp_count];
+    printf("Breakpoint %d (0x%08x) cleared.\n", id, addr);
 }
 
 static void do_regs(DebugSession *s)
@@ -333,14 +329,18 @@ static void do_delete_watch(DebugSession *s, const char *args)
 {
     if (!*args) { printf("usage: delete watch <id>\n"); return; }
     int id = atoi(args);
-    uint32_t addr;
-    if (wp_remove(id, &addr) != 0) {
+    int idx = wp_find(id);
+    if (idx < 0) {
         printf("error: no watchpoint %d\n", id); return;
     }
-    if (debug_session_clear_watchpoint(s, addr) != WIRE_OK)
-        printf("warning: target returned error clearing watchpoint\n");
-    else
-        printf("Watchpoint %d (0x%08x) cleared.\n", id, addr);
+    uint32_t addr = s_wp[idx].addr;
+    int rc = debug_session_clear_watchpoint(s, addr);
+    if (rc != WIRE_OK) {
+        printf("warning: could not clear watchpoint %d (rc=%d); record retained\n", id, rc);
+        return;
+    }
+    s_wp[idx] = s_wp[--s_wp_count];
+    printf("Watchpoint %d (0x%08x) cleared.\n", id, addr);
 }
 
 static void do_info_watchpoints(void)
