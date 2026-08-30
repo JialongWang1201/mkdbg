@@ -39,7 +39,6 @@
 #define BACKTRACE_ROWS    4   /* Backtrace panel visible frame rows */
 #define TASKS_ROWS        4   /* FreeRTOS Tasks panel visible rows */
 #define MAX_DISPLAY       4
-#define TUI_WP_MAX        4
 
 /* SRAM bounds for fp-chain validity (STM32F4/F7; edit for other targets). */
 #define BACKTRACE_SRAM_BASE 0x20000000u
@@ -59,18 +58,6 @@
 #define FR_TASK_NAME_LEN   16
 
 /* ── Local state ─────────────────────────────────────────────────────────── */
-
-#define TUI_BP_MAX 8
-typedef struct { int id; uint32_t addr; } TuiBP;
-typedef struct { int id; uint32_t addr; WatchpointType type; } TuiWP;
-
-static TuiBP    s_bp[TUI_BP_MAX];
-static int      s_nbp      = 0;
-static int      s_bp_next  = 1;
-
-static TuiWP    s_wpts[TUI_WP_MAX];
-static int      s_nwpts    = 0;
-static int      s_wp_next  = 1;
 
 static uint32_t s_display[MAX_DISPLAY];
 static int      s_ndisplay = 0;
@@ -435,6 +422,8 @@ static const int REG_PAIRS[REG_ROWS][2] = {
 
 static void draw_reg_bp(int x0, int y0, int h, int w, DebugSession *s, DwarfDBI *dbi, uint32_t pc)
 {
+    int bp_count = (int)debug_session_breakpoint_count(s);
+    int wp_count = (int)debug_session_watchpoint_count(s);
     int split = x0 + w / 2;  /* absolute column of internal Registers|BP separator */
 
     /* Separator row (top) */
@@ -487,25 +476,26 @@ static void draw_reg_bp(int x0, int y0, int h, int w, DebugSession *s, DwarfDBI 
         bchar(split, y0 + 1 + r, "\xe2\x94\x82");       /* │ middle */
 
         /* ── Breakpoints + Watchpoints (right half) ── */
-        if (r < s_nbp) {
+        if (r < bp_count) {
+            const DebugBreakpoint *bp = debug_session_breakpoint_at(s, (size_t)r);
             DwarfLocation loc;
             char loc_str[64] = "";
-            if (dbi && dwarf_pc_to_location(dbi, s_bp[r].addr, &loc) == 0) {
+            if (dbi && dwarf_pc_to_location(dbi, bp->addr, &loc) == 0) {
                 const char *base = strrchr(loc.file, '/');
                 base = base ? base + 1 : loc.file;
                 snprintf(loc_str, sizeof(loc_str), " %s:%d", base, loc.line);
             }
             tb_printf(split + 1, y0 + 1 + r, TB_DEFAULT, TB_DEFAULT,
                       " #%-2d 0x%08x (BP)%-*s",
-                      s_bp[r].id, s_bp[r].addr,
+                      bp->id, bp->addr,
                       bp_content_w - 22, loc_str);
-        } else if (r - s_nbp < s_nwpts) {
-            int wi = r - s_nbp;
-            const char *t = (s_wpts[wi].type == WATCHPOINT_WRITE)  ? "W " :
-                            (s_wpts[wi].type == WATCHPOINT_READ)   ? "R " : "RW";
+        } else if (r - bp_count < wp_count) {
+            const DebugWatchpoint *wp = debug_session_watchpoint_at(s, (size_t)(r - bp_count));
+            const char *t = (wp->type == WATCHPOINT_WRITE)  ? "W " :
+                            (wp->type == WATCHPOINT_READ)   ? "R " : "RW";
             tb_printf(split + 1, y0 + 1 + r, TB_YELLOW, TB_DEFAULT,
                       " W%-2d 0x%08x (%s)%-*s",
-                      s_wpts[wi].id, s_wpts[wi].addr, t,
+                      wp->id, wp->addr, t,
                       bp_content_w - 24, "");
         }
         (void)bp_content_w;
@@ -961,31 +951,6 @@ static int tui_prompt(int y, int w, const char *label, char *out, int out_sz)
     }
 }
 
-/* ── Breakpoint helpers ──────────────────────────────────────────────────── */
-
-static int tui_bp_add(DebugSession *s, uint32_t addr)
-{
-    if (s_nbp >= TUI_BP_MAX) return -1;
-    if (debug_session_set_hw_breakpoint(s, addr) != WIRE_OK) return -1;
-    s_bp[s_nbp].id   = s_bp_next++;
-    s_bp[s_nbp].addr = addr;
-    s_nbp++;
-    return 0;
-}
-
-static int tui_bp_del(DebugSession *s, int id)
-{
-    for (int i = 0; i < s_nbp; i++) {
-        if (s_bp[i].id == id) {
-            if (debug_session_clear_hw_breakpoint(s, s_bp[i].addr) != WIRE_OK)
-                return -1;
-            s_bp[i] = s_bp[--s_nbp];
-            return 0;
-        }
-    }
-    return -1;
-}
-
 /* ── FreeRTOS task name helper ───────────────────────────────────────────── */
 
 static void tui_update_task(DebugSession *s, DwarfDBI *dbi)
@@ -1028,10 +993,6 @@ int debug_tui_run(DebugSession *s, DwarfDBI *dbi)
     }
 
     /* Reset local state */
-    s_nbp      = 0;
-    s_bp_next  = 1;
-    s_nwpts    = 0;
-    s_wp_next  = 1;
 	    s_ndisplay = 0;
 	    s_regs_ok    = 0;
 	    memset(s_reg_changed, 0, sizeof(s_reg_changed));
@@ -1104,6 +1065,7 @@ int debug_tui_run(DebugSession *s, DwarfDBI *dbi)
 
         } else if (ev.ch == 'b') {
             char inp[64] = "";
+            int rc = 0;
             if (tui_prompt(y_hint, w, "break> ", inp, sizeof(inp)) == 0
                     && inp[0]) {
                 uint32_t addr = 0;
@@ -1113,16 +1075,18 @@ int debug_tui_run(DebugSession *s, DwarfDBI *dbi)
                 } else if (dbi) {
                     dwarf_sym_to_addr(dbi, inp, &addr);
                 }
-                if (addr) tui_bp_add(s, addr);
+                if (addr) rc = debug_session_add_breakpoint(s, addr);
             }
             redraw(s, dbi);
+            if (rc < 0)
+                draw_status(tb_height() - 1, tb_width(), "Could not set breakpoint");
 
         } else if (ev.ch == 'd') {
             char inp[16] = "";
             int rc = 0;
             if (tui_prompt(y_hint, w, "delete bp id> ", inp, sizeof(inp)) == 0
                     && inp[0]) {
-                rc = tui_bp_del(s, atoi(inp));
+                rc = debug_session_remove_breakpoint(s, atoi(inp));
             }
             redraw(s, dbi);
             if (rc != 0)
@@ -1140,21 +1104,16 @@ int debug_tui_run(DebugSession *s, DwarfDBI *dbi)
             redraw(s, dbi);
 
         } else if (ev.ch == 'w') {
-            if (s_nwpts < TUI_WP_MAX) {
-                char inp[32] = "";
-                if (tui_prompt(y_hint, w, "watch addr> 0x", inp, sizeof(inp)) == 0
-                        && inp[0]) {
-                    uint32_t addr = (uint32_t)strtoul(inp, NULL, 16);
-                    if (addr && debug_session_set_watchpoint(
-                            s, addr, 1, WATCHPOINT_WRITE) == WIRE_OK) {
-                        s_wpts[s_nwpts].id   = s_wp_next++;
-                        s_wpts[s_nwpts].addr = addr;
-                        s_wpts[s_nwpts].type = WATCHPOINT_WRITE;
-                        s_nwpts++;
-                    }
-                }
+            char inp[32] = "";
+            int rc = 0;
+            if (tui_prompt(y_hint, w, "watch addr> 0x", inp, sizeof(inp)) == 0
+                    && inp[0]) {
+                uint32_t addr = (uint32_t)strtoul(inp, NULL, 16);
+                if (addr) rc = debug_session_add_watchpoint(s, addr, WATCHPOINT_WRITE);
             }
             redraw(s, dbi);
+            if (rc < 0)
+                draw_status(tb_height() - 1, tb_width(), "Could not set watchpoint");
 
         } else if (ev.ch == 't') {
             result = TUI_CLI;

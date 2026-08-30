@@ -32,7 +32,7 @@ def transaction(command, reply):
 
 def test_cli(binary, watchpoint=False, disconnected=False):
     addresses = (0x20000000, 0x20000004) if watchpoint else (0x08001000, 0x08002000)
-    types = (2, 3, 4) if watchpoint else (1,)
+    types = (2,) if watchpoint else (1,)  # Managed clears use the recorded type.
     add = "watch" if watchpoint else "break"
     delete = "delete watch" if watchpoint else "clear"
     noun = "watchpoint" if watchpoint else "breakpoint"
@@ -110,18 +110,47 @@ def test_tui(binary):
                 raise AssertionError((wanted, event, bytes(output[-2000:])))
         raise AssertionError(("too many requests", wanted))
 
+    def return_to_cli(count):
+        deadline = time.monotonic() + 5
+        while output.count(b"back in CLI mode") < count:
+            if time.monotonic() >= deadline:
+                raise AssertionError(bytes(output[-2000:]))
+            try:
+                event = target.event(timeout=0.1)
+            except AssertionError:
+                continue
+            assert event.startswith(b"m"), event
+            length = int(event.split(b",")[1], 16)
+            os.write(master, b"+" + packet(b"00" * length))
+
     try:
         os.write(terminal, b"tui\n")
         serve_until(b"g")  # TUI is active; subsequent keys bypass CLI buffering.
         os.write(master, b"+" + packet(b"00000000" * 17))
-        os.write(terminal, b"b0x08001000\rb0x08002000\rd1\rd1\rd2\rd2\rq")
+        os.write(terminal, b"b0x08001000\rb0x08002000\rd1\rd1\rd2\rd2\rb0x08003000\rt")
         requests = [(b"Z1,8001000,4", b"OK"), (b"Z1,8002000,4", b"OK"),
                     (b"z1,8001000,4", b"E01"), (b"z1,8001000,4", b"OK"),
-                    (b"z1,8002000,4", b"OK")]
+                    (b"z1,8002000,4", b"OK"), (b"Z1,8003000,4", b"OK")]
         for request, reply in requests:
             serve_until(request)
             os.write(master, b"+" + packet(reply))
-        serve_until(b"c")  # Already deleted ID 2 must not send another clear.
+        return_to_cli(1)
+        os.write(terminal, b"info breakpoints\nclear 3\nbreak 0x08004000\nrwatch 0x20000000\ntui\n")
+        for request in (b"z1,8003000,4", b"Z1,8004000,4", b"Z3,20000000,1"):
+            serve_until(request)
+            os.write(master, b"+" + packet(b"OK"))
+        serve_until(b"g")
+        os.write(master, b"+" + packet(b"00000000" * 17))
+        os.write(terminal, b"d4\rw0x20000004\rt")
+        for request in (b"z1,8004000,4", b"Z2,20000004,1"):
+            serve_until(request)
+            os.write(master, b"+" + packet(b"OK"))
+        return_to_cli(2)
+        os.write(terminal, b"info watchpoints\ndelete watch 1\ndelete watch 2\ninfo watchpoints\nquit\n")
+        for request in (b"z3,20000000,1", b"z2,20000004,1"):
+            serve_until(request)
+            os.write(master, b"+" + packet(b"OK"))
+        serve_until(b"c")
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
             got, status = os.waitpid(pid, os.WNOHANG)
@@ -131,6 +160,11 @@ def test_tui(binary):
                 break
             time.sleep(0.01)
         assert pid is None, "TUI did not exit"
+        reader.join(timeout=1)
+        assert re.search(rb"3\s+0x08003000", output), bytes(output[-2000:])
+        assert re.search(rb"1\s+0x20000000\s+read", output), bytes(output[-2000:])
+        assert re.search(rb"2\s+0x20000004\s+write", output), bytes(output[-2000:])
+        assert b"No watchpoints." in output, bytes(output[-2000:])
     finally:
         if pid is not None:
             os.kill(pid, signal.SIGKILL)
