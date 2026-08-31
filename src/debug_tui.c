@@ -23,6 +23,7 @@
 #include "termbox2.h"
 
 #include "debug_tui.h"
+#include "debug_parse.h"
 #include "mkdbg.h"
 #include "thumb_dis.h"
 #include "wire_host.h"
@@ -1068,14 +1069,12 @@ int debug_tui_run(DebugSession *s, DwarfDBI *dbi)
             int rc = 0;
             if (tui_prompt(y_hint, w, "break> ", inp, sizeof(inp)) == 0
                     && inp[0]) {
-                uint32_t addr = 0;
-                if ((inp[0] == '0' && (inp[1] == 'x' || inp[1] == 'X')) ||
-                    (inp[0] >= '0' && inp[0] <= '9')) {
-                    addr = (uint32_t)strtoul(inp, NULL, 16);
-                } else if (dbi) {
-                    dwarf_sym_to_addr(dbi, inp, &addr);
-                }
-                if (addr) rc = debug_session_add_breakpoint(s, addr);
+                uint32_t addr;
+                if ((inp[0] >= '0' && inp[0] <= '9') || inp[0] == '-' || inp[0] == '+')
+                    rc = debug_parse_address(inp, &addr);
+                else
+                    rc = dbi ? dwarf_sym_to_addr(dbi, inp, &addr) : -1;
+                if (rc == 0) rc = debug_session_add_breakpoint(s, addr);
             }
             redraw(s, dbi);
             if (rc < 0)
@@ -1094,22 +1093,28 @@ int debug_tui_run(DebugSession *s, DwarfDBI *dbi)
                             "Could not clear breakpoint; list unchanged");
 
         } else if (ev.ch == 'm') {
+            int rc = 0;
             if (s_ndisplay < MAX_DISPLAY) {
                 char inp[32] = "";
                 if (tui_prompt(y_hint, w, "display addr> 0x", inp, sizeof(inp)) == 0
                         && inp[0]) {
-                    s_display[s_ndisplay++] = (uint32_t)strtoul(inp, NULL, 16);
+                    uint32_t addr;
+                    rc = debug_parse_address(inp, &addr);
+                    if (rc == 0) s_display[s_ndisplay++] = addr;
                 }
             }
             redraw(s, dbi);
+            if (rc != 0)
+                draw_status(tb_height() - 1, tb_width(), "Invalid display address");
 
         } else if (ev.ch == 'w') {
             char inp[32] = "";
             int rc = 0;
             if (tui_prompt(y_hint, w, "watch addr> 0x", inp, sizeof(inp)) == 0
                     && inp[0]) {
-                uint32_t addr = (uint32_t)strtoul(inp, NULL, 16);
-                if (addr) rc = debug_session_add_watchpoint(s, addr, WATCHPOINT_WRITE);
+                uint32_t addr;
+                rc = debug_parse_address(inp, &addr);
+                if (rc == 0) rc = debug_session_add_watchpoint(s, addr, WATCHPOINT_WRITE);
             }
             redraw(s, dbi);
             if (rc < 0)

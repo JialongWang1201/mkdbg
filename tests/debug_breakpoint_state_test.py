@@ -127,7 +127,8 @@ def test_tui(binary):
         os.write(terminal, b"tui\n")
         serve_until(b"g")  # TUI is active; subsequent keys bypass CLI buffering.
         os.write(master, b"+" + packet(b"00000000" * 17))
-        os.write(terminal, b"b0x08001000\rb0x08002000\rd1\rd1\rd2\rd2\rb0x08003000\rt")
+        os.write(terminal, b"b0x100000000\rw0x100000000\rb0x08001000junk\r"
+                          b"b0x08001000\rb0x08002000\rd1\rd1\rd2\rd2\rb0x08003000\rt")
         requests = [(b"Z1,8001000,4", b"OK"), (b"Z1,8002000,4", b"OK"),
                     (b"z1,8001000,4", b"E01"), (b"z1,8001000,4", b"OK"),
                     (b"z1,8002000,4", b"OK"), (b"Z1,8003000,4", b"OK")]

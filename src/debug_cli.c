@@ -16,6 +16,7 @@
 
 #include "mkdbg.h"
 #include "debug_session.h"
+#include "debug_parse.h"
 #include "debug_tui.h"
 #include "dwarf.h"
 #include "transport.h"
@@ -146,13 +147,6 @@ static void print_halt(DebugSession *s)
 
 /* ── Parsing helpers ─────────────────────────────────────────────────────── */
 
-static uint32_t parse_addr(const char *s)
-{
-    if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X'))
-        return (uint32_t)strtoul(s + 2, NULL, 16);
-    return (uint32_t)strtoul(s, NULL, 16);
-}
-
 /* Split leading token from line into cmd_out; return pointer to rest. */
 static const char *split_token(const char *line, char *out, size_t out_sz)
 {
@@ -179,8 +173,10 @@ static void do_break(DebugSession *s, const char *args)
     if (!*args) { printf("usage: break 0x<addr> | break <symbol>\n"); return; }
 
     uint32_t addr;
-    if (args[0] == '0' && (args[1] == 'x' || args[1] == 'X')) {
-        addr = parse_addr(args);
+    if ((args[0] >= '0' && args[0] <= '9') || args[0] == '-' || args[0] == '+') {
+        if (debug_parse_address(args, &addr) != 0) {
+            printf("error: invalid address\n"); return;
+        }
     } else if (s_dbi && dwarf_sym_to_addr(s_dbi, args, &addr) == 0) {
         printf("(symbol '%s' = 0x%08x)\n", args, addr);
     } else if (!s_dbi) {
@@ -233,9 +229,12 @@ static void do_mem(DebugSession *s, const char *args)
 {
     if (!*args) { printf("usage: mem 0x<addr> [len]\n"); return; }
 
-    char addr_tok[32];
+    char addr_tok[256];
     const char *rest = split_token(args, addr_tok, sizeof(addr_tok));
-    uint32_t addr = parse_addr(addr_tok);
+    uint32_t addr;
+    if (debug_parse_address(addr_tok, &addr) != 0) {
+        printf("error: invalid address\n"); return;
+    }
     size_t len = *rest ? (size_t)strtoul(rest, NULL, 0) : 16;
     if (len == 0 || len > 256) len = 16;
 
@@ -267,7 +266,10 @@ static void do_watch(DebugSession *s, const char *args, WatchpointType type)
     if (!*args) {
         printf("usage: watch/rwatch/awatch 0x<addr>\n"); return;
     }
-    uint32_t addr = parse_addr(args);
+    uint32_t addr;
+    if (debug_parse_address(args, &addr) != 0) {
+        printf("error: invalid address\n"); return;
+    }
     int id = debug_session_add_watchpoint(s, addr, type);
     if (id < 0) {
         printf("error: could not set watchpoint (rc=%d)\n", id);
@@ -312,7 +314,11 @@ static void do_display(const char *args)
 {
     if (!*args) { printf("usage: display 0x<addr>\n"); return; }
     if (s_ndisplay >= DISPLAY_MAX) { printf("error: display list full\n"); return; }
-    s_display[s_ndisplay++] = parse_addr(args);
+    uint32_t addr;
+    if (debug_parse_address(args, &addr) != 0) {
+        printf("error: invalid address\n"); return;
+    }
+    s_display[s_ndisplay++] = addr;
     printf("display %d: 0x%08x\n", s_ndisplay, s_display[s_ndisplay - 1]);
 }
 
