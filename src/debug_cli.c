@@ -196,7 +196,10 @@ static void do_clear(DebugSession *s, const char *args)
 {
     if (!*args) { printf("usage: clear <id>\n"); return; }
 
-    int id = atoi(args);
+    int id;
+    if (debug_parse_id(args, &id) != 0) {
+        printf("error: invalid breakpoint ID\n"); return;
+    }
     const DebugBreakpoint *bp = bp_find(s, id);
     if (!bp) {
         printf("error: no breakpoint %d\n", id);
@@ -235,10 +238,15 @@ static void do_mem(DebugSession *s, const char *args)
     if (debug_parse_address(addr_tok, &addr) != 0) {
         printf("error: invalid address\n"); return;
     }
-    size_t len = *rest ? (size_t)strtoul(rest, NULL, 0) : 16;
-    if (len == 0 || len > 256) len = 16;
-
     uint8_t buf[256];
+    size_t len = 16;
+    if (*rest) {
+        char len_tok[256];
+        const char *extra = split_token(rest, len_tok, sizeof(len_tok));
+        if (*extra || debug_parse_length(len_tok, sizeof(buf), &len) != 0) {
+            printf("error: invalid memory length (expected 1..256 bytes)\n"); return;
+        }
+    }
     if (debug_session_read_mem(s, addr, len, buf) != WIRE_OK) {
         printf("error: memory read failed (out of allowed RAM range?)\n");
         return;
@@ -283,7 +291,10 @@ static void do_watch(DebugSession *s, const char *args, WatchpointType type)
 static void do_delete_watch(DebugSession *s, const char *args)
 {
     if (!*args) { printf("usage: delete watch <id>\n"); return; }
-    int id = atoi(args);
+    int id;
+    if (debug_parse_id(args, &id) != 0) {
+        printf("error: invalid watchpoint ID\n"); return;
+    }
     const DebugWatchpoint *wp = wp_find(s, id);
     if (!wp) {
         printf("error: no watchpoint %d\n", id); return;
@@ -325,11 +336,14 @@ static void do_display(const char *args)
 static void do_undisplay(const char *args)
 {
     if (!*args) { printf("usage: undisplay <id>\n"); return; }
-    int id = atoi(args) - 1;
-    if (id < 0 || id >= s_ndisplay) { printf("error: no display %d\n", id + 1); return; }
-    for (int i = id; i < s_ndisplay - 1; i++) s_display[i] = s_display[i + 1];
+    int id;
+    if (debug_parse_id(args, &id) != 0) {
+        printf("error: invalid display ID\n"); return;
+    }
+    if (id > s_ndisplay) { printf("error: no display %d\n", id); return; }
+    for (int i = id - 1; i < s_ndisplay - 1; i++) s_display[i] = s_display[i + 1];
     s_ndisplay--;
-    printf("display %d removed\n", id + 1);
+    printf("display %d removed\n", id);
 }
 
 static void print_help(void)
@@ -484,6 +498,12 @@ int cmd_debug(const DebugOptions *opts)
         fflush(stdout);
 
         if (!fgets(line, sizeof(line), stdin)) { printf("\n"); break; }
+        if (!strchr(line, '\n') && strlen(line) == sizeof(line) - 1) {
+            int ch;
+            while ((ch = getchar()) != '\n' && ch != EOF) {}
+            printf("error: command line too long\n");
+            continue;
+        }
         trim_eol(line);
         if (!line[0]) continue;
 

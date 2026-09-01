@@ -1085,7 +1085,9 @@ int debug_tui_run(DebugSession *s, DwarfDBI *dbi)
             int rc = 0;
             if (tui_prompt(y_hint, w, "delete bp id> ", inp, sizeof(inp)) == 0
                     && inp[0]) {
-                rc = debug_session_remove_breakpoint(s, atoi(inp));
+                int id;
+                rc = debug_parse_id(inp, &id);
+                if (rc == 0) rc = debug_session_remove_breakpoint(s, id);
             }
             redraw(s, dbi);
             if (rc != 0)

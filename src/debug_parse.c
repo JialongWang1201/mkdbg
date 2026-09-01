@@ -1,6 +1,7 @@
 #include "debug_parse.h"
 
 #include <errno.h>
+#include <limits.h>
 #include <stdlib.h>
 
 static int parse_unsigned(const char *text, int base, uint64_t maximum, uint64_t *out)
@@ -23,5 +24,23 @@ int debug_parse_address(const char *text, uint32_t *out)
     uint64_t value;
     if (!out || parse_unsigned(text, 16, UINT32_MAX, &value) != 0) return -1;
     *out = (uint32_t)value;
+    return 0;
+}
+
+int debug_parse_id(const char *text, int *out)
+{
+    uint64_t value;
+    if (!out || parse_unsigned(text, 10, INT_MAX, &value) != 0 || value == 0)
+        return -1;
+    *out = (int)value;
+    return 0;
+}
+
+int debug_parse_length(const char *text, size_t maximum, size_t *out)
+{
+    uint64_t value;
+    if (!out || parse_unsigned(text, 0, maximum, &value) != 0 || value == 0)
+        return -1;
+    *out = (size_t)value;
     return 0;
 }
