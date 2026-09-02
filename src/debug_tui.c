@@ -73,14 +73,24 @@ static char     s_task_name[32] = "";
 static uint32_t s_pc       = 0;
 static int      s_asm_scroll = 0;  /* Asm panel scroll offset (instructions) */
 
+static void tui_invalidate_regs(void)
+{
+    s_regs_ok = 0;
+    s_pc = 0;
+    s_task_name[0] = '\0';
+    memset(s_reg_changed, 0, sizeof(s_reg_changed));
+}
+
 static int tui_read_regs(DebugSession *s)
 {
     uint32_t next[DEBUG_SESSION_MAX_REGS];
     int nregs = debug_session_nregs(s);
     int pc_reg = debug_session_pc_reg(s);
 
-    if (debug_session_read_regs(s, next) != WIRE_OK)
+    if (debug_session_read_regs(s, next) != WIRE_OK) {
+        tui_invalidate_regs();
         return -1;
+    }
     for (int i = 0; i < DEBUG_SESSION_MAX_REGS; i++) {
         s_reg_changed[i] = 0;
     }
@@ -109,6 +119,16 @@ static void hline(int y, int x0, int x1)
 static void bchar(int x, int y, const char *utf8)
 {
     tb_print(x, y, TB_DEFAULT, TB_DEFAULT, utf8);
+}
+
+static void draw_unavailable(int x0, int y0, int h, int w)
+{
+    for (int r = 0; r < h; r++) {
+        bchar(x0, y0 + 1 + r, "\xe2\x94\x82");
+        if (r == 0)
+            tb_print(x0 + 2, y0 + 1, TB_RED, TB_DEFAULT, "Registers unavailable");
+        bchar(x0 + w - 1, y0 + 1 + r, "\xe2\x94\x82");
+    }
 }
 
 /* ── Syntax highlighting ─────────────────────────────────────────────────── */
@@ -240,7 +260,7 @@ static void highlight_line(int x0, int y, const char *line, int max_w)
 static void draw_source(int x0, int y0, int src_h, int w, DwarfDBI *dbi, uint32_t pc)
 {
     DwarfLocation loc;
-    int has_loc = (dbi != NULL && dwarf_pc_to_location(dbi, pc, &loc) == 0);
+    int has_loc = (s_regs_ok && dbi != NULL && dwarf_pc_to_location(dbi, pc, &loc) == 0);
 
     /* Top border */
     bchar(x0, y0, "\xe2\x94\x8c");           /* ┌ */
@@ -271,7 +291,9 @@ static void draw_source(int x0, int y0, int src_h, int w, DwarfDBI *dbi, uint32_
         for (int r = 1; r <= src_h; r++) {
             bchar(x0, y0 + r, "\xe2\x94\x82");        /* │ */
             if (y0 + r == mid) {
-                if (dbi)
+                if (!s_regs_ok)
+                    tb_print(x0 + 2, y0 + r, TB_RED, TB_DEFAULT, "[registers unavailable]");
+                else if (dbi)
                     tb_printf(x0 + 2, y0 + r, TB_DEFAULT, TB_DEFAULT,
                               "[no source for pc=0x%08x]", pc);
                 else
@@ -350,6 +372,11 @@ static void draw_asm(int x0, int y0, int h, int w,
     tb_print(x0 + 1, y0, TB_CYAN, TB_DEFAULT, "\xe2\x94\x80 Asm ");
     hline(y0, x0 + 7, x0 + w - 1);
     bchar(x0 + w - 1, y0, "\xe2\x94\xa4");                  /* ┤ */
+
+    if (!s_regs_ok) {
+        draw_unavailable(x0, y0, h, w);
+        return;
+    }
 
     /* Collect decoded instructions */
     static struct { uint32_t addr; char text[THUMB_DIS_OUT_MAX]; }
@@ -471,6 +498,8 @@ static void draw_reg_bp(int x0, int y0, int h, int w, DebugSession *s, DwarfDBI 
             tb_printf(x0 + 1, y0 + 1 + r, lfg, lbg, " %-*s", reg_content_w / 2, lbuf);
             tb_printf(x0 + 1 + reg_content_w / 2 + 1, y0 + 1 + r, rfg, rbg,
                       " %-*s", reg_content_w / 2, rbuf);
+        } else if (r == 0) {
+            tb_print(x0 + 2, y0 + 1, TB_RED, TB_DEFAULT, "Registers unavailable");
         }
         (void)reg_content_w; (void)nregs; (void)pc_reg;
 
@@ -531,6 +560,11 @@ static void draw_backtrace(int x0, int y0, int h, int w,
     tb_print(x0 + 1, y0, TB_CYAN, TB_DEFAULT, "\xe2\x94\x80 Backtrace ");
     hline(y0, x0 + 13, x0 + w - 1);
     bchar(x0 + w - 1, y0, "\xe2\x94\xa4");                  /* ┤ */
+
+    if (!s_regs_ok) {
+        draw_unavailable(x0, y0, h, w);
+        return;
+    }
 
     /* Collect frames */
     struct { uint32_t pc; } frames[BT_MAX_FRAMES];
@@ -916,7 +950,10 @@ static void redraw(DebugSession *s, DwarfDBI *dbi)
 
     draw_bottom(y_bottom, y_hint, w);
 
-    tb_present();
+    if (!s_regs_ok)
+        draw_status(y_hint, w, "Registers unavailable; PC context hidden");
+    else
+        tb_present();
 }
 
 /* ── Input prompt at the hint row ────────────────────────────────────────── */
@@ -993,16 +1030,11 @@ int debug_tui_run(DebugSession *s, DwarfDBI *dbi)
         return TUI_CLI;
     }
 
-    /* Reset local state */
-	    s_ndisplay = 0;
-	    s_regs_ok    = 0;
-	    memset(s_reg_changed, 0, sizeof(s_reg_changed));
-	    s_pc         = 0;
-	    s_asm_scroll = 0;
-	    s_task_name[0] = '\0';
-
-	    /* Read initial register state */
-	    tui_read_regs(s);
+    /* Reset presentation state; session breakpoint records remain shared. */
+    s_ndisplay = 0;
+    s_asm_scroll = 0;
+    tui_invalidate_regs();
+    tui_read_regs(s);
 
     redraw(s, dbi);
 
@@ -1035,18 +1067,19 @@ int debug_tui_run(DebugSession *s, DwarfDBI *dbi)
             draw_status(y_hint, w, "Stepping...");
             s_asm_scroll = 0;
             int rc = debug_session_step(s);
-	            if (rc == WIRE_OK && tui_read_regs(s) == 0) {
-	                tui_update_task(s, dbi);
-	            }
+            if (rc != WIRE_OK) tui_invalidate_regs();
+            else if (tui_read_regs(s) == 0) tui_update_task(s, dbi);
             redraw(s, dbi);
+            if (rc != WIRE_OK)
+                draw_status(tb_height() - 1, tb_width(),
+                            "Step failed: target halt not confirmed");
 
         } else if (ev.ch == 'c') {
             draw_status(y_hint, w, "Running...  (i / Ctrl-C to interrupt)");
             s_asm_scroll = 0;
             int rc = debug_session_continue_interruptible(s, tui_interrupt_requested, NULL);
-	            if (rc == WIRE_OK && tui_read_regs(s) == 0) {
-	                tui_update_task(s, dbi);
-	            }
+            if (rc != WIRE_OK) tui_invalidate_regs();
+            else if (tui_read_regs(s) == 0) tui_update_task(s, dbi);
             redraw(s, dbi);
             if (rc != WIRE_OK)
                 draw_status(tb_height() - 1, tb_width(),
@@ -1056,9 +1089,8 @@ int debug_tui_run(DebugSession *s, DwarfDBI *dbi)
             draw_status(y_hint, w, "Sending break-in...  (waiting for halt)");
             s_asm_scroll = 0;
             int rc = debug_session_interrupt(s);
-	            if (rc == WIRE_OK && tui_read_regs(s) == 0) {
-	                tui_update_task(s, dbi);
-            }
+            if (rc != WIRE_OK) tui_invalidate_regs();
+            else if (tui_read_regs(s) == 0) tui_update_task(s, dbi);
             redraw(s, dbi);
             if (rc != WIRE_OK)
                 draw_status(tb_height() - 1, tb_width(),

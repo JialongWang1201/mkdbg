@@ -287,6 +287,12 @@ if(Python3_Interpreter_FOUND)
             $<TARGET_FILE:mkdbg-native>
   )
   set_tests_properties(debug_numeric_input PROPERTIES TIMEOUT 30)
+  add_test(NAME debug_tui_snapshot
+    COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/debug_tui_snapshot_test.py
+            $<TARGET_FILE:mkdbg-native>
+  )
+  set_tests_properties(debug_tui_snapshot PROPERTIES TIMEOUT 30)
   add_test(NAME seam_frame_bounds
     COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/seam_frame_bounds_test.py
