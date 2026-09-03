@@ -113,12 +113,23 @@ pub fn parse_hw_breakpoint_addr(args: &str) -> Result<Option<u64>, ()> {
 
 /// Decode the hex-encoded byte string after `M addr,len:` into bytes.
 pub fn decode_hex_bytes(hex: &str) -> Option<Vec<u8>> {
-    if hex.len() % 2 != 0 {
+    let bytes = hex.as_bytes();
+    if bytes.len() % 2 != 0 {
         return None;
     }
-    (0..hex.len() / 2)
-        .map(|i| u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).ok())
+    bytes
+        .chunks_exact(2)
+        .map(|pair| Some((hex_nibble(pair[0])? << 4) | hex_nibble(pair[1])?))
         .collect()
+}
+
+fn hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }
 
 /// Encode bytes as a lowercase hex string.
@@ -287,6 +298,27 @@ mod tests {
     #[test]
     fn decode_hex_bytes_odd_returns_none() {
         assert!(decode_hex_bytes("abc").is_none());
+    }
+
+    #[test]
+    fn decode_hex_bytes_rejects_non_ascii_and_non_hex_without_panicking() {
+        for input in ["0€", "a界", "é", "💥", "+a", " a", "0g", "aa bb"] {
+            assert_eq!(decode_hex_bytes(input), None, "input: {input}");
+        }
+        let frame = format_rsp_packet("M20000000,2:0€");
+        let PacketParse::Complete { data, .. } = parse_rsp_packet(&frame) else {
+            panic!("expected a valid UTF-8 frame");
+        };
+        assert_eq!(decode_hex_bytes(data.split_once(':').unwrap().1), None);
+    }
+
+    #[test]
+    fn decode_hex_bytes_preserves_all_byte_values_and_ascii_case() {
+        let expected: Vec<u8> = (0..=255).collect();
+        let encoded = encode_hex_bytes(&expected);
+        assert_eq!(decode_hex_bytes(&encoded), Some(expected.clone()));
+        assert_eq!(decode_hex_bytes(&encoded.to_uppercase()), Some(expected));
+        assert_eq!(decode_hex_bytes(""), Some(Vec::new()));
     }
 
     #[test]
