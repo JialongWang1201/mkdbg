@@ -92,8 +92,19 @@ jobs:
       - name: Build
         run: cmake --build build --target mkdbg-native
 
-      - name: Stage artifact
-        run: cp build/mkdbg-native mkdbg-native-${{ matrix.os }}-${{ matrix.arch }}
+      - name: Stage and strip artifact
+        shell: bash
+        run: |
+          artifact="mkdbg-native-${{ matrix.os }}-${{ matrix.arch }}"
+          cp build/mkdbg-native "${artifact}"
+          if [[ "${{ matrix.os }}" == "darwin" ]]; then
+            strip -x "${artifact}"
+          elif [[ "${{ matrix.cross }}" == "true" ]]; then
+            aarch64-linux-gnu-strip --strip-all "${artifact}"
+          else
+            strip --strip-all "${artifact}"
+          fi
+          wc -c "${artifact}"
 
       - uses: actions/upload-artifact@v4
         with:

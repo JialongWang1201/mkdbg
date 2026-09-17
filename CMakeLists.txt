@@ -4,6 +4,14 @@ project(mkdbg C)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
+# Keep release artifacts small without changing debug-build visibility.
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+  add_compile_options(
+    "$<$<CONFIG:Release>:-ffunction-sections>"
+    "$<$<CONFIG:Release>:-fdata-sections>"
+  )
+endif()
+
 # ── libgit2: minimal static build (no HTTPS, no SSH, no TLS) ─────────────────
 # Used by mkdbg-native for local git operations without requiring a git CLI.
 # Network operations (push/fetch) fall back to the git CLI subprocess path.
@@ -108,6 +116,15 @@ set_target_properties(mkdbg-native PROPERTIES
   OUTPUT_NAME "mkdbg-native"
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
 )
+if(APPLE)
+  target_link_options(mkdbg-native PRIVATE
+    "$<$<CONFIG:Release>:-Wl,-dead_strip>"
+  )
+elseif(UNIX AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+  target_link_options(mkdbg-native PRIVATE
+    "$<$<CONFIG:Release>:-Wl,--gc-sections>"
+  )
+endif()
 
 # ── probe-bridge: Rust staticlib (optional, requires cargo) ──────────────────
 # Pass -DMKDBG_SKIP_PROBE=ON to disable even when cargo is available.
