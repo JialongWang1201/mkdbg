@@ -2,6 +2,8 @@
 **/.DS_Store
 build/
 build_host/
+/build_probe/
+/probe-bridge/target/
 freertos/.DS_Store
 logs/
 **/__pycache__/

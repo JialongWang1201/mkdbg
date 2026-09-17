@@ -1,4 +1,62 @@
 #include "mkdbg.h"
+#include "json.h"
+
+typedef int (*AtomicFileWriter)(FILE *file, const void *context);
+
+static int sync_parent_directory(const char *path)
+{
+  char parent[PATH_MAX];
+  int fd;
+  path_dirname(path, parent, sizeof(parent));
+#ifdef O_DIRECTORY
+  fd = open(parent, O_RDONLY | O_DIRECTORY);
+#else
+  fd = open(parent, O_RDONLY);
+#endif
+  if (fd < 0) return -1;
+  if (fsync(fd) != 0) { close(fd); return -1; }
+  return close(fd) == 0 ? 0 : -1;
+}
+
+static int atomic_write_file(const char *path, AtomicFileWriter writer,
+                             const void *context)
+{
+  char temp_path[PATH_MAX];
+  int fd;
+  FILE *file;
+  int result = -1;
+  int n = snprintf(temp_path, sizeof(temp_path), "%s.tmp.XXXXXX", path);
+  if (n < 0 || (size_t)n >= sizeof(temp_path)) return -1;
+  fd = mkstemp(temp_path);
+  if (fd < 0) return -1;
+  file = fdopen(fd, "w");
+  if (!file) { close(fd); unlink(temp_path); return -1; }
+  {
+    int write_ok = writer(file, context) == 0 && fflush(file) == 0 && fsync(fd) == 0;
+    int close_ok = fclose(file) == 0;
+    if (write_ok && close_ok &&
+        rename(temp_path, path) == 0 && sync_parent_directory(path) == 0)
+      result = 0;
+  }
+  if (result != 0) unlink(temp_path);
+  return result;
+}
+
+static int read_metadata_value(JsonReader *reader, JsonToken *value)
+{
+  JsonToken colon;
+  if (json_reader_next(reader, &colon) != JSON_TOKEN_COLON) return -1;
+  return json_reader_next(reader, value) == JSON_TOKEN_ERROR ? -1 : 0;
+}
+
+static int copy_metadata_string(char *out, size_t out_size,
+                                const JsonToken *value)
+{
+  if (value->type != JSON_TOKEN_STRING || value->truncated ||
+      strlen(value->text) >= out_size) return -1;
+  copy_string(out, out_size, value->text);
+  return 0;
+}
 
 void sanitize_slug(const char *input, char *out, size_t out_size)
 {
@@ -31,16 +89,10 @@ void sanitize_slug(const char *input, char *out, size_t out_size)
   out[j] = '\0';
 }
 
-int load_current_incident_id(const char *config_path, char *out, size_t out_size)
+static int load_incident_marker(const char *path, char *out, size_t out_size)
 {
-  char current_path[PATH_MAX];
   FILE *f;
-
-  current_incident_path_from_config(config_path, current_path, sizeof(current_path));
-  if (!path_exists(current_path)) {
-    return -1;
-  }
-  f = fopen(current_path, "r");
+  f = fopen(path, "r");
   if (f == NULL) {
     return -1;
   }
@@ -48,69 +100,98 @@ int load_current_incident_id(const char *config_path, char *out, size_t out_size
     fclose(f);
     return -1;
   }
-  fclose(f);
+  if (fclose(f) != 0) return -1;
   trim_in_place(out);
   return (out[0] == '\0') ? -1 : 0;
 }
 
-int load_incident_metadata(const char *meta_path, IncidentMetadata *meta)
+int load_current_incident_id(const char *config_path, char *out, size_t out_size)
 {
-  FILE *f;
-  char line[512];
-
-  memset(meta, 0, sizeof(*meta));
-  f = fopen(meta_path, "r");
-  if (f == NULL) {
-    return -1;
-  }
-  while (fgets(line, sizeof(line), f) != NULL) {
-    char *colon = strchr(line, ':');
-    char *value;
-    size_t len;
-    if (colon == NULL) {
-      continue;
-    }
-    *colon = '\0';
-    trim_in_place(line);
-    value = colon + 1;
-    trim_in_place(value);
-    len = strlen(value);
-    if (len > 0U && value[len - 1U] == ',') {
-      value[len - 1U] = '\0';
-      trim_in_place(value);
-    }
-    if (strcmp(line, "\"id\"") == 0) parse_quoted_value(value, meta->id, sizeof(meta->id));
-    else if (strcmp(line, "\"name\"") == 0) parse_quoted_value(value, meta->name, sizeof(meta->name));
-    else if (strcmp(line, "\"status\"") == 0) parse_quoted_value(value, meta->status, sizeof(meta->status));
-    else if (strcmp(line, "\"repo\"") == 0) parse_quoted_value(value, meta->repo, sizeof(meta->repo));
-    else if (strcmp(line, "\"port\"") == 0) parse_quoted_value(value, meta->port, sizeof(meta->port));
-    else if (strcmp(line, "\"opened_at\"") == 0) meta->opened_at = atol(value);
-  }
-  fclose(f);
-  return 0;
+  char current_path[PATH_MAX];
+  current_incident_path_from_config(config_path, current_path, sizeof(current_path));
+  return load_incident_marker(current_path, out, out_size);
 }
 
-int write_incident_metadata(const char *meta_path, const IncidentMetadata *meta, long closed_at)
+int load_incident_metadata(const char *meta_path, IncidentMetadata *meta)
 {
-  FILE *f = fopen(meta_path, "w");
-  if (f == NULL) {
+  FILE *file;
+  JsonReader reader;
+  JsonToken token;
+  JsonToken key;
+
+  memset(meta, 0, sizeof(*meta));
+  file = fopen(meta_path, "rb");
+  if (!file) return -1;
+  json_reader_init(&reader, file);
+  if (json_reader_next(&reader, &token) != JSON_TOKEN_OBJECT_BEGIN) goto fail;
+  for (;;) {
+    long number;
+    JsonTokenType type = json_reader_next(&reader, &key);
+    if (type == JSON_TOKEN_OBJECT_END) break;
+    if (type == JSON_TOKEN_COMMA) continue;
+    if (type != JSON_TOKEN_STRING || key.truncated ||
+        read_metadata_value(&reader, &token) != 0) goto fail;
+    if (strcmp(key.text, "id") == 0) {
+      if (copy_metadata_string(meta->id, sizeof(meta->id), &token) != 0) goto fail;
+    } else if (strcmp(key.text, "name") == 0) {
+      if (copy_metadata_string(meta->name, sizeof(meta->name), &token) != 0) goto fail;
+    } else if (strcmp(key.text, "status") == 0) {
+      if (copy_metadata_string(meta->status, sizeof(meta->status), &token) != 0) goto fail;
+    } else if (strcmp(key.text, "repo") == 0) {
+      if (copy_metadata_string(meta->repo, sizeof(meta->repo), &token) != 0) goto fail;
+    } else if (strcmp(key.text, "port") == 0) {
+      if (copy_metadata_string(meta->port, sizeof(meta->port), &token) != 0) goto fail;
+    } else if (strcmp(key.text, "opened_at") == 0) {
+      if (json_token_to_long(&token, &number) != 0) goto fail;
+      meta->opened_at = number;
+    } else if (strcmp(key.text, "closed_at") == 0) {
+      if (json_token_to_long(&token, &number) != 0) goto fail;
+      meta->closed_at = number;
+    }
+  }
+  if (json_reader_next(&reader, &token) != JSON_TOKEN_EOF || fclose(file) != 0)
     return -1;
-  }
-  fprintf(f,
-          "{\n"
-          "  \"id\": \"%s\",\n"
-          "  \"name\": \"%s\",\n"
-          "  \"status\": \"%s\",\n"
-          "  \"repo\": \"%s\",\n"
-          "  \"port\": \"%s\",\n"
-          "  \"opened_at\": %ld",
-          meta->id, meta->name, meta->status, meta->repo, meta->port, meta->opened_at);
-  if (closed_at > 0L) {
-    fprintf(f, ",\n  \"closed_at\": %ld", closed_at);
-  }
-  fprintf(f, "\n}\n");
-  fclose(f);
   return 0;
+fail:
+  fclose(file);
+  return -1;
+}
+
+static int write_metadata_file(FILE *file, const void *context)
+{
+  const IncidentMetadata *meta = context;
+  JsonWriter writer;
+  json_writer_init(&writer, file);
+  if (json_writer_begin_object(&writer) != 0 ||
+      json_writer_key(&writer, "id") != 0 || json_writer_string(&writer, meta->id) != 0 ||
+      json_writer_key(&writer, "name") != 0 || json_writer_string(&writer, meta->name) != 0 ||
+      json_writer_key(&writer, "status") != 0 || json_writer_string(&writer, meta->status) != 0 ||
+      json_writer_key(&writer, "repo") != 0 || json_writer_string(&writer, meta->repo) != 0 ||
+      json_writer_key(&writer, "port") != 0 || json_writer_string(&writer, meta->port) != 0 ||
+      json_writer_key(&writer, "opened_at") != 0 || json_writer_long(&writer, meta->opened_at) != 0)
+    return -1;
+  if (meta->closed_at > 0L &&
+      (json_writer_key(&writer, "closed_at") != 0 ||
+       json_writer_long(&writer, meta->closed_at) != 0)) return -1;
+  return json_writer_end_object(&writer) == 0 && json_writer_finish(&writer) == 0 ? 0 : -1;
+}
+
+int write_incident_metadata(const char *meta_path, const IncidentMetadata *meta,
+                            long closed_at)
+{
+  IncidentMetadata copy = *meta;
+  copy.closed_at = closed_at;
+  return atomic_write_file(meta_path, write_metadata_file, &copy);
+}
+
+static int write_marker_file(FILE *file, const void *context)
+{
+  return fprintf(file, "%s\n", (const char *)context) >= 0 ? 0 : -1;
+}
+
+int write_current_incident_id(const char *current_path, const char *incident_id)
+{
+  return atomic_write_file(current_path, write_marker_file, incident_id);
 }
 
 int load_current_incident_dir(const char *config_path, char *out, size_t out_size)
@@ -139,7 +220,6 @@ int cmd_incident_open(const IncidentOpenOptions *opts)
   const char *repo_name;
   MkdbgConfig config;
   const RepoConfig *repo;
-  FILE *f;
   IncidentMetadata meta;
 
   if (find_config_upward(config_path, sizeof(config_path)) != 0) {
@@ -192,12 +272,9 @@ int cmd_incident_open(const IncidentOpenOptions *opts)
     die("failed to write incident metadata");
   }
 
-  f = fopen(current_path, "w");
-  if (f == NULL) {
+  if (write_current_incident_id(current_path, incident_id) != 0) {
     die("failed to write current incident marker");
   }
-  fprintf(f, "%s\n", incident_id);
-  fclose(f);
 
   printf("incident: %s\n", incident_id);
   printf("path: %s\n", incident_dir);
@@ -250,6 +327,26 @@ int cmd_incident_status(const IncidentStatusOptions *opts)
   return 0;
 }
 
+int close_incident_state(const char *current_path, const char *meta_path,
+                         IncidentMetadata *meta, long closed_at)
+{
+  char closing_path[PATH_MAX];
+  int n = snprintf(closing_path, sizeof(closing_path), "%s.closing", current_path);
+  if (n < 0 || (size_t)n >= sizeof(closing_path)) return -1;
+
+  if (rename(current_path, closing_path) == 0) {
+    if (sync_parent_directory(current_path) != 0) return -1;
+  } else if (errno != ENOENT || access(closing_path, F_OK) != 0) {
+    return -1;
+  }
+
+  copy_string(meta->status, sizeof(meta->status), "closed");
+  if (meta->closed_at <= 0L) meta->closed_at = closed_at;
+  if (write_incident_metadata(meta_path, meta, meta->closed_at) != 0) return -1;
+  if (unlink(closing_path) != 0) return -1;
+  return 0;
+}
+
 int cmd_incident_close(void)
 {
   char config_path[PATH_MAX];
@@ -258,13 +355,18 @@ int cmd_incident_close(void)
   char incidents_root[PATH_MAX];
   char incident_dir[PATH_MAX];
   char meta_path[PATH_MAX];
+  char closing_path[PATH_MAX];
   IncidentMetadata meta;
 
   if (find_config_upward(config_path, sizeof(config_path)) != 0) {
     die("missing %s; run `mkdbg init` first", CONFIG_NAME);
   }
-  if (load_current_incident_id(config_path, incident_id, sizeof(incident_id)) != 0) {
-    die("no active incident to close");
+  current_incident_path_from_config(config_path, current_path, sizeof(current_path));
+  if (load_incident_marker(current_path, incident_id, sizeof(incident_id)) != 0) {
+    int n = snprintf(closing_path, sizeof(closing_path), "%s.closing", current_path);
+    if (n < 0 || (size_t)n >= sizeof(closing_path) ||
+        load_incident_marker(closing_path, incident_id, sizeof(incident_id)) != 0)
+      die("no active incident to close");
   }
   incidents_root_from_config(config_path, incidents_root, sizeof(incidents_root));
   join_path(incidents_root, incident_id, incident_dir, sizeof(incident_dir));
@@ -272,14 +374,8 @@ int cmd_incident_close(void)
   if (load_incident_metadata(meta_path, &meta) != 0) {
     die("missing incident metadata: %s", meta_path);
   }
-  copy_string(meta.status, sizeof(meta.status), "closed");
-  if (write_incident_metadata(meta_path, &meta, (long)time(NULL)) != 0) {
-    die("failed to update incident metadata");
-  }
-  current_incident_path_from_config(config_path, current_path, sizeof(current_path));
-  if (unlink(current_path) != 0) {
-    die("failed to clear current incident marker");
-  }
+  if (close_incident_state(current_path, meta_path, &meta, (long)time(NULL)) != 0)
+    die("failed to close incident; retry the same command");
   printf("closed incident: %s\n", incident_id);
   return 0;
 }

@@ -1,4 +1,5 @@
 #include "mkdbg.h"
+#include <math.h>
 
 void die(const char *fmt, ...)
 {
@@ -105,18 +106,72 @@ void replace_all(char *dst,
   dst[out] = '\0';
 }
 
+int parse_long_range(const char *input, int base, long min_value,
+                     long max_value, long *value_out)
+{
+  char *end = NULL;
+  long value;
+
+  if (input == NULL || input[0] == '\0' ||
+      isspace((unsigned char)input[0])) {
+    return -1;
+  }
+  errno = 0;
+  value = strtol(input, &end, base);
+  if (errno != 0 || end == input || *end != '\0' ||
+      value < min_value || value > max_value) {
+    return -1;
+  }
+  *value_out = value;
+  return 0;
+}
+
+int parse_ulong_range(const char *input, int base, unsigned long max_value,
+                      unsigned long *value_out)
+{
+  char *end = NULL;
+  unsigned long value;
+
+  if (input == NULL || input[0] == '\0' || input[0] == '-' ||
+      isspace((unsigned char)input[0])) {
+    return -1;
+  }
+  errno = 0;
+  value = strtoul(input, &end, base);
+  if (errno != 0 || end == input || *end != '\0' || value > max_value) {
+    return -1;
+  }
+  *value_out = value;
+  return 0;
+}
+
+int parse_double_range(const char *input, double min_value, double max_value,
+                       double *value_out)
+{
+  char *end = NULL;
+  double value;
+
+  if (input == NULL || input[0] == '\0' ||
+      isspace((unsigned char)input[0])) {
+    return -1;
+  }
+  errno = 0;
+  value = strtod(input, &end);
+  if (errno != 0 || end == input || *end != '\0' || !isfinite(value) ||
+      value < min_value || value > max_value) {
+    return -1;
+  }
+  *value_out = value;
+  return 0;
+}
+
 void format_u32_hex(const char *input, const char *label, char *out, size_t out_size)
 {
   unsigned long value;
-  char *end = NULL;
 
-  errno = 0;
-  value = strtoul(input, &end, 0);
-  if (input == NULL || input[0] == '\0' || end == NULL || *end != '\0' || errno != 0) {
-    die("invalid %s: %s", label, input != NULL ? input : "");
-  }
-  if (value > 0xFFFFFFFFUL) {
-    die("%s out of range: %s", label, input);
+  if (parse_ulong_range(input, 0, UINT32_MAX, &value) != 0) {
+    die("invalid or out-of-range %s: %s", label,
+        input != NULL ? input : "");
   }
   snprintf(out, out_size, "0x%08lx", value);
 }
