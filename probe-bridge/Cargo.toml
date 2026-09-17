@@ -11,5 +11,10 @@ crate-type = ["staticlib"]
 [dependencies]
 probe-rs = { version = "=0.24.0", default-features = true }
 
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+
 [dev-dependencies]
 # unit tests run without hardware; only rsp module is exercised
