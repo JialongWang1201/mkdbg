@@ -223,8 +223,7 @@ done:
 #ifndef MKDBG_USE_LG2
 static void refresh_git_sub(GitState *gs, const char *root)
 {
-  char cmd[PATH_MAX + 128];
-  FILE *f;
+  char output[4096];
 
   gs->ahead  = -1;
   gs->behind = -1;
@@ -232,75 +231,49 @@ static void refresh_git_sub(GitState *gs, const char *root)
   gs->head_msg[0] = '\0';
 
   /* branch */
-  snprintf(cmd, sizeof(cmd),
-           "git -C \"%s\" rev-parse --abbrev-ref HEAD 2>/dev/null", root);
-  f = popen(cmd, "r");
-  if (f) {
-    char line[128] = {0};
-    if (fgets(line, (int)sizeof(line), f)) {
-      size_t n = strlen(line);
-      while (n > 0 && (line[n-1] == '\n' || line[n-1] == '\r')) line[--n] = '\0';
-      copy_string(gs->branch, sizeof(gs->branch), n ? line : "--");
-    }
-    pclose(f);
+  char *branch_argv[] = {"git", "rev-parse", "--abbrev-ref", "HEAD", NULL};
+  if (capture_process_output(branch_argv, root, output, sizeof(output)) == 0) {
+    size_t n = strcspn(output, "\r\n");
+    output[n] = '\0';
+    copy_string(gs->branch, sizeof(gs->branch), n ? output : "--");
   }
 
   /* HEAD short sha */
-  snprintf(cmd, sizeof(cmd),
-           "git -C \"%s\" rev-parse --short=8 HEAD 2>/dev/null", root);
-  f = popen(cmd, "r");
-  if (f) {
-    char line[32] = {0};
-    if (fgets(line, (int)sizeof(line), f)) {
-      size_t n = strlen(line);
-      while (n > 0 && (line[n-1] == '\n' || line[n-1] == '\r')) line[--n] = '\0';
-      copy_string(gs->head_sha, sizeof(gs->head_sha), line);
-    }
-    pclose(f);
+  char *sha_argv[] = {"git", "rev-parse", "--short=8", "HEAD", NULL};
+  if (capture_process_output(sha_argv, root, output, sizeof(output)) == 0) {
+    output[strcspn(output, "\r\n")] = '\0';
+    copy_string(gs->head_sha, sizeof(gs->head_sha), output);
   }
 
   /* HEAD commit message (first line) */
-  snprintf(cmd, sizeof(cmd),
-           "git -C \"%s\" log -1 --format=%%s 2>/dev/null", root);
-  f = popen(cmd, "r");
-  if (f) {
-    char line[128] = {0};
-    if (fgets(line, (int)sizeof(line), f)) {
-      size_t n = strlen(line);
-      while (n > 0 && (line[n-1] == '\n' || line[n-1] == '\r')) line[--n] = '\0';
-      if (n >= sizeof(gs->head_msg)) n = sizeof(gs->head_msg) - 1;
-      memcpy(gs->head_msg, line, n);
-      gs->head_msg[n] = '\0';
-    }
-    pclose(f);
+  char *message_argv[] = {"git", "log", "-1", "--format=%s", NULL};
+  if (capture_process_output(message_argv, root, output, sizeof(output)) == 0) {
+    size_t n = strcspn(output, "\r\n");
+    if (n >= sizeof(gs->head_msg)) n = sizeof(gs->head_msg) - 1;
+    memcpy(gs->head_msg, output, n);
+    gs->head_msg[n] = '\0';
   }
 
   /* dirty count */
-  snprintf(cmd, sizeof(cmd),
-           "git -C \"%s\" status --porcelain --untracked-files=no 2>/dev/null"
-           " | wc -l", root);
-  f = popen(cmd, "r");
-  if (f) {
-    int cnt = 0;
-    if (fscanf(f, "%d", &cnt) == 1) {
-      gs->dirty_n = cnt;
-      gs->dirty   = cnt > 0 ? 1 : 0;
+  char *status_argv[] = {"git", "status", "--porcelain", "--untracked-files=no", NULL};
+  if (capture_process_output(status_argv, root, output, sizeof(output)) == 0) {
+    int count = 0;
+    for (char *p = output; *p; ++p) {
+      if (*p == '\n') count++;
     }
-    pclose(f);
+    if (output[0] && output[strlen(output) - 1] != '\n') count++;
+    gs->dirty_n = count;
+    gs->dirty = count > 0 ? 1 : 0;
   }
 
   /* ahead / behind */
-  snprintf(cmd, sizeof(cmd),
-           "git -C \"%s\" rev-list --left-right --count @{u}...HEAD 2>/dev/null",
-           root);
-  f = popen(cmd, "r");
-  if (f) {
+  char *ahead_argv[] = {"git", "rev-list", "--left-right", "--count", "@{u}...HEAD", NULL};
+  if (capture_process_output(ahead_argv, root, output, sizeof(output)) == 0) {
     int beh = 0, ahd = 0;
-    if (fscanf(f, "%d %d", &beh, &ahd) == 2) {
+    if (sscanf(output, "%d %d", &beh, &ahd) == 2) {
       gs->behind = beh;
       gs->ahead  = ahd;
     }
-    pclose(f);
   }
 }
 #endif /* !MKDBG_USE_LG2 */

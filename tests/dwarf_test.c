@@ -205,6 +205,48 @@ int main(void)
     uint8_t elf[ELF_SIZE];
     build_test_elf(elf);
 
+    /* Malformed fixture: section-name table has no terminating NUL. */
+    {
+        uint8_t malformed[ELF_SIZE];
+        memcpy(malformed, elf, sizeof(malformed));
+        uint8_t *shstr = malformed + ELF_SHOFF + 40u;
+        pu32(shstr + 16, ELF_SIZE - 8u);
+        pu32(shstr + 20, 8u);
+        memset(malformed + ELF_SIZE - 8u, 'X', 8u);
+        for (unsigned int i = 0; i < 5; i++)
+            pu32(malformed + ELF_SHOFF + i * 40u, 0u);
+        CHECK(dwarf_open_memory(malformed, sizeof(malformed)) == NULL,
+              "unterminated section name is rejected");
+    }
+
+    /* Malformed fixture: extended-opcode length is an overlong ULEB128. */
+    {
+        uint8_t malformed[ELF_SIZE];
+        memcpy(malformed, elf, sizeof(malformed));
+        uint8_t *debug_hdr = malformed + ELF_SHOFF + 2u * 40u;
+        uint8_t *debug_line = malformed + DEBUGLINE_OFF;
+        pu32(debug_hdr + 20, 48u);
+        pu32(debug_line, 44u);
+        debug_line[29] = 0;
+        memset(debug_line + 30, 0x80, 12u);
+        CHECK(dwarf_open_memory(malformed, sizeof(malformed)) == NULL,
+              "overlong ULEB128 is rejected");
+    }
+
+    /* Malformed fixture: a symbol name is not terminated inside .strtab. */
+    {
+        uint8_t malformed[ELF_SIZE];
+        uint32_t ignored = 0;
+        memcpy(malformed, elf, sizeof(malformed));
+        malformed[STRTAB_OFF + 22u] = 'X';
+        pu32(malformed + SYMTAB_OFF + 16u, SYM_PXCURRENT);
+        DwarfDBI *bad = dwarf_open_memory(malformed, sizeof(malformed));
+        CHECK(bad != NULL, "ELF with malformed symbol string table opens safely");
+        CHECK(bad && dwarf_sym_to_addr(bad, "pxCurrentTCB", &ignored) == -1,
+              "unterminated symbol name is rejected");
+        dwarf_close(bad);
+    }
+
     ssize_t written = write(fd, elf, ELF_SIZE);
     close(fd);
     if (written != (ssize_t)ELF_SIZE) {
