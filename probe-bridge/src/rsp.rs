@@ -7,7 +7,7 @@
 //!   s             — single step
 //!   c             — continue
 //!   Z1/z1         — hardware breakpoint set/clear
-//!   Z2-Z4/z2-z4   — DWT watchpoint set/clear
+//!   Z2-Z4/z2-z4   — unsupported until DWT comparators are implemented
 //!
 //! All other commands get an empty reply (""), which is the RSP "not
 //! supported" response per the GDB remote serial protocol spec.
@@ -61,6 +61,24 @@ pub fn parse_addr_len(args: &str) -> Option<(u64, usize)> {
     let len_str = parts.next()?.split(':').next()?; // M has `:data` after len
     let len = usize::from_str_radix(len_str.trim(), 16).ok()?;
     Some((addr, len))
+}
+
+/// Parse a `Z/z type,addr,kind` request supported by probe-rs 0.24.
+///
+/// `Ok(Some(addr))` is a hardware instruction breakpoint. `Ok(None)` is an
+/// unsupported breakpoint type and must receive an empty RSP reply.
+pub fn parse_hw_breakpoint_addr(args: &str) -> Result<Option<u64>, ()> {
+    let mut parts = args.splitn(3, ',');
+    let breakpoint_type = parts.next().and_then(|s| s.parse::<u8>().ok()).ok_or(())?;
+    if breakpoint_type != 1 {
+        return Ok(None);
+    }
+
+    let addr = parts
+        .next()
+        .and_then(|s| u64::from_str_radix(s, 16).ok())
+        .ok_or(())?;
+    Ok(Some(addr))
 }
 
 /// Decode the hex-encoded byte string after `M addr,len:` into bytes.
@@ -156,6 +174,27 @@ mod tests {
         let (addr, len) = parse_addr_len("20000000,4:deadbeef").unwrap();
         assert_eq!(addr, 0x20000000);
         assert_eq!(len, 4);
+    }
+
+    #[test]
+    fn parse_hw_breakpoint_accepts_instruction_breakpoint() {
+        assert_eq!(
+            parse_hw_breakpoint_addr("1,08000100,2"),
+            Ok(Some(0x08000100))
+        );
+    }
+
+    #[test]
+    fn parse_hw_breakpoint_rejects_data_watchpoints_as_unsupported() {
+        for breakpoint_type in 2..=4 {
+            let args = format!("{breakpoint_type},20000000,4");
+            assert_eq!(parse_hw_breakpoint_addr(&args), Ok(None));
+        }
+    }
+
+    #[test]
+    fn parse_hw_breakpoint_rejects_malformed_instruction_breakpoint() {
+        assert_eq!(parse_hw_breakpoint_addr("1,not-hex,4"), Err(()));
     }
 
     #[test]

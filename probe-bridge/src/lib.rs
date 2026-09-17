@@ -307,31 +307,21 @@ fn cmd_continue(core: &mut probe_rs::Core<'_>) -> String {
     }
 }
 
-/// `Z/z type,addr,kind` — set or clear hardware breakpoint / DWT watchpoint.
+/// `Z/z type,addr,kind` — set or clear a hardware instruction breakpoint.
 ///
-/// type 1   → hardware instruction breakpoint
-/// type 2–4 → DWT data watchpoints (write / read / access)
-///
-/// Unsupported type values return `""` (RSP not-supported).
+/// Type 1 is supported. Types 2–4 require DWT comparator support, which
+/// probe-rs 0.24 does not expose, so they return `""` (RSP not-supported).
 fn cmd_breakpoint(core: &mut probe_rs::Core<'_>, args: &str, set: bool) -> String {
-    let mut parts = args.splitn(3, ',');
-    let bp_type: u8 = match parts.next().and_then(|s| s.parse().ok()) {
-        Some(t) => t,
-        None => return "E01".to_string(),
-    };
-    let addr: u64 = match parts.next().and_then(|s| u64::from_str_radix(s, 16).ok()) {
-        Some(a) => a,
-        None => return "E01".to_string(),
+    let addr = match rsp::parse_hw_breakpoint_addr(args) {
+        Ok(Some(addr)) => addr,
+        Ok(None) => return String::new(),
+        Err(()) => return "E01".to_string(),
     };
 
-    let result = match (bp_type, set) {
-        (1, true) => core.set_hw_breakpoint(addr),
-        (1, false) => core.clear_hw_breakpoint(addr),
-        // DWT watchpoints 2-4: probe-rs exposes DWT through the same
-        // breakpoint slot API on Cortex-M targets.
-        (2..=4, true) => core.set_hw_breakpoint(addr),
-        (2..=4, false) => core.clear_hw_breakpoint(addr),
-        _ => return String::new(), // unsupported type → not-supported reply
+    let result = if set {
+        core.set_hw_breakpoint(addr)
+    } else {
+        core.clear_hw_breakpoint(addr)
     };
     match result {
         Ok(_) => "OK".to_string(),
