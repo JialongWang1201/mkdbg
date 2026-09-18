@@ -160,14 +160,21 @@ fn rsp_thread(
 
         loop {
             match rsp::parse_rsp_packet(&inbuf) {
-                Some((packet, consumed)) => {
+                rsp::PacketParse::Complete {
+                    data: packet,
+                    consumed,
+                } => {
                     inbuf.drain(..consumed);
                     // Send '+' ACK immediately, then the formatted reply.
                     let _ = read_tx.send(b"+".to_vec());
                     let reply_data = handle_command(&mut core, &packet);
                     let _ = read_tx.send(rsp::format_rsp_packet(&reply_data));
                 }
-                None => break,
+                rsp::PacketParse::Invalid { consumed } => {
+                    inbuf.drain(..consumed);
+                    let _ = read_tx.send(b"-".to_vec());
+                }
+                rsp::PacketParse::Incomplete => break,
             }
         }
 
@@ -242,17 +249,29 @@ fn append_u32_le_hex(out: &mut String, word: u32) {
 
 /// `G<hex-registers>` — write all core registers; reply `OK` or `E01`.
 fn cmd_write_registers(core: &mut probe_rs::Core<'_>, hex: &str) -> String {
+    match write_register_values(hex, |reg_id, val| {
+        core.write_core_reg(RegisterId(reg_id), val).map_err(|_| ())
+    }) {
+        Ok(()) => "OK".to_string(),
+        Err(()) => "E01".to_string(),
+    }
+}
+
+fn write_register_values<F>(hex: &str, mut write: F) -> Result<(), ()>
+where
+    F: FnMut(u16, u32) -> Result<(), ()>,
+{
     let bytes = match rsp::decode_hex_bytes(hex) {
         Some(b) if b.len() >= CORTEX_M_REG_COUNT * 4 => b,
-        _ => return "E01".to_string(),
+        _ => return Err(()),
     };
     for i in 0..CORTEX_M_REG_COUNT as u16 {
         let off = (i as usize) * 4;
         let val = u32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]]);
         let reg_id = if i < 16 { i } else { XPSR_REG_SLOT };
-        let _ = core.write_core_reg(RegisterId(reg_id), val);
+        write(reg_id, val)?;
     }
-    "OK".to_string()
+    Ok(())
 }
 
 /// `m addr,len` — read memory; reply is hex-encoded bytes or `E01`.
@@ -269,18 +288,23 @@ fn cmd_read_memory(core: &mut probe_rs::Core<'_>, args: &str) -> String {
 }
 
 /// `M addr,len:hexdata` — write memory; reply `OK` or `E01`.
-fn cmd_write_memory(core: &mut probe_rs::Core<'_>, args: &str) -> String {
-    let (addr, _len) = match rsp::parse_addr_len(args) {
-        Some(v) => v,
-        None => return "E01".to_string(),
-    };
+fn parse_memory_write(args: &str) -> Result<(u64, Vec<u8>), ()> {
+    let (addr, len) = rsp::parse_addr_len(args).ok_or(())?;
     let hex_data = match args.find(':') {
         Some(p) => &args[p + 1..],
-        None => return "E01".to_string(),
+        None => return Err(()),
     };
-    let data = match rsp::decode_hex_bytes(hex_data) {
-        Some(d) => d,
-        None => return "E01".to_string(),
+    let data = rsp::decode_hex_bytes(hex_data).ok_or(())?;
+    if data.len() != len {
+        return Err(());
+    }
+    Ok((addr, data))
+}
+
+fn cmd_write_memory(core: &mut probe_rs::Core<'_>, args: &str) -> String {
+    let (addr, data) = match parse_memory_write(args) {
+        Ok(write) => write,
+        Err(()) => return "E01".to_string(),
     };
     match core.write_8(addr, &data) {
         Ok(_) => "OK".to_string(),
@@ -307,31 +331,21 @@ fn cmd_continue(core: &mut probe_rs::Core<'_>) -> String {
     }
 }
 
-/// `Z/z type,addr,kind` — set or clear hardware breakpoint / DWT watchpoint.
+/// `Z/z type,addr,kind` — set or clear a hardware instruction breakpoint.
 ///
-/// type 1   → hardware instruction breakpoint
-/// type 2–4 → DWT data watchpoints (write / read / access)
-///
-/// Unsupported type values return `""` (RSP not-supported).
+/// Type 1 is supported. Types 2–4 require DWT comparator support, which
+/// probe-rs 0.24 does not expose, so they return `""` (RSP not-supported).
 fn cmd_breakpoint(core: &mut probe_rs::Core<'_>, args: &str, set: bool) -> String {
-    let mut parts = args.splitn(3, ',');
-    let bp_type: u8 = match parts.next().and_then(|s| s.parse().ok()) {
-        Some(t) => t,
-        None => return "E01".to_string(),
-    };
-    let addr: u64 = match parts.next().and_then(|s| u64::from_str_radix(s, 16).ok()) {
-        Some(a) => a,
-        None => return "E01".to_string(),
+    let addr = match rsp::parse_hw_breakpoint_addr(args) {
+        Ok(Some(addr)) => addr,
+        Ok(None) => return String::new(),
+        Err(()) => return "E01".to_string(),
     };
 
-    let result = match (bp_type, set) {
-        (1, true) => core.set_hw_breakpoint(addr),
-        (1, false) => core.clear_hw_breakpoint(addr),
-        // DWT watchpoints 2-4: probe-rs exposes DWT through the same
-        // breakpoint slot API on Cortex-M targets.
-        (2..=4, true) => core.set_hw_breakpoint(addr),
-        (2..=4, false) => core.clear_hw_breakpoint(addr),
-        _ => return String::new(), // unsupported type → not-supported reply
+    let result = if set {
+        core.set_hw_breakpoint(addr)
+    } else {
+        core.clear_hw_breakpoint(addr)
     };
     match result {
         Ok(_) => "OK".to_string(),
@@ -538,6 +552,29 @@ pub unsafe extern "C" fn probe_close(h: *mut ProbeHandle) {
 #[cfg(test)]
 mod ffi_tests {
     use super::*;
+
+    #[test]
+    fn register_write_propagates_backend_failure() {
+        let registers = "00000000".repeat(CORTEX_M_REG_COUNT);
+        let mut writes = 0;
+        let result = write_register_values(&registers, |_, _| {
+            writes += 1;
+            if writes == 3 {
+                Err(())
+            } else {
+                Ok(())
+            }
+        });
+        assert_eq!(result, Err(()));
+        assert_eq!(writes, 3);
+    }
+
+    #[test]
+    fn memory_write_requires_declared_length() {
+        assert!(parse_memory_write("20000000,4:deadbeef").is_ok());
+        assert!(parse_memory_write("20000000,4:deadbe").is_err());
+        assert!(parse_memory_write("20000000,2:deadbeef").is_err());
+    }
 
     #[test]
     fn list_rejects_invalid_output() {

@@ -4,6 +4,14 @@ project(mkdbg C)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
+# Keep release artifacts small without changing debug-build visibility.
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+  add_compile_options(
+    "$<$<CONFIG:Release>:-ffunction-sections>"
+    "$<$<CONFIG:Release>:-fdata-sections>"
+  )
+endif()
+
 # ── libgit2: minimal static build (no HTTPS, no SSH, no TLS) ─────────────────
 # Used by mkdbg-native for local git operations without requiring a git CLI.
 # Network operations (push/fetch) fall back to the git CLI subprocess path.
@@ -67,6 +75,7 @@ add_executable(mkdbg-native
   src/serial.c
   src/seam.c
   src/replay.c
+  src/json.c
   src/dashboard.c
   src/wire.c
   src/uart_transport.c
@@ -108,10 +117,20 @@ set_target_properties(mkdbg-native PROPERTIES
   OUTPUT_NAME "mkdbg-native"
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
 )
+if(APPLE)
+  target_link_options(mkdbg-native PRIVATE
+    "$<$<CONFIG:Release>:-Wl,-dead_strip>"
+  )
+elseif(UNIX AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+  target_link_options(mkdbg-native PRIVATE
+    "$<$<CONFIG:Release>:-Wl,--gc-sections>"
+  )
+endif()
 
 # ── probe-bridge: Rust staticlib (optional, requires cargo) ──────────────────
 # Pass -DMKDBG_SKIP_PROBE=ON to disable even when cargo is available.
 option(MKDBG_SKIP_PROBE "Disable probe-bridge integration" OFF)
+option(MKDBG_BUILD_FUZZERS "Build libFuzzer targets (Clang only)" OFF)
 find_program(CARGO cargo PATHS "$ENV{HOME}/.cargo/bin" /usr/local/bin /opt/homebrew/bin)
 if(CARGO AND NOT MKDBG_SKIP_PROBE)
   set(PROBE_BRIDGE_DIR "${CMAKE_SOURCE_DIR}/probe-bridge")
@@ -257,6 +276,23 @@ target_include_directories(dwarf_test PRIVATE
 )
 add_test(NAME dwarf_sym_lookup COMMAND dwarf_test)
 
+if(MKDBG_BUILD_FUZZERS)
+  if(NOT CMAKE_C_COMPILER_ID MATCHES "Clang")
+    message(FATAL_ERROR "MKDBG_BUILD_FUZZERS requires Clang")
+  endif()
+  add_executable(dwarf_fuzz
+    tests/fuzz/dwarf_fuzz.c
+    src/dwarf.c
+  )
+  target_compile_options(dwarf_fuzz PRIVATE
+    -Wall -Wextra -Werror -O1 -g -fsanitize=fuzzer,address,undefined
+  )
+  target_link_options(dwarf_fuzz PRIVATE -fsanitize=fuzzer,address,undefined)
+  target_include_directories(dwarf_fuzz PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/src
+  )
+endif()
+
 # ── ctest: Thumb/Thumb-2 disassembler ────────────────────────────────────────
 add_executable(thumb_dis_test
   tests/test_thumb_dis.c
@@ -307,3 +343,55 @@ target_include_directories(capture_transport_test PRIVATE
   ${CMAKE_CURRENT_LIST_DIR}/src
 )
 add_test(NAME capture_transport COMMAND capture_transport_test)
+
+# ── ctest: argv subprocess capture ───────────────────────────────────────────
+add_executable(process_test
+  tests/process_test.c
+  src/process.c
+  src/util.c
+)
+target_compile_options(process_test PRIVATE -Wall -Wextra -Werror -O2)
+target_include_directories(process_test PRIVATE
+  ${CMAKE_CURRENT_LIST_DIR}/src
+)
+add_test(NAME process_argv_capture COMMAND process_test)
+
+# ── ctest: streaming replay JSON ─────────────────────────────────────────────
+add_executable(replay_test
+  tests/replay_test.c
+  src/replay.c
+  src/json.c
+  src/util.c
+)
+target_compile_options(replay_test PRIVATE -Wall -Wextra -Werror -O2)
+target_include_directories(replay_test PRIVATE
+  ${CMAKE_CURRENT_LIST_DIR}/src
+)
+add_test(NAME replay_streaming_json COMMAND replay_test)
+
+# ── ctest: atomic incident state ─────────────────────────────────────────────
+add_executable(incident_test
+  tests/incident_test.c
+  src/incident.c
+  src/json.c
+  src/config.c
+  src/process.c
+  src/util.c
+)
+target_compile_options(incident_test PRIVATE -Wall -Wextra -Werror -O2)
+target_include_directories(incident_test PRIVATE
+  ${CMAKE_CURRENT_LIST_DIR}/src
+)
+add_test(NAME incident_atomic_state COMMAND incident_test)
+
+# ── ctest: strict numeric CLI parsing ────────────────────────────────────────
+add_executable(parse_test
+  tests/parse_test.c
+  src/parse.c
+  src/util.c
+)
+target_compile_options(parse_test PRIVATE -Wall -Wextra -Werror -O2)
+target_include_directories(parse_test PRIVATE
+  ${CMAKE_CURRENT_LIST_DIR}/src
+)
+add_test(NAME strict_numeric_args COMMAND parse_test)

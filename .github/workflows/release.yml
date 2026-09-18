@@ -1,12 +1,15 @@
 name: Release
 
-# Runs on every push to main (updates a rolling "latest" pre-release)
-# and on version tags (creates a versioned release).
+# Runs only after CI completes. Main updates the rolling "latest" pre-release;
+# version tags create immutable versioned releases.
 on:
-  push:
-    branches: [main]
-    tags: ['v*']
-  workflow_dispatch:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+concurrency:
+  group: release-${{ github.event.workflow_run.head_branch == 'main' && 'latest' || github.event.workflow_run.head_branch }}
+  cancel-in-progress: ${{ github.event.workflow_run.head_branch == 'main' }}
 
 permissions:
   contents: write
@@ -14,6 +17,11 @@ permissions:
 jobs:
   # ── Build matrix ────────────────────────────────────────────────────────────
   build:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      (github.event.workflow_run.head_branch != 'main' ||
+       github.event.workflow_run.head_sha == github.sha)
     strategy:
       fail-fast: false
       matrix:
@@ -43,6 +51,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+          ref: ${{ github.event.workflow_run.head_sha }}
 
       - name: Install cross-compiler (linux-arm64)
         if: matrix.cross == true
@@ -92,8 +101,19 @@ jobs:
       - name: Build
         run: cmake --build build --target mkdbg-native
 
-      - name: Stage artifact
-        run: cp build/mkdbg-native mkdbg-native-${{ matrix.os }}-${{ matrix.arch }}
+      - name: Stage and strip artifact
+        shell: bash
+        run: |
+          artifact="mkdbg-native-${{ matrix.os }}-${{ matrix.arch }}"
+          cp build/mkdbg-native "${artifact}"
+          if [[ "${{ matrix.os }}" == "darwin" ]]; then
+            strip -x "${artifact}"
+          elif [[ "${{ matrix.cross }}" == "true" ]]; then
+            aarch64-linux-gnu-strip --strip-all "${artifact}"
+          else
+            strip --strip-all "${artifact}"
+          fi
+          wc -c "${artifact}"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -114,12 +134,16 @@ jobs:
       - name: Determine release tag
         id: tag
         run: |
-          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            echo "name=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          SOURCE_REF="${{ github.event.workflow_run.head_branch }}"
+          if [[ "${SOURCE_REF}" == v* ]]; then
+            echo "name=${SOURCE_REF}" >> "$GITHUB_OUTPUT"
             echo "prerelease=false"              >> "$GITHUB_OUTPUT"
-          else
+          elif [[ "${SOURCE_REF}" == "main" ]]; then
             echo "name=latest"    >> "$GITHUB_OUTPUT"
             echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "error: unsupported release ref ${SOURCE_REF}" >&2
+            exit 1
           fi
 
       - name: Delete existing 'latest' release before overwriting
@@ -133,6 +157,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO:  ${{ github.repository }}
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+          SOURCE_REF: ${{ github.event.workflow_run.head_branch }}
         run: |
           PRERELEASE_FLAG=""
           if [[ "${{ steps.tag.outputs.prerelease }}" == "true" ]]; then
@@ -141,5 +167,5 @@ jobs:
           gh release create "${{ steps.tag.outputs.name }}" \
             --title "mkdbg ${{ steps.tag.outputs.name }}" \
             ${PRERELEASE_FLAG} \
-            --notes "Built from \`${GITHUB_SHA:0:7}\` on \`${GITHUB_REF_NAME}\`" \
+            --notes "Built from \`${SOURCE_SHA:0:7}\` on \`${SOURCE_REF}\`" \
             dist/mkdbg-native-*

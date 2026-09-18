@@ -17,6 +17,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include <limits.h>
+#include <stdint.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdbool.h>
@@ -259,6 +260,7 @@ typedef struct {
   char repo[MAX_NAME];
   char port[MAX_VALUE];
   long opened_at;
+  long closed_at;
 } IncidentMetadata;
 
 /* ---- wire probe (mkdbg_wire.c) ---- */
@@ -311,6 +313,12 @@ void copy_string(char *dst, size_t dst_size, const char *src);
 void append_string(char *dst, size_t dst_size, const char *src);
 void replace_all(char *dst, size_t dst_size, const char *src,
                  const char *needle, const char *replacement);
+int parse_long_range(const char *input, int base, long min_value,
+                     long max_value, long *value_out);
+int parse_ulong_range(const char *input, int base, unsigned long max_value,
+                      unsigned long *value_out);
+int parse_double_range(const char *input, double min_value, double max_value,
+                       double *value_out);
 void format_u32_hex(const char *input, const char *label, char *out, size_t out_size);
 const char *path_basename(const char *path);
 void path_dirname(const char *path, char *out, size_t out_size);
@@ -327,6 +335,8 @@ int command_available(const char *command);
 /* ---- process.c ---- */
 void print_shell_arg(FILE *f, const char *arg);
 int run_process(char *const argv[], const char *cwd, int dry_run);
+int capture_process_output(char *const argv[], const char *cwd,
+                           char *out, size_t out_size);
 void print_command_label(const char *label, char *const argv[]);
 void sleep_seconds(double seconds);
 int wait_status_to_rc(int status);
@@ -359,6 +369,9 @@ void sanitize_slug(const char *input, char *out, size_t out_size);
 int load_current_incident_id(const char *config_path, char *out, size_t out_size);
 int load_incident_metadata(const char *meta_path, IncidentMetadata *meta);
 int write_incident_metadata(const char *meta_path, const IncidentMetadata *meta, long closed_at);
+int write_current_incident_id(const char *current_path, const char *incident_id);
+int close_incident_state(const char *current_path, const char *meta_path,
+                         IncidentMetadata *meta, long closed_at);
 int load_current_incident_dir(const char *config_path, char *out, size_t out_size);
 int cmd_incident_open(const IncidentOpenOptions *opts);
 int cmd_incident_status(const IncidentStatusOptions *opts);

@@ -1,6 +1,6 @@
 #include "mkdbg.h"
+#include "json.h"
 
-#define REPLAY_TEXT_MAX 65536U
 #define TIMELINE_MAX_EVENTS 128U
 
 typedef struct {
@@ -19,132 +19,33 @@ typedef struct {
   int truncated;
 } Timeline;
 
-static int read_file_text(const char *path, char *buf, size_t buf_size)
+static int json_skip_value(JsonReader *reader, JsonTokenType first)
 {
-  FILE *f;
-  size_t n;
-
-  if (buf_size == 0U) return -1;
-  f = fopen(path, "rb");
-  if (f == NULL) return -1;
-  n = fread(buf, 1U, buf_size - 1U, f);
-  if (ferror(f)) {
-    fclose(f);
-    return -1;
+  JsonToken token;
+  int depth = 0;
+  if (first == JSON_TOKEN_OBJECT_BEGIN || first == JSON_TOKEN_ARRAY_BEGIN) depth = 1;
+  while (depth > 0) {
+    JsonTokenType type = json_reader_next(reader, &token);
+    if (type == JSON_TOKEN_ERROR || type == JSON_TOKEN_EOF) return -1;
+    if (type == JSON_TOKEN_OBJECT_BEGIN || type == JSON_TOKEN_ARRAY_BEGIN) depth++;
+    else if (type == JSON_TOKEN_OBJECT_END || type == JSON_TOKEN_ARRAY_END) depth--;
   }
-  buf[n] = '\0';
-  fclose(f);
   return 0;
 }
 
-static const char *json_key(const char *buf, const char *key)
+static int json_read_value(JsonReader *reader, JsonToken *token)
 {
-  char needle[128];
-  snprintf(needle, sizeof(needle), "\"%s\":", key);
-  return strstr(buf, needle);
+  if (json_reader_next(reader, token) != JSON_TOKEN_COLON) return -1;
+  return json_reader_next(reader, token) == JSON_TOKEN_ERROR ? -1 : 0;
 }
 
-static const char *json_array_key(const char *buf, const char *key)
+static int token_to_int(const JsonToken *token, int *out)
 {
-  const char *p = buf;
-
-  while ((p = json_key(p, key)) != NULL) {
-    const char *q = strchr(p, ':');
-    if (q == NULL) return NULL;
-    q++;
-    while (*q != '\0' && isspace((unsigned char)*q)) q++;
-    if (*q == '[') return q;
-    p = q;
-  }
-  return NULL;
-}
-
-static const char *json_next_array_key(const char *buf, const char *key,
-                                       const char *after)
-{
-  if (after == NULL) return json_array_key(buf, key);
-  return json_array_key(after, key);
-}
-
-static const char *matching_delim(const char *open, char left, char right)
-{
-  const char *p = open;
-  int depth = 0;
-  int in_string = 0;
-  int escape = 0;
-
-  if (open == NULL || *open != left) return NULL;
-  for (; *p != '\0'; p++) {
-    if (in_string) {
-      if (escape) {
-        escape = 0;
-      } else if (*p == '\\') {
-        escape = 1;
-      } else if (*p == '"') {
-        in_string = 0;
-      }
-      continue;
-    }
-    if (*p == '"') {
-      in_string = 1;
-    } else if (*p == left) {
-      depth++;
-    } else if (*p == right) {
-      depth--;
-      if (depth == 0) return p;
-    }
-  }
-  return NULL;
-}
-
-static void json_string_value(const char *buf, const char *key,
-                              char *out, size_t out_size)
-{
-  const char *p = json_key(buf, key);
-  size_t i = 0U;
-
-  if (out_size == 0U) return;
-  out[0] = '\0';
-  if (p == NULL) return;
-  p = strchr(p, ':');
-  if (p == NULL) return;
-  p++;
-  while (*p != '\0' && isspace((unsigned char)*p)) p++;
-  if (*p != '"') return;
-  p++;
-  while (*p != '\0' && *p != '"' && i + 1U < out_size) {
-    if (*p == '\\' && p[1] != '\0') p++;
-    out[i++] = *p++;
-  }
-  out[i] = '\0';
-}
-
-static int json_int_value(const char *buf, const char *key)
-{
-  const char *p = json_key(buf, key);
-  if (p == NULL) return 0;
-  p = strchr(p, ':');
-  if (p == NULL) return 0;
-  p++;
-  while (*p != '\0' && isspace((unsigned char)*p)) p++;
-  return atoi(p);
-}
-
-static void print_json_string(const char *s)
-{
-  putchar('"');
-  for (; *s != '\0'; s++) {
-    unsigned char c = (unsigned char)*s;
-    if (*s == '"' || *s == '\\') {
-      putchar('\\');
-      putchar(*s);
-    } else if (c < 0x20U) {
-      printf("\\u%04x", c);
-    } else {
-      putchar(*s);
-    }
-  }
-  putchar('"');
+  long value;
+  if (json_token_to_long(token, &value) != 0 || value < INT_MIN || value > INT_MAX)
+    return -1;
+  *out = (int)value;
+  return 0;
 }
 
 static int timeline_event_is_fault(const TimelineEvent *ev)
@@ -154,66 +55,107 @@ static int timeline_event_is_fault(const TimelineEvent *ev)
          strstr(ev->msg, "HardFault") != NULL;
 }
 
-static void timeline_add_object(Timeline *tl, const char *start, const char *end)
+static int timeline_read_object(JsonReader *reader, Timeline *timeline)
 {
-  char obj[2048];
-  size_t len;
-  TimelineEvent *ev;
-
-  if (start == NULL || end == NULL || end <= start) return;
-  if (tl->count >= TIMELINE_MAX_EVENTS) {
-    tl->truncated = 1;
-    return;
-  }
-  len = (size_t)(end - start + 1);
-  if (len >= sizeof(obj)) len = sizeof(obj) - 1U;
-  memcpy(obj, start, len);
-  obj[len] = '\0';
-
-  ev = &tl->events[tl->count];
+  JsonToken key;
+  JsonToken value;
+  TimelineEvent event;
+  TimelineEvent *ev = &event;
   memset(ev, 0, sizeof(*ev));
-  json_string_value(obj, "msg", ev->msg, sizeof(ev->msg));
-  if (ev->msg[0] == '\0') return;
-
-  ev->event_id = json_int_value(obj, "event_id");
-  ev->age_ms = json_int_value(obj, "age_ms");
-  ev->ts_ms = json_int_value(obj, "ts_ms");
-  json_string_value(obj, "corr_id", ev->corr_id, sizeof(ev->corr_id));
-  json_string_value(obj, "flags", ev->flags, sizeof(ev->flags));
-  json_string_value(obj, "stage", ev->stage, sizeof(ev->stage));
-  tl->count++;
+  for (;;) {
+    JsonTokenType type = json_reader_next(reader, &key);
+    if (type == JSON_TOKEN_OBJECT_END) break;
+    if (type == JSON_TOKEN_COMMA) continue;
+    if (type != JSON_TOKEN_STRING || key.truncated ||
+        json_read_value(reader, &value) != 0) return -1;
+    if (strcmp(key.text, "event_id") == 0) {
+      if (token_to_int(&value, &ev->event_id) != 0) return -1;
+    } else if (strcmp(key.text, "age_ms") == 0) {
+      if (token_to_int(&value, &ev->age_ms) != 0) return -1;
+    } else if (strcmp(key.text, "ts_ms") == 0) {
+      if (token_to_int(&value, &ev->ts_ms) != 0) return -1;
+    } else if (value.type == JSON_TOKEN_STRING) {
+      if (strcmp(key.text, "msg") == 0) copy_string(ev->msg, sizeof(ev->msg), value.text);
+      else if (strcmp(key.text, "corr_id") == 0) copy_string(ev->corr_id, sizeof(ev->corr_id), value.text);
+      else if (strcmp(key.text, "flags") == 0) copy_string(ev->flags, sizeof(ev->flags), value.text);
+      else if (strcmp(key.text, "stage") == 0) copy_string(ev->stage, sizeof(ev->stage), value.text);
+      if (value.truncated) timeline->truncated = 1;
+    } else if (json_skip_value(reader, value.type) != 0) {
+      return -1;
+    }
+  }
+  if (ev->msg[0] == '\0') return 0;
+  if (timeline->count >= TIMELINE_MAX_EVENTS) {
+    timeline->truncated = 1;
+    return 0;
+  }
+  timeline->events[timeline->count++] = event;
+  return 0;
 }
 
-static void timeline_parse_array(Timeline *tl, const char *array_start)
+static int timeline_read_array(JsonReader *reader, Timeline *timeline)
 {
-  const char *array_end = matching_delim(array_start, '[', ']');
-  const char *p = array_start;
-
-  if (array_end == NULL) return;
-  while ((p = strchr(p, '{')) != NULL && p < array_end) {
-    const char *obj_end = matching_delim(p, '{', '}');
-    if (obj_end == NULL || obj_end > array_end) return;
-    timeline_add_object(tl, p, obj_end);
-    p = obj_end + 1;
+  JsonToken token;
+  for (;;) {
+    JsonTokenType type = json_reader_next(reader, &token);
+    if (type == JSON_TOKEN_ARRAY_END) return 0;
+    if (type == JSON_TOKEN_COMMA) continue;
+    if (type == JSON_TOKEN_OBJECT_BEGIN) {
+      if (timeline_read_object(reader, timeline) != 0) return -1;
+    } else if (type == JSON_TOKEN_ERROR || type == JSON_TOKEN_EOF ||
+               json_skip_value(reader, type) != 0) {
+      return -1;
+    }
   }
+}
+
+static int timeline_scan_value(JsonReader *reader, JsonTokenType first,
+                               Timeline *timeline)
+{
+  JsonToken token;
+  if (first == JSON_TOKEN_OBJECT_BEGIN) {
+    for (;;) {
+      JsonToken key;
+      JsonToken value;
+      JsonTokenType type = json_reader_next(reader, &key);
+      if (type == JSON_TOKEN_OBJECT_END) return 0;
+      if (type == JSON_TOKEN_COMMA) continue;
+      if (type != JSON_TOKEN_STRING || key.truncated ||
+          json_read_value(reader, &value) != 0) return -1;
+      if (strcmp(key.text, "events") == 0 && value.type == JSON_TOKEN_ARRAY_BEGIN) {
+        if (timeline_read_array(reader, timeline) != 0) return -1;
+      } else if (timeline_scan_value(reader, value.type, timeline) != 0) {
+        return -1;
+      }
+    }
+  }
+  if (first == JSON_TOKEN_ARRAY_BEGIN) {
+    for (;;) {
+      JsonTokenType type = json_reader_next(reader, &token);
+      if (type == JSON_TOKEN_ARRAY_END) return 0;
+      if (type == JSON_TOKEN_COMMA) continue;
+      if (type == JSON_TOKEN_ERROR || type == JSON_TOKEN_EOF ||
+          timeline_scan_value(reader, type, timeline) != 0) return -1;
+    }
+  }
+  return first == JSON_TOKEN_ERROR || first == JSON_TOKEN_EOF ? -1 : 0;
 }
 
 static int load_timeline(const char *path, Timeline *timeline)
 {
-  char buf[REPLAY_TEXT_MAX];
-  const char *array;
-  const char *cursor = NULL;
+  FILE *file;
+  JsonReader reader;
+  JsonToken token;
+  int result = 0;
 
   memset(timeline, 0, sizeof(*timeline));
-  if (read_file_text(path, buf, sizeof(buf)) != 0) {
-    return -1;
-  }
-
-  while ((array = json_next_array_key(buf, "events", cursor)) != NULL) {
-    timeline_parse_array(timeline, array);
-    cursor = array + 1;
-  }
-  return 0;
+  file = fopen(path, "rb");
+  if (!file) return -1;
+  json_reader_init(&reader, file);
+  if (timeline_scan_value(&reader, json_reader_next(&reader, &token), timeline) != 0 ||
+      json_reader_next(&reader, &token) != JSON_TOKEN_EOF) result = -1;
+  if (fclose(file) != 0) result = -1;
+  return result;
 }
 
 static int timeline_find_event_index(const Timeline *timeline, int event_id)
@@ -310,37 +252,61 @@ static void print_timeline_text(const char *path, const Timeline *timeline)
   }
 }
 
-static void print_timeline_event_json_object(const TimelineEvent *ev)
+static int writer_key_string(JsonWriter *writer, const char *key, const char *value)
 {
-  printf("{\"event_id\":%d,\"age_ms\":%d,\"ts_ms\":%d,"
-         "\"fault_anchor\":%s,",
-         ev->event_id, ev->age_ms, ev->ts_ms,
-         timeline_event_is_fault(ev) ? "true" : "false");
-  printf("\"stage\":");
-  print_json_string(ev->stage);
-  printf(",\"flags\":");
-  print_json_string(ev->flags);
-  printf(",\"corr_id\":");
-  print_json_string(ev->corr_id);
-  printf(",\"msg\":");
-  print_json_string(ev->msg);
-  printf("}");
+  return json_writer_key(writer, key) == 0 && json_writer_string(writer, value) == 0 ? 0 : -1;
 }
 
-static void print_timeline_event_json(const char *path,
-                                      const TimelineEvent *ev)
+static int writer_key_long(JsonWriter *writer, const char *key, long value)
 {
-  printf("{\"bundle\":");
-  print_json_string(path);
-  printf(",\"event\":");
-  print_timeline_event_json_object(ev);
-  printf("}\n");
+  return json_writer_key(writer, key) == 0 && json_writer_long(writer, value) == 0 ? 0 : -1;
 }
 
-static void print_timeline_context_json(const char *path,
-                                        const Timeline *timeline,
-                                        int selected_index,
-                                        int radius)
+static int writer_key_bool(JsonWriter *writer, const char *key, int value)
+{
+  return json_writer_key(writer, key) == 0 && json_writer_bool(writer, value) == 0 ? 0 : -1;
+}
+
+static int finish_json_line(JsonWriter *writer)
+{
+  if (json_writer_finish(writer) != 0 || fputc('\n', stdout) == EOF || fflush(stdout) != 0)
+    return -1;
+  return 0;
+}
+
+static int write_timeline_event_json_object(JsonWriter *writer,
+                                            const TimelineEvent *ev)
+{
+  if (json_writer_begin_object(writer) != 0 ||
+      writer_key_long(writer, "event_id", ev->event_id) != 0 ||
+      writer_key_long(writer, "age_ms", ev->age_ms) != 0 ||
+      writer_key_long(writer, "ts_ms", ev->ts_ms) != 0 ||
+      writer_key_bool(writer, "fault_anchor", timeline_event_is_fault(ev)) != 0 ||
+      writer_key_string(writer, "stage", ev->stage) != 0 ||
+      writer_key_string(writer, "flags", ev->flags) != 0 ||
+      writer_key_string(writer, "corr_id", ev->corr_id) != 0 ||
+      writer_key_string(writer, "msg", ev->msg) != 0 ||
+      json_writer_end_object(writer) != 0) return -1;
+  return 0;
+}
+
+static int print_timeline_event_json(const char *path,
+                                     const TimelineEvent *ev)
+{
+  JsonWriter writer;
+  json_writer_init(&writer, stdout);
+  if (json_writer_begin_object(&writer) != 0 ||
+      writer_key_string(&writer, "bundle", path) != 0 ||
+      json_writer_key(&writer, "event") != 0 ||
+      write_timeline_event_json_object(&writer, ev) != 0 ||
+      json_writer_end_object(&writer) != 0) return -1;
+  return finish_json_line(&writer);
+}
+
+static int print_timeline_context_json(const char *path,
+                                       const Timeline *timeline,
+                                       int selected_index,
+                                       int radius)
 {
   size_t i;
   size_t start;
@@ -348,58 +314,153 @@ static void print_timeline_context_json(const char *path,
   size_t selected = (size_t)selected_index;
   size_t r = (size_t)radius;
 
-  if (selected_index < 0 || timeline->count == 0U) return;
+  JsonWriter writer;
+  if (selected_index < 0 || timeline->count == 0U) return -1;
   start = selected > r ? selected - r : 0U;
   end = selected + r;
   if (end >= timeline->count) end = timeline->count - 1U;
 
-  printf("{\"bundle\":");
-  print_json_string(path);
-  printf(",\"selected_event_id\":%d,\"context_radius\":%d,"
-         "\"event_count\":%zu,\"events\":[",
-         timeline->events[selected].event_id, radius, end - start + 1U);
+  json_writer_init(&writer, stdout);
+  if (json_writer_begin_object(&writer) != 0 ||
+      writer_key_string(&writer, "bundle", path) != 0 ||
+      writer_key_long(&writer, "selected_event_id", timeline->events[selected].event_id) != 0 ||
+      writer_key_long(&writer, "context_radius", radius) != 0 ||
+      writer_key_long(&writer, "event_count", (long)(end - start + 1U)) != 0 ||
+      json_writer_key(&writer, "events") != 0 ||
+      json_writer_begin_array(&writer) != 0) return -1;
   for (i = start; i <= end; i++) {
-    if (i != start) printf(",");
-    print_timeline_event_json_object(&timeline->events[i]);
+    if (write_timeline_event_json_object(&writer, &timeline->events[i]) != 0) return -1;
   }
-  printf("]}\n");
+  if (json_writer_end_array(&writer) != 0 || json_writer_end_object(&writer) != 0)
+    return -1;
+  return finish_json_line(&writer);
 }
 
-static void print_timeline_json(const char *path, const Timeline *timeline)
+static int print_timeline_json(const char *path, const Timeline *timeline)
 {
   size_t i;
-
-  printf("{\"bundle\":");
-  print_json_string(path);
-  printf(",\"event_count\":%zu,\"truncated\":%s,\"events\":[",
-         timeline->count, timeline->truncated ? "true" : "false");
+  JsonWriter writer;
+  json_writer_init(&writer, stdout);
+  if (json_writer_begin_object(&writer) != 0 ||
+      writer_key_string(&writer, "bundle", path) != 0 ||
+      writer_key_long(&writer, "event_count", (long)timeline->count) != 0 ||
+      writer_key_bool(&writer, "truncated", timeline->truncated) != 0 ||
+      json_writer_key(&writer, "events") != 0 ||
+      json_writer_begin_array(&writer) != 0) return -1;
   for (i = 0; i < timeline->count; i++) {
-    const TimelineEvent *ev = &timeline->events[i];
-    if (i != 0U) printf(",");
-    print_timeline_event_json_object(ev);
+    if (write_timeline_event_json_object(&writer, &timeline->events[i]) != 0) return -1;
   }
-  printf("]}\n");
+  if (json_writer_end_array(&writer) != 0 || json_writer_end_object(&writer) != 0)
+    return -1;
+  return finish_json_line(&writer);
+}
+
+static int print_bundle_json(const BundleSummary *summary)
+{
+  JsonWriter writer;
+  json_writer_init(&writer, stdout);
+  if (json_writer_begin_object(&writer) != 0 ||
+      writer_key_string(&writer, "bundle", summary->path) != 0 ||
+      writer_key_long(&writer, "halt_signal", summary->halt_signal) != 0 ||
+      writer_key_long(&writer, "timeout", summary->timeout) != 0 ||
+      writer_key_string(&writer, "pc", summary->pc) != 0 ||
+      writer_key_string(&writer, "lr", summary->lr) != 0 ||
+      writer_key_string(&writer, "sp", summary->sp) != 0 ||
+      writer_key_string(&writer, "cfsr", summary->cfsr) != 0 ||
+      writer_key_string(&writer, "cfsr_decoded", summary->cfsr_decoded) != 0 ||
+      json_writer_end_object(&writer) != 0) return -1;
+  return finish_json_line(&writer);
+}
+
+static int print_diff_json(const BundleSummary *left, const BundleSummary *right)
+{
+  JsonWriter writer;
+  json_writer_init(&writer, stdout);
+  if (json_writer_begin_object(&writer) != 0 ||
+      writer_key_string(&writer, "left", left->path) != 0 ||
+      writer_key_string(&writer, "right", right->path) != 0 ||
+      writer_key_bool(&writer, "halt_signal_changed",
+                      left->halt_signal != right->halt_signal) != 0 ||
+      writer_key_bool(&writer, "timeout_changed", left->timeout != right->timeout) != 0 ||
+      writer_key_bool(&writer, "pc_changed", strcmp(left->pc, right->pc) != 0) != 0 ||
+      writer_key_bool(&writer, "lr_changed", strcmp(left->lr, right->lr) != 0) != 0 ||
+      writer_key_bool(&writer, "sp_changed", strcmp(left->sp, right->sp) != 0) != 0 ||
+      writer_key_bool(&writer, "cfsr_changed", strcmp(left->cfsr, right->cfsr) != 0) != 0 ||
+      writer_key_bool(&writer, "cfsr_decoded_changed",
+                      strcmp(left->cfsr_decoded, right->cfsr_decoded) != 0) != 0 ||
+      json_writer_end_object(&writer) != 0) return -1;
+  return finish_json_line(&writer);
+}
+
+static int summary_set_string(char *out, size_t out_size, const JsonToken *value)
+{
+  if (value->type != JSON_TOKEN_STRING || value->truncated ||
+      strlen(value->text) >= out_size) return -1;
+  copy_string(out, out_size, value->text);
+  return 0;
+}
+
+static int summary_scan_value(JsonReader *reader, JsonTokenType first,
+                              BundleSummary *summary)
+{
+  JsonToken token;
+  if (first == JSON_TOKEN_OBJECT_BEGIN) {
+    for (;;) {
+      JsonToken key;
+      JsonToken value;
+      JsonTokenType type = json_reader_next(reader, &key);
+      if (type == JSON_TOKEN_OBJECT_END) return 0;
+      if (type == JSON_TOKEN_COMMA) continue;
+      if (type != JSON_TOKEN_STRING || key.truncated ||
+          json_read_value(reader, &value) != 0) return -1;
+      if (strcmp(key.text, "halt_signal") == 0) {
+        if (token_to_int(&value, &summary->halt_signal) != 0) return -1;
+      } else if (strcmp(key.text, "timeout") == 0) {
+        if (token_to_int(&value, &summary->timeout) != 0) return -1;
+      } else if (strcmp(key.text, "pc") == 0) {
+        if (summary_set_string(summary->pc, sizeof(summary->pc), &value) != 0) return -1;
+      } else if (strcmp(key.text, "lr") == 0) {
+        if (summary_set_string(summary->lr, sizeof(summary->lr), &value) != 0) return -1;
+      } else if (strcmp(key.text, "sp") == 0) {
+        if (summary_set_string(summary->sp, sizeof(summary->sp), &value) != 0) return -1;
+      } else if (strcmp(key.text, "cfsr") == 0) {
+        if (summary_set_string(summary->cfsr, sizeof(summary->cfsr), &value) != 0) return -1;
+      } else if (strcmp(key.text, "cfsr_decoded") == 0) {
+        if (summary_set_string(summary->cfsr_decoded,
+                               sizeof(summary->cfsr_decoded), &value) != 0) return -1;
+      } else if (summary_scan_value(reader, value.type, summary) != 0) {
+        return -1;
+      }
+    }
+  }
+  if (first == JSON_TOKEN_ARRAY_BEGIN) {
+    for (;;) {
+      JsonTokenType type = json_reader_next(reader, &token);
+      if (type == JSON_TOKEN_ARRAY_END) return 0;
+      if (type == JSON_TOKEN_COMMA) continue;
+      if (type == JSON_TOKEN_ERROR || type == JSON_TOKEN_EOF ||
+          summary_scan_value(reader, type, summary) != 0) return -1;
+    }
+  }
+  return first == JSON_TOKEN_ERROR || first == JSON_TOKEN_EOF ? -1 : 0;
 }
 
 int load_bundle_summary(const char *path, BundleSummary *summary)
 {
-  char buf[REPLAY_TEXT_MAX];
+  FILE *file;
+  JsonReader reader;
+  JsonToken token;
+  int result;
 
   memset(summary, 0, sizeof(*summary));
   copy_string(summary->path, sizeof(summary->path), path);
-  if (read_file_text(path, buf, sizeof(buf)) != 0) {
-    return -1;
-  }
-
-  summary->halt_signal = json_int_value(buf, "halt_signal");
-  summary->timeout = json_int_value(buf, "timeout");
-  json_string_value(buf, "pc", summary->pc, sizeof(summary->pc));
-  json_string_value(buf, "lr", summary->lr, sizeof(summary->lr));
-  json_string_value(buf, "sp", summary->sp, sizeof(summary->sp));
-  json_string_value(buf, "cfsr", summary->cfsr, sizeof(summary->cfsr));
-  json_string_value(buf, "cfsr_decoded", summary->cfsr_decoded,
-                    sizeof(summary->cfsr_decoded));
-  return 0;
+  file = fopen(path, "rb");
+  if (!file) return -1;
+  json_reader_init(&reader, file);
+  result = summary_scan_value(&reader, json_reader_next(&reader, &token), summary);
+  if (result == 0 && json_reader_next(&reader, &token) != JSON_TOKEN_EOF) result = -1;
+  if (fclose(file) != 0) result = -1;
+  return result;
 }
 
 int cmd_replay(const ReplayOptions *opts)
@@ -421,10 +482,10 @@ int cmd_replay(const ReplayOptions *opts)
       const TimelineEvent *ev = &timeline.events[selected_index];
       if (opts->json) {
         if (opts->context_radius >= 0) {
-          print_timeline_context_json(opts->bundle, &timeline, selected_index,
-                                      opts->context_radius);
+          if (print_timeline_context_json(opts->bundle, &timeline, selected_index,
+                                          opts->context_radius) != 0) return 1;
         } else {
-          print_timeline_event_json(opts->bundle, ev);
+          if (print_timeline_event_json(opts->bundle, ev) != 0) return 1;
         }
       } else {
         print_timeline_event_text(opts->bundle, ev);
@@ -444,10 +505,10 @@ int cmd_replay(const ReplayOptions *opts)
       const TimelineEvent *ev = &timeline.events[selected_index];
       if (opts->json) {
         if (opts->context_radius >= 0) {
-          print_timeline_context_json(opts->bundle, &timeline, selected_index,
-                                      opts->context_radius);
+          if (print_timeline_context_json(opts->bundle, &timeline, selected_index,
+                                          opts->context_radius) != 0) return 1;
         } else {
-          print_timeline_event_json(opts->bundle, ev);
+          if (print_timeline_event_json(opts->bundle, ev) != 0) return 1;
         }
       } else {
         print_timeline_event_text(opts->bundle, ev);
@@ -459,7 +520,7 @@ int cmd_replay(const ReplayOptions *opts)
       return 0;
     }
     if (opts->json) {
-      print_timeline_json(opts->bundle, &timeline);
+      if (print_timeline_json(opts->bundle, &timeline) != 0) return 1;
     } else {
       print_timeline_text(opts->bundle, &timeline);
     }
@@ -472,10 +533,7 @@ int cmd_replay(const ReplayOptions *opts)
   }
 
   if (opts->json) {
-    printf("{\"bundle\":\"%s\",\"halt_signal\":%d,\"timeout\":%d,"
-           "\"pc\":\"%s\",\"lr\":\"%s\",\"sp\":\"%s\",\"cfsr\":\"%s\"}\n",
-           s.path, s.halt_signal, s.timeout, s.pc, s.lr, s.sp, s.cfsr);
-    return 0;
+    return print_bundle_json(&s) == 0 ? 0 : 1;
   }
 
   printf("bundle: %s\n", s.path);
@@ -507,16 +565,7 @@ int cmd_diff(const DiffOptions *opts)
   }
 
   if (opts->json) {
-    printf("{\"left\":\"%s\",\"right\":\"%s\",", a.path, b.path);
-    printf("\"halt_signal_changed\":%s,",
-           a.halt_signal != b.halt_signal ? "true" : "false");
-    printf("\"timeout_changed\":%s,",
-           a.timeout != b.timeout ? "true" : "false");
-    printf("\"pc_changed\":%s,",
-           strcmp(a.pc, b.pc) != 0 ? "true" : "false");
-    printf("\"cfsr_changed\":%s}\n",
-           strcmp(a.cfsr, b.cfsr) != 0 ? "true" : "false");
-    return 0;
+    return print_diff_json(&a, &b) == 0 ? 0 : 1;
   }
 
   printf("left:  %s\n", a.path);

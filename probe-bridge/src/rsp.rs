@@ -7,27 +7,43 @@
 //!   s             — single step
 //!   c             — continue
 //!   Z1/z1         — hardware breakpoint set/clear
-//!   Z2-Z4/z2-z4   — DWT watchpoint set/clear
+//!   Z2-Z4/z2-z4   — unsupported until DWT comparators are implemented
 //!
 //! All other commands get an empty reply (""), which is the RSP "not
 //! supported" response per the GDB remote serial protocol spec.
 
 /// Parse the first complete RSP packet from `buf`.
 ///
-/// Returns `(packet_data, bytes_consumed)`.  `bytes_consumed` includes the
-/// `$`, the data, `#`, and the two checksum hex digits.  Leading `+`/`-`
-/// acknowledgement bytes are skipped before scanning for `$`.
-pub fn parse_rsp_packet(buf: &[u8]) -> Option<(String, usize)> {
-    let start = buf.iter().position(|&b| b == b'$')?;
-    let hash = buf[start + 1..]
-        .iter()
-        .position(|&b| b == b'#')
-        .map(|p| start + 1 + p)?;
+/// Leading `+`/`-` acknowledgement bytes are skipped before scanning for `$`.
+#[derive(Debug, PartialEq, Eq)]
+pub enum PacketParse {
+    Incomplete,
+    Invalid { consumed: usize },
+    Complete { data: String, consumed: usize },
+}
+
+pub fn parse_rsp_packet(buf: &[u8]) -> PacketParse {
+    let start = match buf.iter().position(|&b| b == b'$') {
+        Some(start) => start,
+        None => return PacketParse::Incomplete,
+    };
+    let hash = match buf[start + 1..].iter().position(|&b| b == b'#') {
+        Some(offset) => start + 1 + offset,
+        None => return PacketParse::Incomplete,
+    };
     if buf.len() < hash + 3 {
-        return None; // checksum bytes not yet received
+        return PacketParse::Incomplete;
     }
-    let data = std::str::from_utf8(&buf[start + 1..hash]).ok()?.to_string();
-    Some((data, hash + 3))
+    let consumed = hash + 3;
+    let packet = &buf[start + 1..hash];
+    if !verify_checksum(packet, &buf[hash + 1..hash + 3]) {
+        return PacketParse::Invalid { consumed };
+    }
+    let data = match std::str::from_utf8(packet) {
+        Ok(data) => data.to_string(),
+        Err(_) => return PacketParse::Invalid { consumed },
+    };
+    PacketParse::Complete { data, consumed }
 }
 
 /// Build `$<data>#<checksum>` from a plain string.
@@ -37,7 +53,6 @@ pub fn format_rsp_packet(data: &str) -> Vec<u8> {
 }
 
 /// Verify the two-character hex checksum `chk_hex` against `data`.
-#[allow(dead_code)]
 pub fn verify_checksum(data: &[u8], chk_hex: &[u8]) -> bool {
     if chk_hex.len() < 2 {
         return false;
@@ -63,6 +78,24 @@ pub fn parse_addr_len(args: &str) -> Option<(u64, usize)> {
     Some((addr, len))
 }
 
+/// Parse a `Z/z type,addr,kind` request supported by probe-rs 0.24.
+///
+/// `Ok(Some(addr))` is a hardware instruction breakpoint. `Ok(None)` is an
+/// unsupported breakpoint type and must receive an empty RSP reply.
+pub fn parse_hw_breakpoint_addr(args: &str) -> Result<Option<u64>, ()> {
+    let mut parts = args.splitn(3, ',');
+    let breakpoint_type = parts.next().and_then(|s| s.parse::<u8>().ok()).ok_or(())?;
+    if breakpoint_type != 1 {
+        return Ok(None);
+    }
+
+    let addr = parts
+        .next()
+        .and_then(|s| u64::from_str_radix(s, 16).ok())
+        .ok_or(())?;
+    Ok(Some(addr))
+}
+
 /// Decode the hex-encoded byte string after `M addr,len:` into bytes.
 pub fn decode_hex_bytes(hex: &str) -> Option<Vec<u8>> {
     if hex.len() % 2 != 0 {
@@ -86,7 +119,9 @@ mod tests {
     fn parse_basic_packet() {
         // $g#67
         let buf = b"$g#67";
-        let (data, consumed) = parse_rsp_packet(buf).unwrap();
+        let PacketParse::Complete { data, consumed } = parse_rsp_packet(buf) else {
+            panic!("expected complete packet");
+        };
         assert_eq!(data, "g");
         assert_eq!(consumed, 5);
     }
@@ -94,25 +129,40 @@ mod tests {
     #[test]
     fn parse_skips_leading_ack() {
         let buf = b"+$g#67";
-        let (data, consumed) = parse_rsp_packet(buf).unwrap();
+        let PacketParse::Complete { data, consumed } = parse_rsp_packet(buf) else {
+            panic!("expected complete packet");
+        };
         assert_eq!(data, "g");
         assert_eq!(consumed, 6);
     }
 
     #[test]
     fn parse_incomplete_returns_none() {
-        assert!(parse_rsp_packet(b"$g#6").is_none()); // missing second checksum nibble
-        assert!(parse_rsp_packet(b"$g").is_none()); // no hash yet
-        assert!(parse_rsp_packet(b"").is_none());
+        assert_eq!(parse_rsp_packet(b"$g#6"), PacketParse::Incomplete);
+        assert_eq!(parse_rsp_packet(b"$g"), PacketParse::Incomplete);
+        assert_eq!(parse_rsp_packet(b""), PacketParse::Incomplete);
+    }
+
+    #[test]
+    fn parse_rejects_bad_checksum() {
+        assert_eq!(
+            parse_rsp_packet(b"$g#00"),
+            PacketParse::Invalid { consumed: 5 }
+        );
+        assert_eq!(
+            parse_rsp_packet(b"$g#zz"),
+            PacketParse::Invalid { consumed: 5 }
+        );
     }
 
     #[test]
     fn parse_memory_read_packet() {
-        // $m20000000,4#XX — checksum doesn't matter for parse_rsp_packet
         let data = "m20000000,4";
         let ck: u8 = data.bytes().fold(0, |a, b: u8| a.wrapping_add(b));
         let pkt = format!("${}#{:02x}", data, ck);
-        let (out, _) = parse_rsp_packet(pkt.as_bytes()).unwrap();
+        let PacketParse::Complete { data: out, .. } = parse_rsp_packet(pkt.as_bytes()) else {
+            panic!("expected complete packet");
+        };
         assert_eq!(out, data);
     }
 
@@ -120,7 +170,9 @@ mod tests {
     fn format_roundtrip() {
         let reply = "deadbeef";
         let pkt = format_rsp_packet(reply);
-        let (parsed, _) = parse_rsp_packet(&pkt).unwrap();
+        let PacketParse::Complete { data: parsed, .. } = parse_rsp_packet(&pkt) else {
+            panic!("expected complete packet");
+        };
         assert_eq!(parsed, reply);
     }
 
@@ -156,6 +208,27 @@ mod tests {
         let (addr, len) = parse_addr_len("20000000,4:deadbeef").unwrap();
         assert_eq!(addr, 0x20000000);
         assert_eq!(len, 4);
+    }
+
+    #[test]
+    fn parse_hw_breakpoint_accepts_instruction_breakpoint() {
+        assert_eq!(
+            parse_hw_breakpoint_addr("1,08000100,2"),
+            Ok(Some(0x08000100))
+        );
+    }
+
+    #[test]
+    fn parse_hw_breakpoint_rejects_data_watchpoints_as_unsupported() {
+        for breakpoint_type in 2..=4 {
+            let args = format!("{breakpoint_type},20000000,4");
+            assert_eq!(parse_hw_breakpoint_addr(&args), Ok(None));
+        }
+    }
+
+    #[test]
+    fn parse_hw_breakpoint_rejects_malformed_instruction_breakpoint() {
+        assert_eq!(parse_hw_breakpoint_addr("1,not-hex,4"), Err(()));
     }
 
     #[test]

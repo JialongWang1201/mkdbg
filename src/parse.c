@@ -1,16 +1,33 @@
 #include "mkdbg.h"
 
-static int parse_non_negative_int_arg(const char *s, const char *name)
+static int parse_int_arg(const char *s, const char *name,
+                         long min_value, long max_value)
 {
-  char *end = NULL;
   long v;
 
-  errno = 0;
-  v = strtol(s, &end, 10);
-  if (errno != 0 || end == s || *end != '\0' || v < 0 || v > INT_MAX) {
-    die("%s requires a non-negative integer", name);
+  if (parse_long_range(s, 10, min_value, max_value, &v) != 0) {
+    die("invalid or out-of-range value for %s: %s", name,
+        s != NULL ? s : "");
   }
   return (int)v;
+}
+
+static const char *parse_baud_arg(const char *s)
+{
+  (void)parse_int_arg(s, "--baud", 1L, INT_MAX);
+  return s;
+}
+
+static double parse_finite_double_arg(const char *s, const char *name,
+                                      double max_value)
+{
+  double value;
+
+  if (parse_double_range(s, 0.0, max_value, &value) != 0) {
+    die("invalid or out-of-range value for %s: %s", name,
+        s != NULL ? s : "");
+  }
+  return value;
 }
 
 static void parse_optional_probe_arg(int argc, char **argv, int *i,
@@ -20,7 +37,7 @@ static void parse_optional_probe_arg(int argc, char **argv, int *i,
   *probe_idx = -1;
   if (*i + 1 < argc && isdigit((unsigned char)argv[*i + 1][0])) {
     ++(*i);
-    *probe_idx = parse_non_negative_int_arg(argv[*i], "--probe");
+    *probe_idx = parse_int_arg(argv[*i], "--probe", 0L, INT_MAX);
   }
 }
 
@@ -80,7 +97,7 @@ int parse_doctor_args(int argc, char **argv, DoctorOptions *opts)
       if (i + 1 >= argc) {
         die("missing value for --baud");
       }
-      opts->baud = argv[++i];
+      opts->baud = parse_baud_arg(argv[++i]);
     } else if (strcmp(argv[i], "--live") == 0) {
       opts->live = 1;
     } else if (argv[i][0] == '-') {
@@ -299,7 +316,7 @@ int parse_attach_args(int argc, char **argv, AttachOptions *opts)
       if (i + 1 >= argc) {
         die("missing value for --baud");
       }
-      opts->baud = argv[++i];
+      opts->baud = parse_baud_arg(argv[++i]);
     } else if (strcmp(argv[i], "--break") == 0) {
       if (i + 1 >= argc) {
         die("missing value for --break");
@@ -328,14 +345,11 @@ int parse_attach_args(int argc, char **argv, AttachOptions *opts)
     } else if (strcmp(argv[i], "--dry-run") == 0) {
       opts->dry_run = 1;
     } else if (strcmp(argv[i], "--server-wait-s") == 0) {
-      char *end = NULL;
       if (i + 1 >= argc) {
         die("missing value for --server-wait-s");
       }
-      opts->server_wait_s = strtod(argv[++i], &end);
-      if (end == NULL || *end != '\0' || opts->server_wait_s < 0.0) {
-        die("invalid value for --server-wait-s: %s", argv[i]);
-      }
+      opts->server_wait_s = parse_finite_double_arg(
+          argv[++i], "--server-wait-s", (double)INT_MAX);
     } else if (argv[i][0] == '-') {
       die("unknown attach argument: %s", argv[i]);
     } else if (opts->repo == NULL) {
@@ -367,7 +381,7 @@ int parse_probe_args(int argc, char **argv, ProbeOptions *opts)
       if (i + 1 >= argc) {
         die("missing value for --baud");
       }
-      opts->baud = argv[++i];
+      opts->baud = parse_baud_arg(argv[++i]);
     } else if (strcmp(argv[i], "--dry-run") == 0) {
       opts->dry_run = 1;
     } else if (argv[i][0] == '-') {
@@ -491,12 +505,13 @@ int parse_serial_args(int argc, char **argv, SerialOptions *opts)
       if (i + 1 >= argc) {
         die("missing value for --baud");
       }
-      opts->baud = atoi(argv[++i]);
+      opts->baud = parse_int_arg(argv[++i], "--baud", 1L, INT_MAX);
     } else if (strcmp(argv[i], "--char-delay-ms") == 0) {
       if (i + 1 >= argc) {
         die("missing value for --char-delay-ms");
       }
-      opts->char_delay_ms = atof(argv[++i]);
+      opts->char_delay_ms = parse_finite_double_arg(
+          argv[++i], "--char-delay-ms", (double)UINT_MAX / 1000.0);
     } else if (strcmp(argv[i], "--dry-run") == 0) {
       opts->dry_run = 1;
     } else if (argv[i][0] == '-') {
@@ -527,7 +542,7 @@ int parse_dashboard_args(int argc, char **argv, DashboardOptions *opts)
       opts->port = argv[++i];
     } else if (strcmp(argv[i], "--baud") == 0) {
       if (i + 1 >= argc) die("missing value for --baud");
-      opts->baud = atoi(argv[++i]);
+      opts->baud = parse_int_arg(argv[++i], "--baud", 1L, INT_MAX);
     } else if (strcmp(argv[i], "--dry-run") == 0) {
       opts->dry_run = 1;
     } else if (argv[i][0] == '-') {
@@ -553,7 +568,7 @@ int parse_debug_args(int argc, char **argv, DebugOptions *opts)
       opts->port = argv[++i];
     } else if (strcmp(argv[i], "--baud") == 0) {
       if (i + 1 >= argc) die("missing value for --baud");
-      opts->baud = atoi(argv[++i]);
+      opts->baud = parse_int_arg(argv[++i], "--baud", 1L, INT_MAX);
     } else if (strcmp(argv[i], "--elf") == 0) {
       if (i + 1 >= argc) die("missing value for --elf");
       opts->elf_path = argv[++i];
@@ -575,7 +590,8 @@ int parse_debug_args(int argc, char **argv, DebugOptions *opts)
       opts->dry_run = 1;
     } else if (strcmp(argv[i], "--freertos-tcb-offset") == 0) {
       if (i + 1 >= argc) die("missing value for --freertos-tcb-offset");
-      opts->freertos_name_offset = atoi(argv[++i]);
+      opts->freertos_name_offset = parse_int_arg(
+          argv[++i], "--freertos-tcb-offset", -1L, INT_MAX);
     } else if (argv[i][0] == '-') {
       die("unknown debug argument: %s", argv[i]);
     } else {
@@ -603,31 +619,17 @@ int parse_replay_args(int argc, char **argv, ReplayOptions *opts)
     } else if (strcmp(argv[i], "--fault") == 0) {
       opts->fault = 1;
     } else if (strcmp(argv[i], "--context") == 0) {
-      char *end = NULL;
-      long v;
       if (i + 1 >= argc) {
         die("missing value for --context");
       }
-      errno = 0;
-      v = strtol(argv[++i], &end, 10);
-      if (errno != 0 || end == argv[i] || *end != '\0' ||
-          v < 0L || v > 64L) {
-        die("invalid --context value: %s", argv[i]);
-      }
-      opts->context_radius = (int)v;
+      opts->context_radius = parse_int_arg(
+          argv[++i], "--context", 0L, 64L);
     } else if (strcmp(argv[i], "--event") == 0) {
-      char *end = NULL;
-      long v;
       if (i + 1 >= argc) {
         die("missing value for --event");
       }
-      errno = 0;
-      v = strtol(argv[++i], &end, 10);
-      if (errno != 0 || end == argv[i] || *end != '\0' ||
-          v < 0L || v > INT_MAX) {
-        die("invalid --event value: %s", argv[i]);
-      }
-      opts->event_id = (int)v;
+      opts->event_id = parse_int_arg(
+          argv[++i], "--event", 0L, INT_MAX);
     } else if (argv[i][0] == '-') {
       die("unknown replay argument: %s", argv[i]);
     } else if (opts->bundle == NULL) {

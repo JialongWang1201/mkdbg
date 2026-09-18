@@ -73,6 +73,67 @@ int run_process(char *const argv[], const char *cwd, int dry_run)
   return 1;
 }
 
+int capture_process_output(char *const argv[], const char *cwd,
+                           char *out, size_t out_size)
+{
+  int pipefd[2];
+  pid_t pid;
+  size_t used = 0;
+
+  if (!argv || !argv[0] || !cwd || !out || out_size == 0U) {
+    errno = EINVAL;
+    return -1;
+  }
+  out[0] = '\0';
+  if (pipe(pipefd) != 0) {
+    return -1;
+  }
+
+  pid = fork();
+  if (pid < 0) {
+    close(pipefd[0]);
+    close(pipefd[1]);
+    return -1;
+  }
+  if (pid == 0) {
+    int null_fd;
+    close(pipefd[0]);
+    if (chdir(cwd) != 0 || dup2(pipefd[1], STDOUT_FILENO) < 0) {
+      _exit(127);
+    }
+    close(pipefd[1]);
+    null_fd = open("/dev/null", O_WRONLY);
+    if (null_fd >= 0) {
+      (void)dup2(null_fd, STDERR_FILENO);
+      close(null_fd);
+    }
+    execvp(argv[0], argv);
+    _exit(127);
+  }
+
+  close(pipefd[1]);
+  for (;;) {
+    char buf[256];
+    ssize_t n = read(pipefd[0], buf, sizeof(buf));
+    if (n > 0) {
+      size_t available = out_size - 1U - used;
+      size_t copy_n = (size_t)n < available ? (size_t)n : available;
+      if (copy_n > 0U) {
+        memcpy(out + used, buf, copy_n);
+        used += copy_n;
+      }
+      continue;
+    }
+    if (n < 0 && errno == EINTR) {
+      continue;
+    }
+    break;
+  }
+  close(pipefd[0]);
+  out[used] = '\0';
+  return wait_for_pid(pid);
+}
+
 void print_command_label(const char *label, char *const argv[])
 {
   size_t i;

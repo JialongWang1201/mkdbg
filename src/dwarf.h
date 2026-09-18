@@ -8,6 +8,7 @@
 #ifndef DWARF_H
 #define DWARF_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 /* Source location returned by dwarf_pc_to_location(). */
@@ -23,6 +24,10 @@ typedef struct DwarfDBI DwarfDBI;
 /* Open an ELF file and parse its .debug_line section.
  * Returns NULL on error (bad ELF, missing section, OOM). */
 DwarfDBI *dwarf_open(const char *elf_path);
+
+/* Parse an ELF image from memory. The input is copied and may be released
+ * after this function returns. Intended for fuzzing and in-memory tooling. */
+DwarfDBI *dwarf_open_memory(const uint8_t *data, size_t size);
 
 /* Free all resources.  After this call, any DwarfLocation.file pointers
  * previously returned are no longer valid. */
