@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+EXPECTED_VERSION="$(tr -d '[:space:]' < "${ROOT_DIR}/VERSION")"
 TMP_DIR="$(mktemp -d)"
 INSTALL_DIR="${TMP_DIR}/install"
 INSTALL_OUT="${TMP_DIR}/install.out"
@@ -71,7 +72,8 @@ test -x "${AUTO_INSTALL_DIR}/mkdbg"
 
 python3 - "${INSTALL_OUT}" "${VERSION_OUT}" "${INSTALL_DIR}/mkdbg" \
   "${BINARY_INSTALL_OUT}" "${BINARY_VERSION_OUT}" "${BINARY_INSTALL_DIR}/mkdbg" \
-  "${AUTO_INSTALL_OUT}" "${AUTO_VERSION_OUT}" "${AUTO_INSTALL_DIR}/mkdbg" <<'PY'
+  "${AUTO_INSTALL_OUT}" "${AUTO_VERSION_OUT}" "${AUTO_INSTALL_DIR}/mkdbg" \
+  "${EXPECTED_VERSION}" <<'PY'
 import sys
 from pathlib import Path
 
@@ -84,18 +86,19 @@ binary_target = Path(sys.argv[6])
 auto_install_text = Path(sys.argv[7]).read_text(encoding="utf-8")
 auto_version_text = Path(sys.argv[8]).read_text(encoding="utf-8")
 auto_target = Path(sys.argv[9])
+expected_version_line = f"mkdbg-native {sys.argv[10]}"
 
 if f"installed mkdbg (native-source) -> {target}" not in install_text:
     raise SystemExit(f"missing native-source install banner: {install_text!r}")
-if "mkdbg-native 0.1.0" not in version_text:
+if version_text.strip() != expected_version_line:
     raise SystemExit(f"missing native version output: {version_text!r}")
 if f"installed mkdbg (native-binary) -> {binary_target}" not in binary_install_text:
     raise SystemExit(f"missing native-binary install banner: {binary_install_text!r}")
-if "mkdbg-native 0.1.0" not in binary_version_text:
+if binary_version_text.strip() != expected_version_line:
     raise SystemExit(f"missing native binary version output: {binary_version_text!r}")
 if f"installed mkdbg (native-binary) -> {auto_target}" not in auto_install_text:
     raise SystemExit(f"missing auto native-binary install banner: {auto_install_text!r}")
-if "mkdbg-native 0.1.0" not in auto_version_text:
+if auto_version_text.strip() != expected_version_line:
     raise SystemExit(f"missing auto native binary version output: {auto_version_text!r}")
 PY
 

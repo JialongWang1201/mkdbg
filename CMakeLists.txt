@@ -4,6 +4,14 @@ project(mkdbg C)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" MKDBG_VERSION LIMIT_COUNT 1)
+if(NOT MKDBG_VERSION MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+$")
+  message(FATAL_ERROR "VERSION must contain a semantic version")
+endif()
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+  "${CMAKE_CURRENT_SOURCE_DIR}/VERSION"
+)
+
 # Keep release artifacts small without changing debug-build visibility.
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
   add_compile_options(
@@ -98,6 +106,9 @@ set_source_files_properties(src/termbox2_impl.c PROPERTIES
   COMPILE_OPTIONS "-Wno-unused-result"
 )
 target_compile_options(mkdbg-native PRIVATE -Wall -Wextra -Werror -O2)
+target_compile_definitions(mkdbg-native PRIVATE
+  MKDBG_NATIVE_VERSION="${MKDBG_VERSION}"
+)
 target_include_directories(mkdbg-native PRIVATE
   ${CMAKE_CURRENT_LIST_DIR}/src
   ${CMAKE_CURRENT_LIST_DIR}/arch
@@ -242,6 +253,10 @@ set_target_properties(wire-host PROPERTIES
 
 # ── ctest: seam-analyze smoke ─────────────────────────────────────────────────
 enable_testing()
+add_test(NAME cli_version COMMAND mkdbg-native --version)
+set_tests_properties(cli_version PROPERTIES
+  PASS_REGULAR_EXPRESSION "mkdbg-native ${MKDBG_VERSION}"
+)
 add_test(
   NAME seam_analyze_kdi_cascade
   COMMAND $<TARGET_FILE:seam-analyze>

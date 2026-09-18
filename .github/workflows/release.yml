@@ -26,11 +26,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: ubuntu-latest
+          - runner: ubuntu-22.04
             os: linux
             arch: x86_64
 
-          - runner: ubuntu-latest
+          - runner: ubuntu-22.04
             os: linux
             arch: arm64
             cross: true
@@ -52,6 +52,21 @@ jobs:
         with:
           submodules: recursive
           ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Verify release version
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_version="$(tr -d '[:space:]' < VERSION)"
+          source_ref="${{ github.event.workflow_run.head_branch }}"
+          if [[ ! "${source_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "error: invalid VERSION: ${source_version}" >&2
+            exit 1
+          fi
+          if [[ "${source_ref}" == v* && "${source_ref}" != "v${source_version}" ]]; then
+            echo "error: tag ${source_ref} does not match VERSION ${source_version}" >&2
+            exit 1
+          fi
 
       - name: Install cross-compiler (linux-arm64)
         if: matrix.cross == true
@@ -103,7 +118,15 @@ jobs:
 
       - name: Stage and strip artifact
         shell: bash
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
         run: |
+          set -euo pipefail
           artifact="mkdbg-native-${{ matrix.os }}-${{ matrix.arch }}"
           cp build/mkdbg-native "${artifact}"
           if [[ "${{ matrix.os }}" == "darwin" ]]; then
@@ -113,12 +136,55 @@ jobs:
           else
             strip --strip-all "${artifact}"
           fi
+
+          source_ref="${{ github.event.workflow_run.head_branch }}"
+          if [[ "${{ matrix.os }}" == "darwin" && "${source_ref}" == v* ]]; then
+            for name in MACOS_CERTIFICATE_P12 MACOS_CERTIFICATE_PASSWORD \
+                        MACOS_SIGNING_IDENTITY APPLE_ID APPLE_TEAM_ID \
+                        APPLE_APP_PASSWORD; do
+              if [[ -z "${!name:-}" ]]; then
+                echo "error: ${name} is required for a versioned macOS release" >&2
+                exit 1
+              fi
+            done
+
+            certificate_path="${RUNNER_TEMP}/mkdbg-signing.p12"
+            keychain_path="${RUNNER_TEMP}/mkdbg-signing.keychain-db"
+            keychain_password="$(openssl rand -hex 24)"
+            cleanup_signing() {
+              security delete-keychain "${keychain_path}" >/dev/null 2>&1 || true
+              rm -f "${certificate_path}"
+            }
+            trap cleanup_signing EXIT
+
+            printf '%s' "${MACOS_CERTIFICATE_P12}" | /usr/bin/base64 -D > "${certificate_path}"
+            security create-keychain -p "${keychain_password}" "${keychain_path}"
+            security set-keychain-settings -lut 21600 "${keychain_path}"
+            security unlock-keychain -p "${keychain_password}" "${keychain_path}"
+            security import "${certificate_path}" -k "${keychain_path}" \
+              -P "${MACOS_CERTIFICATE_PASSWORD}" -T /usr/bin/codesign
+            security set-key-partition-list -S apple-tool:,apple:,codesign: \
+              -s -k "${keychain_password}" "${keychain_path}"
+
+            codesign --force --options runtime --timestamp \
+              --keychain "${keychain_path}" \
+              --sign "${MACOS_SIGNING_IDENTITY}" "${artifact}"
+            codesign --verify --strict --verbose=2 "${artifact}"
+            ditto -c -k --keepParent "${artifact}" "${artifact}.zip"
+            xcrun notarytool submit "${artifact}.zip" \
+              --apple-id "${APPLE_ID}" \
+              --team-id "${APPLE_TEAM_ID}" \
+              --password "${APPLE_APP_PASSWORD}" \
+              --wait
+            spctl --assess --type execute --verbose=2 "${artifact}"
+          fi
           wc -c "${artifact}"
 
       - uses: actions/upload-artifact@v4
         with:
           name: mkdbg-native-${{ matrix.os }}-${{ matrix.arch }}
-          path: mkdbg-native-${{ matrix.os }}-${{ matrix.arch }}
+          path: mkdbg-native-${{ matrix.os }}-${{ matrix.arch }}*
+          if-no-files-found: error
 
   # ── Publish release ─────────────────────────────────────────────────────────
   release:
@@ -146,6 +212,11 @@ jobs:
             exit 1
           fi
 
+      - name: Generate checksums
+        run: |
+          cd dist
+          sha256sum mkdbg-native-* > SHA256SUMS
+
       - name: Delete existing 'latest' release before overwriting
         if: steps.tag.outputs.name == 'latest'
         env:
@@ -160,12 +231,20 @@ jobs:
           SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
           SOURCE_REF: ${{ github.event.workflow_run.head_branch }}
         run: |
-          PRERELEASE_FLAG=""
-          if [[ "${{ steps.tag.outputs.prerelease }}" == "true" ]]; then
-            PRERELEASE_FLAG="--prerelease"
+          set -euo pipefail
+          tag="${{ steps.tag.outputs.name }}"
+          if gh release view "${tag}" >/dev/null 2>&1; then
+            gh release upload "${tag}" dist/* --clobber
+            exit 0
           fi
-          gh release create "${{ steps.tag.outputs.name }}" \
-            --title "mkdbg ${{ steps.tag.outputs.name }}" \
-            ${PRERELEASE_FLAG} \
-            --notes "Built from \`${SOURCE_SHA:0:7}\` on \`${SOURCE_REF}\`" \
-            dist/mkdbg-native-*
+
+          release_args=(
+            "${tag}"
+            --target "${SOURCE_SHA}"
+            --title "mkdbg ${tag}"
+            --notes "Built from \`${SOURCE_SHA:0:7}\` on \`${SOURCE_REF}\`"
+          )
+          if [[ "${{ steps.tag.outputs.prerelease }}" == "true" ]]; then
+            release_args+=(--prerelease)
+          fi
+          gh release create "${release_args[@]}" dist/*

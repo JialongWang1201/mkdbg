@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+EXPECTED_VERSION="$(tr -d '[:space:]' < "${ROOT_DIR}/VERSION")"
 TMP_DIR="$(mktemp -d)"
 BIN_DIR="${TMP_DIR}/bin"
 BUILD_OUT="${TMP_DIR}/build.out"
@@ -70,12 +71,13 @@ mkdir -p alt build tools
 : > tools/openocd.cfg
 
 PATH="${BIN_DIR}:${PATH}" "${NATIVE_BIN}" --version > "${VERSION_OUT}"
-python3 - "${VERSION_OUT}" <<'PY'
+python3 - "${VERSION_OUT}" "${EXPECTED_VERSION}" <<'PY'
 import sys
 from pathlib import Path
 
 text = Path(sys.argv[1]).read_text(encoding="utf-8")
-if "mkdbg-native 0.1.0" not in text:
+expected_version_line = f"mkdbg-native {sys.argv[2]}"
+if text.strip() != expected_version_line:
     raise SystemExit(f"missing native version output: {text!r}")
 PY
 
