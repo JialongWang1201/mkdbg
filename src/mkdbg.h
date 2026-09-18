@@ -35,7 +35,9 @@
 #define PATH_MAX 4096
 #endif
 
-#define MKDBG_NATIVE_VERSION "0.1.0"
+#ifndef MKDBG_NATIVE_VERSION
+#define MKDBG_NATIVE_VERSION "dev"
+#endif
 #define CONFIG_NAME ".mkdbg.toml"
 #define STATE_DIR_NAME ".mkdbg"
 #define INCIDENTS_DIR_NAME "incidents"

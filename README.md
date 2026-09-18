@@ -31,14 +31,18 @@ Backtrace:
 curl -fsSL https://raw.githubusercontent.com/JialongWang1201/mkdbg/main/scripts/install.sh | bash
 ```
 
-Or download a pre-built binary directly from the [latest release](https://github.com/JialongWang1201/mkdbg/releases/latest):
+Or download a pre-built binary directly from the [latest release](https://github.com/JialongWang1201/mkdbg/releases/latest). Linux binaries require glibc 2.34 or newer (Ubuntu 22.04, Debian 12, or equivalent):
 
 | Platform | Binary |
 |----------|--------|
 | Linux x86\_64 | `mkdbg-native-linux-x86_64` |
 | Linux arm64 | `mkdbg-native-linux-arm64` |
-| macOS Apple Silicon | `mkdbg-native-darwin-arm64` |
-| macOS Intel | `mkdbg-native-darwin-x86_64` |
+| macOS Apple Silicon | `mkdbg-native-darwin-arm64.zip` (versioned releases) |
+| macOS Intel | `mkdbg-native-darwin-x86_64.zip` (versioned releases) |
+
+Verify downloads with `SHA256SUMS`. Linux users downloading an individual binary
+must also run `chmod +x mkdbg-native-linux-*`. Versioned macOS archives are signed
+and notarized; the `curl` installer continues to select the raw binary automatically.
 
 ---
 
