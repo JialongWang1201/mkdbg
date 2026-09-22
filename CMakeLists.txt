@@ -265,6 +265,15 @@ add_test(
 set_tests_properties(seam_analyze_kdi_cascade PROPERTIES
   PASS_REGULAR_EXPRESSION "VERDICT:"
 )
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+  add_test(NAME seam_frame_bounds
+    COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/seam_frame_bounds_test.py
+            $<TARGET_FILE:seam-analyze>
+            ${CMAKE_CURRENT_SOURCE_DIR}/deps/seam/test/fixtures/normal_kdi_cascade.cfl
+  )
+endif()
 
 # ── ctest: arch plugin registry ───────────────────────────────────────────────
 add_executable(arch_test
