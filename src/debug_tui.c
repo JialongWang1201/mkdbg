@@ -977,7 +977,8 @@ static int tui_bp_del(DebugSession *s, int id)
 {
     for (int i = 0; i < s_nbp; i++) {
         if (s_bp[i].id == id) {
-            debug_session_clear_hw_breakpoint(s, s_bp[i].addr);
+            if (debug_session_clear_hw_breakpoint(s, s_bp[i].addr) != WIRE_OK)
+                return -1;
             s_bp[i] = s_bp[--s_nbp];
             return 0;
         }
@@ -1118,11 +1119,15 @@ int debug_tui_run(DebugSession *s, DwarfDBI *dbi)
 
         } else if (ev.ch == 'd') {
             char inp[16] = "";
+            int rc = 0;
             if (tui_prompt(y_hint, w, "delete bp id> ", inp, sizeof(inp)) == 0
                     && inp[0]) {
-                tui_bp_del(s, atoi(inp));
+                rc = tui_bp_del(s, atoi(inp));
             }
             redraw(s, dbi);
+            if (rc != 0)
+                draw_status(tb_height() - 1, tb_width(),
+                            "Could not clear breakpoint; list unchanged");
 
         } else if (ev.ch == 'm') {
             if (s_ndisplay < MAX_DISPLAY) {
