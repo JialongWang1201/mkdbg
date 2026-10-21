@@ -174,6 +174,7 @@ if(CARGO AND NOT MKDBG_SKIP_PROBE)
             "${PROBE_BRIDGE_DIR}/Cargo.lock"
             "${PROBE_BRIDGE_DIR}/src/lib.rs"
             "${PROBE_BRIDGE_DIR}/src/rsp.rs"
+            "${PROBE_BRIDGE_DIR}/src/run_control.rs"
     COMMENT "Building probe-bridge (Rust)"
     VERBATIM
   )
@@ -267,6 +268,12 @@ set_tests_properties(seam_analyze_kdi_cascade PROPERTIES
 )
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
+  add_test(NAME debug_run_control
+    COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/debug_run_control_test.py
+            $<TARGET_FILE:mkdbg-native>
+  )
+  set_tests_properties(debug_run_control PROPERTIES TIMEOUT 30)
   add_test(NAME seam_frame_bounds
     COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/seam_frame_bounds_test.py

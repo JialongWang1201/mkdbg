@@ -49,13 +49,19 @@ void debug_session_close(DebugSession *s);
  * Returns WIRE_OK on halt, WIRE_ERR_TIMEOUT if no halt within 60 s. */
 int debug_session_continue(DebugSession *s);
 
+/* As above, polling a UI callback that requests a Ctrl-C break-in.
+ * The callback must not access the session or transport. */
+int debug_session_continue_interruptible(DebugSession *s,
+                                         int (*interrupt_requested)(void *),
+                                         void *ctx);
+
 /* Send 'c' and return immediately (do not wait for a stop reply).
  * Used on quit to leave the MCU running. */
 int debug_session_detach(DebugSession *s);
 
-/* Send a Ctrl-C (0x03) break-in byte to the MCU and wait for the halt
- * stop reply.  The firmware must be polling wire_poll_break_in() from its
- * main loop for this to work.  Returns WIRE_OK on halt,
+/* Send a Ctrl-C (0x03) break-in byte and wait for the halt stop reply.
+ * The probe backend halts the core directly. UART firmware must poll
+ * wire_poll_break_in() from its main loop. Returns WIRE_OK on halt,
  * WIRE_ERR_TIMEOUT if the MCU does not halt within 60 s. */
 int debug_session_interrupt(DebugSession *s);
 

@@ -3,7 +3,7 @@
  * Commands:
  *   break 0x<addr>      set FPBv1 hardware breakpoint
  *   clear <id>          clear breakpoint by number
- *   continue  (c)       resume MCU; block until next halt
+ *   continue  (c)       resume MCU; wait for halt (Ctrl-C interrupts)
  *   step      (s)       execute one instruction; block until DebugMonitor
  *   regs                print all 17 Cortex-M registers
  *   mem 0x<addr> [len]  hexdump target memory (default 16 bytes, max 256)
@@ -31,6 +31,32 @@
 /* ── Session-scoped DWARF handle (NULL if no --elf provided) ─────────────── */
 
 static DwarfDBI *s_dbi = NULL;
+
+static volatile sig_atomic_t s_interrupt_requested;
+
+static void request_interrupt(int signo)
+{
+    (void)signo;
+    s_interrupt_requested = 1;
+}
+
+static int cli_interrupt_requested(void *ctx)
+{
+    (void)ctx;
+    return s_interrupt_requested != 0;
+}
+
+static int cli_continue(DebugSession *s)
+{
+    struct sigaction action = {0}, previous;
+    action.sa_handler = request_interrupt;
+    sigemptyset(&action.sa_mask);
+    s_interrupt_requested = 0;
+    if (sigaction(SIGINT, &action, &previous) != 0) return WIRE_ERR_IO;
+    int rc = debug_session_continue_interruptible(s, cli_interrupt_requested, NULL);
+    if (sigaction(SIGINT, &previous, NULL) != 0) return WIRE_ERR_IO;
+    return rc;
+}
 
 /* pcTaskName byte offset in TCB (default 52 per FreeRTOS 10.x standard config) */
 static int s_freertos_offset = 52;
@@ -359,7 +385,7 @@ static void print_help(void)
         "  delete watch <id>        clear DWT watchpoint by number\n"
         "  display 0x<addr>         add memory address to display list\n"
         "  undisplay <id>           remove from display list\n"
-        "  continue  (c)            resume execution; wait for next halt\n"
+        "  continue  (c)            resume execution; Ctrl-C interrupts the wait\n"
         "  interrupt (int)          send Ctrl-C break-in; halt running MCU\n"
         "  step      (s)            single-step one instruction\n"
         "  regs                     print all CPU registers\n"
@@ -513,16 +539,15 @@ int cmd_debug(const DebugOptions *opts)
         } else if (strcmp(cmd, "clear") == 0) {
             do_clear(s, args);
         } else if (strcmp(cmd, "continue") == 0 || strcmp(cmd, "c") == 0) {
-            printf("Continuing...\n");
-            int rc = debug_session_continue(s);
+            printf("Continuing... (Ctrl-C to interrupt)\n");
+            int rc = cli_continue(s);
             if (rc == WIRE_OK) print_halt(s);
             else printf("error: continue failed (rc=%d)\n", rc);
         } else if (strcmp(cmd, "interrupt") == 0 || strcmp(cmd, "int") == 0) {
             printf("Sending break-in...\n");
             int rc = debug_session_interrupt(s);
             if (rc == WIRE_OK) print_halt(s);
-            else printf("error: interrupt timed out (MCU did not halt; "
-                        "check wire_poll_break_in() is called in firmware)\n");
+            else printf("error: interrupt failed (rc=%d; target halt not confirmed)\n", rc);
         } else if (strcmp(cmd, "step") == 0 || strcmp(cmd, "s") == 0) {
             int rc = debug_session_step(s);
             if (rc == WIRE_OK) print_halt(s);
