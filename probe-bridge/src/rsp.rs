@@ -14,16 +14,31 @@
 
 /// Parse the first complete RSP packet from `buf`.
 ///
-/// Leading `+`/`-` acknowledgement bytes are skipped before scanning for `$`.
+/// ACK and raw Ctrl-C events are returned in stream order with packets.
 #[derive(Debug, PartialEq, Eq)]
 pub enum PacketParse {
     Incomplete,
+    Ack { consumed: usize },
+    Interrupt { consumed: usize },
     Invalid { consumed: usize },
     Complete { data: String, consumed: usize },
 }
 
 pub fn parse_rsp_packet(buf: &[u8]) -> PacketParse {
-    let start = match buf.iter().position(|&b| b == b'$') {
+    let start = match buf
+        .iter()
+        .position(|&b| b == b'$' || b == 0x03 || b == b'+')
+    {
+        Some(start) if buf[start] == b'+' => {
+            return PacketParse::Ack {
+                consumed: start + 1,
+            };
+        }
+        Some(start) if buf[start] == 0x03 => {
+            return PacketParse::Interrupt {
+                consumed: start + 1,
+            };
+        }
         Some(start) => start,
         None => return PacketParse::Incomplete,
     };
@@ -116,6 +131,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn parse_raw_interrupt_in_stream_order() {
+        assert_eq!(
+            parse_rsp_packet(b"-\x03"),
+            PacketParse::Interrupt { consumed: 2 }
+        );
+        assert_eq!(
+            parse_rsp_packet(b"\x03$g#67"),
+            PacketParse::Interrupt { consumed: 1 }
+        );
+        assert_eq!(
+            parse_rsp_packet(b"$g#67\x03"),
+            PacketParse::Complete {
+                data: "g".to_string(),
+                consumed: 5,
+            }
+        );
+        // Ctrl-C inside a packet is payload, not an out-of-band interrupt.
+        assert_eq!(
+            parse_rsp_packet(b"$\x03#03"),
+            PacketParse::Complete {
+                data: "\x03".to_string(),
+                consumed: 5,
+            }
+        );
+    }
+
+    #[test]
     fn parse_basic_packet() {
         // $g#67
         let buf = b"$g#67";
@@ -127,13 +169,16 @@ mod tests {
     }
 
     #[test]
-    fn parse_skips_leading_ack() {
+    fn parse_returns_leading_ack_before_packet() {
         let buf = b"+$g#67";
-        let PacketParse::Complete { data, consumed } = parse_rsp_packet(buf) else {
-            panic!("expected complete packet");
-        };
-        assert_eq!(data, "g");
-        assert_eq!(consumed, 6);
+        assert_eq!(parse_rsp_packet(buf), PacketParse::Ack { consumed: 1 });
+        assert_eq!(
+            parse_rsp_packet(&buf[1..]),
+            PacketParse::Complete {
+                data: "g".to_string(),
+                consumed: 5,
+            }
+        );
     }
 
     #[test]

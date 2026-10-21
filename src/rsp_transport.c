@@ -7,16 +7,35 @@
  * SPDX-License-Identifier: MIT
  */
 
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include "rsp_transport.h"
 
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #define RSP_BUF_MAX        4096
 #define RSP_MAX_RETRIES       3
 #define RSP_TIMEOUT_MS     2000
-#define RSP_WAIT_STOP_RETRIES 30   /* 30 × 2 s = 60 s */
+#define RSP_STOP_TIMEOUT_MS 60000
+
+typedef struct {
+    int (*interrupt_requested)(void *);
+    void *ctx;
+    int interrupt_sent;
+    int64_t deadline_ms;
+} StopWait;
+
+static int64_t monotonic_ms(void)
+{
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) return -1;
+    return (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
+}
 
 /* ── helpers ─────────────────────────────────────────────────────────────── */
 
@@ -57,6 +76,29 @@ static int write_byte_t(WireTransport *t, uint8_t b)
     return (r == 1) ? WIRE_OK : WIRE_ERR_IO;
 }
 
+/* Keep the packet parser's state across idle periods, including partial
+ * packets. Only this thread reads or writes the transport. */
+static int read_wait_byte(WireTransport *t, uint8_t *out, StopWait *wait)
+{
+    if (!wait) return read_byte_t(t, out, RSP_TIMEOUT_MS);
+    int poll_ms = wait->interrupt_requested ? 100 : RSP_TIMEOUT_MS;
+    for (;;) {
+        int64_t now = monotonic_ms();
+        if (now < 0) return WIRE_ERR_IO;
+        if (!wait->interrupt_sent && wait->interrupt_requested &&
+            wait->interrupt_requested(wait->ctx)) {
+            if (write_byte_t(t, 0x03) != WIRE_OK) return WIRE_ERR_IO;
+            wait->interrupt_sent = 1;
+            wait->deadline_ms = now + RSP_STOP_TIMEOUT_MS;
+        }
+        int64_t remaining = wait->deadline_ms - now;
+        if (remaining <= 0) return WIRE_ERR_TIMEOUT;
+        int timeout_ms = remaining < poll_ms ? (int)remaining : poll_ms;
+        int rc = read_byte_t(t, out, timeout_ms);
+        if (rc != WIRE_ERR_TIMEOUT) return rc;
+    }
+}
+
 /* ── send ────────────────────────────────────────────────────────────────── */
 
 int rsp_send_packet_t(WireTransport *t, const char *data)
@@ -73,13 +115,14 @@ int rsp_send_packet_t(WireTransport *t, const char *data)
 
 /* ── receive ─────────────────────────────────────────────────────────────── */
 
-static int rsp_recv_packet_t(WireTransport *t, char *out_buf, size_t out_size)
+static int rsp_recv_packet_t(WireTransport *t, char *out_buf, size_t out_size,
+                             StopWait *wait)
 {
     uint8_t c;
 
     /* drain until '$' */
     for (;;) {
-        int r = read_byte_t(t, &c, RSP_TIMEOUT_MS);
+        int r = read_wait_byte(t, &c, wait);
         if (r == WIRE_ERR_IO)      return WIRE_ERR_IO;
         if (r == WIRE_ERR_TIMEOUT) return WIRE_ERR_TIMEOUT;
         if (c == '$') break;
@@ -89,7 +132,7 @@ static int rsp_recv_packet_t(WireTransport *t, char *out_buf, size_t out_size)
     size_t  dlen        = 0;
     uint8_t running_sum = 0;
     for (;;) {
-        int r = read_byte_t(t, &c, RSP_TIMEOUT_MS);
+        int r = read_wait_byte(t, &c, wait);
         if (r == WIRE_ERR_IO)      return WIRE_ERR_IO;
         if (r == WIRE_ERR_TIMEOUT) return WIRE_ERR_TIMEOUT;
         if (c == '#') break;
@@ -104,8 +147,10 @@ static int rsp_recv_packet_t(WireTransport *t, char *out_buf, size_t out_size)
 
     /* read 2-hex checksum */
     uint8_t hi, lo;
-    if (read_byte_t(t, &hi, RSP_TIMEOUT_MS) != 1) return WIRE_ERR_IO;
-    if (read_byte_t(t, &lo, RSP_TIMEOUT_MS) != 1) return WIRE_ERR_IO;
+    int rc = read_wait_byte(t, &hi, wait);
+    if (rc != 1) return rc;
+    rc = read_wait_byte(t, &lo, wait);
+    if (rc != 1) return rc;
 
     int h = hex_nibble((char)hi);
     int l = hex_nibble((char)lo);
@@ -120,27 +165,40 @@ static int rsp_recv_packet_t(WireTransport *t, char *out_buf, size_t out_size)
         return WIRE_ERR_CHECKSUM;
     }
 
-    write_byte_t(t, '+');
-    return WIRE_OK;
+    return write_byte_t(t, '+');
 }
 
 /* ── public API ──────────────────────────────────────────────────────────── */
 
-int rsp_wait_for_stop_t(WireTransport *t, char *out_buf, size_t out_size)
+static int wait_for_stop(WireTransport *t, char *out_buf, size_t out_size,
+                         int (*interrupt_requested)(void *), void *ctx)
 {
-    for (int i = 0; i < RSP_WAIT_STOP_RETRIES; i++) {
-        int rc = rsp_recv_packet_t(t, out_buf, out_size);
-        if (rc == WIRE_ERR_TIMEOUT) continue;
+    int64_t now = monotonic_ms();
+    if (now < 0) return WIRE_ERR_IO;
+    StopWait wait = {
+        .interrupt_requested = interrupt_requested,
+        .ctx = ctx,
+        .deadline_ms = now + RSP_STOP_TIMEOUT_MS,
+    };
+    for (;;) {
+        int rc = rsp_recv_packet_t(t, out_buf, out_size, &wait);
         if (rc != WIRE_OK)          return rc;
-        if (out_buf[0] == 'S' || out_buf[0] == 'T')
-            return WIRE_OK;
+        if (out_buf[0] == 'E' || out_buf[0] == '\0') return WIRE_ERR_IO;
+        if (out_buf[0] == 'S' || out_buf[0] == 'T') {
+            if (strlen(out_buf) < 3 || hex_nibble(out_buf[1]) < 0 ||
+                hex_nibble(out_buf[2]) < 0) return WIRE_ERR_PARSE;
+            if (out_buf[1] != '0' || out_buf[2] != '0') return WIRE_OK;
+        }
         /* stale ACK or unexpected packet — keep waiting */
     }
-    return WIRE_ERR_TIMEOUT;
 }
 
-int rsp_transaction_t(WireTransport *t, const char *cmd,
-                      char *resp_buf, size_t resp_size)
+int rsp_wait_for_stop_t(WireTransport *t, char *out_buf, size_t out_size)
+{
+    return wait_for_stop(t, out_buf, out_size, NULL, NULL);
+}
+
+static int send_command(WireTransport *t, const char *cmd)
 {
     for (int cmd_try = 0; cmd_try < RSP_MAX_RETRIES; cmd_try++) {
         int rc = rsp_send_packet_t(t, cmd);
@@ -157,16 +215,30 @@ int rsp_transaction_t(WireTransport *t, const char *cmd,
             continue;
         }
         if (ack != '+') continue;  /* unexpected byte, retransmit */
+        return WIRE_OK;
+    }
+    return WIRE_ERR_CHECKSUM;
+}
 
-        /* Server ACK'd; receive response with checksum retry */
-        for (int resp_try = 0; resp_try < RSP_MAX_RETRIES; resp_try++) {
-            rc = rsp_recv_packet_t(t, resp_buf, resp_size);
-            if (rc == WIRE_OK) return WIRE_OK;
-            if (rc != WIRE_ERR_CHECKSUM) return rc;
-            fprintf(stderr, "mkdbg: RSP response checksum error, retry %d/%d\n",
-                    resp_try + 1, RSP_MAX_RETRIES);
-        }
-        return WIRE_ERR_CHECKSUM;
+int rsp_continue_t(WireTransport *t, char *out_buf, size_t out_size,
+                   int (*interrupt_requested)(void *), void *ctx)
+{
+    int rc = send_command(t, "c");
+    if (rc != WIRE_OK) return rc;
+    return wait_for_stop(t, out_buf, out_size, interrupt_requested, ctx);
+}
+
+int rsp_transaction_t(WireTransport *t, const char *cmd,
+                      char *resp_buf, size_t resp_size)
+{
+    int rc = send_command(t, cmd);
+    if (rc != WIRE_OK) return rc;
+    for (int resp_try = 0; resp_try < RSP_MAX_RETRIES; resp_try++) {
+        rc = rsp_recv_packet_t(t, resp_buf, resp_size, NULL);
+        if (rc == WIRE_OK) return WIRE_OK;
+        if (rc != WIRE_ERR_CHECKSUM) return rc;
+        fprintf(stderr, "mkdbg: RSP response checksum error, retry %d/%d\n",
+                resp_try + 1, RSP_MAX_RETRIES);
     }
     return WIRE_ERR_CHECKSUM;
 }

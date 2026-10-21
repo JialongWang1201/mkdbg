@@ -16,6 +16,9 @@
 //! fully decoupled from Rust async machinery.
 
 mod rsp;
+mod run_control;
+
+use run_control::{RunControl, RunState};
 
 use std::ffi::CStr;
 use std::os::raw::c_char;
@@ -84,6 +87,24 @@ const CORTEX_M_FPU_REG_COUNT: usize = 33;
 /// GDB numbers it as register slot 16 immediately after r0–r15.
 const XPSR_REG_SLOT: u16 = 16;
 
+impl RunControl for probe_rs::Core<'_> {
+    fn resume(&mut self) -> Result<(), ()> {
+        self.run()
+            .map_err(|err| eprintln!("mkdbg: probe resume failed: {err}"))
+    }
+
+    fn halt(&mut self) -> Result<(), ()> {
+        self.halt(Duration::from_secs(1))
+            .map(|_| ())
+            .map_err(|err| eprintln!("mkdbg: probe halt failed: {err}"))
+    }
+
+    fn is_halted(&mut self) -> Result<bool, ()> {
+        self.core_halted()
+            .map_err(|err| eprintln!("mkdbg: probe halt status failed: {err}"))
+    }
+}
+
 fn rsp_thread(
     probe_idx: usize,
     chip: Option<String>,
@@ -140,20 +161,19 @@ fn rsp_thread(
             CORTEX_M_REG_COUNT as u32
         },
     };
+    if let Err(err) = core.halt(Duration::from_secs(1)) {
+        let _ = startup_tx.send(Err(format!("initial halt failed: {err}")));
+        return;
+    }
     if startup_tx.send(Ok(capabilities)).is_err() {
         return;
     }
 
-    // Halt the core so it is in a known state when the RSP loop starts.
-    let _ = core.halt(Duration::from_secs(1));
-
     let mut inbuf: Vec<u8> = Vec::new();
+    let mut run_state = RunState::default();
 
     loop {
-        if shutdown_rx.try_recv().is_ok() {
-            break;
-        }
-
+        let shutdown = shutdown_rx.try_recv().is_ok();
         while let Ok(chunk) = write_rx.try_recv() {
             inbuf.extend_from_slice(&chunk);
         }
@@ -167,8 +187,24 @@ fn rsp_thread(
                     inbuf.drain(..consumed);
                     // Send '+' ACK immediately, then the formatted reply.
                     let _ = read_tx.send(b"+".to_vec());
-                    let reply_data = handle_command(&mut core, &packet);
+                    let reply_data = if packet == "c" {
+                        run_state.resume(&mut core).to_string()
+                    } else {
+                        handle_command(&mut core, &packet)
+                    };
+                    run_state.reply_sent(&reply_data);
                     let _ = read_tx.send(rsp::format_rsp_packet(&reply_data));
+                }
+                rsp::PacketParse::Ack { consumed } => {
+                    inbuf.drain(..consumed);
+                    run_state.acknowledge_reply();
+                }
+                rsp::PacketParse::Interrupt { consumed } => {
+                    inbuf.drain(..consumed);
+                    if let Some(reply) = run_state.interrupt(&mut core) {
+                        run_state.reply_sent(reply);
+                        let _ = read_tx.send(rsp::format_rsp_packet(reply));
+                    }
                 }
                 rsp::PacketParse::Invalid { consumed } => {
                     inbuf.drain(..consumed);
@@ -178,7 +214,15 @@ fn rsp_thread(
             }
         }
 
-        thread::sleep(Duration::from_millis(1));
+        // Drain queued commands before shutdown so quit's resume is not lost.
+        if shutdown {
+            break;
+        }
+        if let Some(reply) = run_state.poll(&mut core) {
+            run_state.reply_sent(reply);
+            let _ = read_tx.send(rsp::format_rsp_packet(reply));
+        }
+        thread::sleep(Duration::from_millis(10));
     }
 }
 
@@ -189,7 +233,6 @@ fn handle_command(core: &mut probe_rs::Core<'_>, cmd: &str) -> String {
         Some('m') => cmd_read_memory(core, &cmd[1..]),
         Some('M') => cmd_write_memory(core, &cmd[1..]),
         Some('s') => cmd_step(core),
-        Some('c') => cmd_continue(core),
         Some('Z') => cmd_breakpoint(core, &cmd[1..], true),
         Some('z') => cmd_breakpoint(core, &cmd[1..], false),
         _ => String::new(), // RSP "not supported" — empty reply
@@ -317,17 +360,6 @@ fn cmd_step(core: &mut probe_rs::Core<'_>) -> String {
     match core.step() {
         Ok(_) => "S05".to_string(),
         Err(_) => "E01".to_string(),
-    }
-}
-
-/// `c` — continue execution; blocks until halted; returns `S05` or `S02`.
-fn cmd_continue(core: &mut probe_rs::Core<'_>) -> String {
-    if core.run().is_err() {
-        return "E01".to_string();
-    }
-    match core.wait_for_core_halted(Duration::from_secs(10)) {
-        Ok(_) => "S05".to_string(),
-        Err(_) => "S02".to_string(), // SIGINT — timeout / externally interrupted
     }
 }
 

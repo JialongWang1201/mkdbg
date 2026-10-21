@@ -1011,6 +1011,14 @@ static void tui_update_task(DebugSession *s, DwarfDBI *dbi)
 
 /* ── Entry point ─────────────────────────────────────────────────────────── */
 
+static int tui_interrupt_requested(void *ctx)
+{
+    (void)ctx;
+    struct tb_event ev = {0};
+    if (tb_peek_event(&ev, 0) != TB_OK) return 0;
+    return ev.type == TB_EVENT_KEY && (ev.ch == 'i' || ev.key == TB_KEY_CTRL_C);
+}
+
 int debug_tui_run(DebugSession *s, DwarfDBI *dbi)
 {
     if (tb_init() != TB_OK) {
@@ -1070,13 +1078,16 @@ int debug_tui_run(DebugSession *s, DwarfDBI *dbi)
             redraw(s, dbi);
 
         } else if (ev.ch == 'c') {
-            draw_status(y_hint, w, "Running...  (waiting for breakpoint)");
+            draw_status(y_hint, w, "Running...  (i / Ctrl-C to interrupt)");
             s_asm_scroll = 0;
-            int rc = debug_session_continue(s);
+            int rc = debug_session_continue_interruptible(s, tui_interrupt_requested, NULL);
 	            if (rc == WIRE_OK && tui_read_regs(s) == 0) {
 	                tui_update_task(s, dbi);
 	            }
             redraw(s, dbi);
+            if (rc != WIRE_OK)
+                draw_status(tb_height() - 1, tb_width(),
+                            "Continue failed: target halt not confirmed");
 
         } else if (ev.ch == 'i') {
             draw_status(y_hint, w, "Sending break-in...  (waiting for halt)");
@@ -1084,11 +1095,11 @@ int debug_tui_run(DebugSession *s, DwarfDBI *dbi)
             int rc = debug_session_interrupt(s);
 	            if (rc == WIRE_OK && tui_read_regs(s) == 0) {
 	                tui_update_task(s, dbi);
-	            } else if (rc != WIRE_OK) {
-                draw_status(y_hint, w,
-                    "Break-in timed out (check wire_poll_break_in in firmware)");
             }
             redraw(s, dbi);
+            if (rc != WIRE_OK)
+                draw_status(tb_height() - 1, tb_width(),
+                            "Interrupt failed: target halt not confirmed");
 
         } else if (ev.ch == 'b') {
             char inp[64] = "";

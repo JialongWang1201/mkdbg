@@ -99,18 +99,17 @@ void debug_session_close(DebugSession *s)
 
 int debug_session_continue(DebugSession *s)
 {
-    char resp[16];
+    return debug_session_continue_interruptible(s, NULL, NULL);
+}
 
-    /* 'c' gets S00 immediately (MCU resuming); then wait for halt stop reply. */
-    int rc = rsp_transaction_t(s->transport, "c", resp, sizeof(resp));
-    if (rc != WIRE_OK) return rc;
-    if ((resp[0] == 'S' || resp[0] == 'T') && strcmp(resp, "S00") != 0) {
-        s->last_signal = parse_stop_signal(resp);
-        return WIRE_OK;
-    }
-
+int debug_session_continue_interruptible(DebugSession *s,
+                                         int (*interrupt_requested)(void *),
+                                         void *ctx)
+{
+    if (!s) return WIRE_ERR_IO;
     char stop[16];
-    rc = rsp_wait_for_stop_t(s->transport, stop, sizeof(stop));
+    int rc = rsp_continue_t(s->transport, stop, sizeof(stop),
+                            interrupt_requested, ctx);
     if (rc == WIRE_OK)
         s->last_signal = parse_stop_signal(stop);
     return rc;
