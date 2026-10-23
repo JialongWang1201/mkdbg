@@ -33,7 +33,8 @@ DwarfDBI *dwarf_open_memory(const uint8_t *data, size_t size);
  * previously returned are no longer valid. */
 void dwarf_close(DwarfDBI *dbi);
 
-/* Find the source location for a target PC address.
+/* Find the source location for a target PC address within a line sequence.
+ * The end_sequence address and gaps between sequences have no location.
  * Returns  0  on success (out is filled in),
  *          1  if no matching row exists for that address,
  *         -1  on internal error. */

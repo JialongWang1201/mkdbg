@@ -1,4 +1,4 @@
-/* tests/dwarf_test.c — unit tests for dwarf_sym_to_addr() and dwarf_addr_to_sym()
+/* tests/dwarf_test.c — unit tests for DWARF source ranges and ELF symbols
  *
  * Builds a minimal ELF32 LE binary in memory (written to a temp file),
  * calls dwarf_open(), then exercises:
@@ -191,11 +191,164 @@ static void build_test_elf(uint8_t *buf)
 #undef SYM
 }
 
+typedef struct {
+    const char *file;
+    const uint8_t *program;
+    size_t program_size;
+} LineUnit;
+
+/* Append real line programs to the existing ELF fixture, leaving its symbol
+ * sections intact. Each unit has one file and one operation per instruction. */
+static DwarfDBI *open_line_units(uint16_t version, const LineUnit *units, size_t count)
+{
+    uint8_t elf[2048];
+    size_t offset = ELF_SIZE;
+    build_test_elf(elf);
+    for (size_t i = 0; i < count; i++) {
+        size_t file_size = strlen(units[i].file) + 1;
+        size_t header_size = (version == 4 ? 6u : 5u) + 12u + 1u + file_size + 4u;
+        size_t unit_size = 10u + header_size + units[i].program_size;
+        if (unit_size > sizeof(elf) - offset) {
+            fprintf(stderr, "line fixture exceeds ELF buffer\n");
+            exit(2);
+        }
+        uint8_t *cu = elf + offset;
+        pu32(cu, (uint32_t)(unit_size - 4u));
+        pu16(cu + 4, version);
+        pu32(cu + 6, (uint32_t)header_size);
+        uint8_t *p = cu + 10;
+        *p++ = 1;                          /* minimum_instruction_length */
+        if (version == 4) *p++ = 1;         /* maximum_operations_per_instruction */
+        *p++ = 1; *p++ = 0xfb; *p++ = 14; *p++ = 13;
+        static const uint8_t lengths[12] = {0,1,1,1,1,0,0,0,1,0,0,1};
+        memcpy(p, lengths, sizeof(lengths)); p += sizeof(lengths);
+        *p++ = 0;                          /* no include directories */
+        memcpy(p, units[i].file, file_size); p += file_size;
+        memset(p, 0, 4); p += 4;           /* dir, mtime, size, file-table end */
+        memcpy(p, units[i].program, units[i].program_size);
+        offset += unit_size;
+    }
+    uint8_t *debug_header = elf + ELF_SHOFF + 2u * 40u;
+    pu32(debug_header + 16, ELF_SIZE);
+    pu32(debug_header + 20, (uint32_t)(offset - ELF_SIZE));
+    return dwarf_open_memory(elf, offset);
+}
+
+static int location_matches(DwarfDBI *dbi, uint32_t pc, const char *file, int line)
+{
+    DwarfLocation location = {0};
+    return dwarf_pc_to_location(dbi, pc, &location) == 0 &&
+           strcmp(location.file, file) == 0 && location.line == line;
+}
+
+static void test_line_sequence_bounds(void)
+{
+    /* Two sequences: [0x1000,0x1008) with a line change at 0x1004,
+     * and [0x2000,0x2004). */
+    static const uint8_t separated[] = {
+        0,5,2,0,0x10,0,0, 1, 2,4, 3,1, 1, 2,4, 0,1,1,
+        0,5,2,0,0x20,0,0, 1, 2,4, 0,1,1,
+    };
+    for (uint16_t version = 2; version <= 4; version++) {
+        LineUnit unit = {"main.c", separated, sizeof(separated)};
+        DwarfDBI *dbi = open_line_units(version, &unit, 1);
+        CHECK(dbi != NULL, "line sequences parse in DWARF 2/3/4");
+        CHECK(location_matches(dbi, 0x1000, "main.c", 1), "first instruction maps");
+        CHECK(location_matches(dbi, 0x1003, "main.c", 1), "line interval interior maps");
+        CHECK(location_matches(dbi, 0x1004, "main.c", 2), "line change maps");
+        CHECK(location_matches(dbi, 0x1007, "main.c", 2), "last byte before end maps");
+        CHECK(location_matches(dbi, 0x2000, "main.c", 1), "new sequence resets line state");
+        const uint32_t gaps[] = {0xfff, 0x1008, 0x1fff, 0x2004, 0x20000000};
+        for (size_t i = 0; i < sizeof(gaps) / sizeof(gaps[0]); i++) {
+            DwarfLocation location = {"unchanged", -1, -1};
+            CHECK(dwarf_pc_to_location(dbi, gaps[i], &location) == 1 &&
+                  location.line == -1 && strcmp(location.file, "unchanged") == 0,
+                  "sequence ends and gaps return no location without changing output");
+        }
+        dwarf_close(dbi);
+    }
+
+    static const uint8_t wide[] = {0,5,2,0,0x10,0,0, 1, 2,0x80,2, 0,1,1};
+    static const uint8_t narrow[] = {0,5,2,0x40,0x10,0,0, 1, 2,4, 0,1,1};
+    static const uint8_t adjacent[] = {0,5,2,0,0x11,0,0, 1, 2,4, 0,1,1};
+    /* Units need not be in address order. Ending the narrow sequence must
+     * not hide the wide sequence's still-valid instructions. */
+    LineUnit overlap[] = {{"short.c", narrow, sizeof(narrow)},
+                          {"wide.c", wide, sizeof(wide)}};
+    DwarfDBI *dbi = open_line_units(3, overlap, 2);
+    CHECK(dbi != NULL, "overlapping units parse out of address order");
+    CHECK(location_matches(dbi, 0x1040, "short.c", 1), "later starting interval wins overlap");
+    CHECK(location_matches(dbi, 0x1044, "wide.c", 1), "lookup falls back to covering interval");
+    CHECK(location_matches(dbi, 0x10ff, "wide.c", 1), "wide sequence stays valid after short end");
+    DwarfLocation location;
+    CHECK(dwarf_pc_to_location(dbi, 0x1100, &location) == 1, "all overlapping sequences have ended");
+    dwarf_close(dbi);
+
+    LineUnit neighbors[] = {{"next.c", adjacent, sizeof(adjacent)},
+                            {"wide.c", wide, sizeof(wide)}};
+    dbi = open_line_units(4, neighbors, 2);
+    CHECK(location_matches(dbi, 0x10ff, "wide.c", 1), "adjacent sequence retains previous last byte");
+    CHECK(location_matches(dbi, 0x1100, "next.c", 1), "adjacent start maps to new sequence");
+    CHECK(dwarf_pc_to_location(dbi, 0x1104, &location) == 1, "adjacent end remains exclusive");
+    dwarf_close(dbi);
+
+    static const uint8_t duplicate[] = {
+        0,5,2,0,0x10,0,0, 1, 3,1, 1, 2,4, 1, 0,1,1,
+    };
+    static const uint8_t empty[] = {0,1,1};
+    LineUnit duplicates[] = {{"same.c", duplicate, sizeof(duplicate)},
+                             {"empty.c", empty, sizeof(empty)}};
+    dbi = open_line_units(3, duplicates, 2);
+    CHECK(location_matches(dbi, 0x1000, "same.c", 2), "duplicate address selects nonempty row");
+    CHECK(location_matches(dbi, 0x1003, "same.c", 2), "empty unit does not hide a location");
+    CHECK(dwarf_pc_to_location(dbi, 0x1004, &location) == 1, "row at sequence end has no address range");
+    dwarf_close(dbi);
+
+    static const uint8_t top[] = {0,5,2,0xf0,0xff,0xff,0xff, 1, 2,16, 0,1,1};
+    LineUnit top_unit = {"top.c", top, sizeof(top)};
+    dbi = open_line_units(3, &top_unit, 1);
+    CHECK(location_matches(dbi, UINT32_MAX, "top.c", 1), "exclusive end can be one past 32-bit address space");
+    dwarf_close(dbi);
+
+    static const uint8_t top64[] = {
+        0,5,2,0xf0,0xff,0xff,0xff, 1, 0,9,2,0,0,0,0,1,0,0,0, 0,1,1,
+    };
+    LineUnit top64_unit = {"top.c", top64, sizeof(top64)};
+    dbi = open_line_units(3, &top64_unit, 1);
+    CHECK(location_matches(dbi, UINT32_MAX, "top.c", 1), "8-byte end address is not truncated");
+    dwarf_close(dbi);
+
+    static const uint8_t special[] = {0,5,2,0,0x10,0,0, 18,33, 9,3,0, 8, 0,1,1};
+    LineUnit special_unit = {"special.c", special, sizeof(special)};
+    dbi = open_line_units(4, &special_unit, 1);
+    CHECK(location_matches(dbi, 0x1000, "special.c", 1), "special opcode emits first interval");
+    CHECK(location_matches(dbi, 0x1014, "special.c", 2), "special and fixed/constant advances bound interval");
+    CHECK(dwarf_pc_to_location(dbi, 0x1015, &location) == 1, "special opcode sequence end is excluded");
+    dwarf_close(dbi);
+
+    static const uint8_t truncated[] = {0,5,2,0,0x10,0,0, 1};
+    static const uint8_t backwards[] = {
+        0,5,2,4,0x10,0,0, 1, 0,5,2,0,0x10,0,0, 0,1,1,
+    };
+    static const uint8_t overflow[] = {
+        0,5,2,0,0x10,0,0, 1, 2,0xff,0xff,0xff,0xff,0x7f, 0,1,1,
+    };
+    LineUnit invalid[] = {{"bad.c", truncated, sizeof(truncated)},
+                          {"bad.c", backwards, sizeof(backwards)},
+                          {"bad.c", overflow, sizeof(overflow)}};
+    for (size_t i = 0; i < sizeof(invalid) / sizeof(invalid[0]); i++) {
+        dbi = open_line_units(3, &invalid[i], 1);
+        CHECK(dbi == NULL, "unterminated, backwards or overflowing sequence is rejected");
+        dwarf_close(dbi);
+    }
+}
+
 /* ── main ────────────────────────────────────────────────────────────────── */
 
 int main(void)
 {
     printf("dwarf_test\n");
+    test_line_sequence_bounds();
 
     /* Write synthetic ELF to a temp file */
     char tmppath[] = "/tmp/dwarf_test_XXXXXX.elf";
