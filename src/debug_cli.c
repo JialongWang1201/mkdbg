@@ -16,6 +16,7 @@
 
 #include "mkdbg.h"
 #include "debug_session.h"
+#include "debug_parse.h"
 #include "debug_tui.h"
 #include "dwarf.h"
 #include "transport.h"
@@ -61,67 +62,28 @@ static int cli_continue(DebugSession *s)
 /* pcTaskName byte offset in TCB (default 52 per FreeRTOS 10.x standard config) */
 static int s_freertos_offset = 52;
 
-/* ── Breakpoint list ─────────────────────────────────────────────────────── */
-
-#define BP_MAX 8  /* FPBv1 hardware limit */
-
-typedef struct { int id; uint32_t addr; } Breakpoint;
-
-static Breakpoint s_bp[BP_MAX];
-static int        s_bp_count  = 0;
-static int        s_bp_nextid = 1;
-
-/* ── Watchpoint list (DWT) ───────────────────────────────────────────────── */
-
-#define WP_MAX 4  /* DWT comparator hardware limit */
-
-typedef struct { int id; uint32_t addr; WatchpointType type; } Watchpoint;
-
-static Watchpoint s_wp[WP_MAX];
-static int        s_wp_count  = 0;
-static int        s_wp_nextid = 1;
-
-static int wp_add(uint32_t addr, WatchpointType type)
-{
-    if (s_wp_count >= WP_MAX) return -1;
-    s_wp[s_wp_count].id   = s_wp_nextid++;
-    s_wp[s_wp_count].addr = addr;
-    s_wp[s_wp_count].type = type;
-    s_wp_count++;
-    return s_wp[s_wp_count - 1].id;
-}
-
-static int wp_find(int id)
-{
-    for (int i = 0; i < s_wp_count; i++) {
-        if (s_wp[i].id == id) return i;
-    }
-    return -1;
-}
-
 /* ── Memory display list ─────────────────────────────────────────────────── */
 
 #define DISPLAY_MAX 8
-
 static uint32_t s_display[DISPLAY_MAX];
-static int      s_ndisplay = 0;
+static int s_ndisplay = 0;
 
-static int bp_add(uint32_t addr)
+static const DebugBreakpoint *bp_find(DebugSession *s, int id)
 {
-    if (s_bp_count >= BP_MAX) return -1;
-    s_bp[s_bp_count].id   = s_bp_nextid++;
-    s_bp[s_bp_count].addr = addr;
-    s_bp_count++;
-    return s_bp[s_bp_count - 1].id;
+    for (size_t i = 0; i < debug_session_breakpoint_count(s); i++) {
+        const DebugBreakpoint *bp = debug_session_breakpoint_at(s, i);
+        if (bp->id == id) return bp;
+    }
+    return NULL;
 }
 
-/* Find an entry without changing the list; return -1 if not found. */
-static int bp_find(int id)
+static const DebugWatchpoint *wp_find(DebugSession *s, int id)
 {
-    for (int i = 0; i < s_bp_count; i++) {
-        if (s_bp[i].id == id) return i;
+    for (size_t i = 0; i < debug_session_watchpoint_count(s); i++) {
+        const DebugWatchpoint *wp = debug_session_watchpoint_at(s, i);
+        if (wp->id == id) return wp;
     }
-    return -1;
+    return NULL;
 }
 
 /* ── Print helpers ───────────────────────────────────────────────────────── */
@@ -185,13 +147,6 @@ static void print_halt(DebugSession *s)
 
 /* ── Parsing helpers ─────────────────────────────────────────────────────── */
 
-static uint32_t parse_addr(const char *s)
-{
-    if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X'))
-        return (uint32_t)strtoul(s + 2, NULL, 16);
-    return (uint32_t)strtoul(s, NULL, 16);
-}
-
 /* Split leading token from line into cmd_out; return pointer to rest. */
 static const char *split_token(const char *line, char *out, size_t out_sz)
 {
@@ -218,8 +173,10 @@ static void do_break(DebugSession *s, const char *args)
     if (!*args) { printf("usage: break 0x<addr> | break <symbol>\n"); return; }
 
     uint32_t addr;
-    if (args[0] == '0' && (args[1] == 'x' || args[1] == 'X')) {
-        addr = parse_addr(args);
+    if ((args[0] >= '0' && args[0] <= '9') || args[0] == '-' || args[0] == '+') {
+        if (debug_parse_address(args, &addr) != 0) {
+            printf("error: invalid address\n"); return;
+        }
     } else if (s_dbi && dwarf_sym_to_addr(s_dbi, args, &addr) == 0) {
         printf("(symbol '%s' = 0x%08x)\n", args, addr);
     } else if (!s_dbi) {
@@ -227,14 +184,9 @@ static void do_break(DebugSession *s, const char *args)
     } else {
         printf("error: symbol '%s' not found in ELF\n", args); return;
     }
-    if (debug_session_set_hw_breakpoint(s, addr) != WIRE_OK) {
-        printf("error: could not set breakpoint (no free FPB comparator?)\n");
-        return;
-    }
-    int id = bp_add(addr);
+    int id = debug_session_add_breakpoint(s, addr);
     if (id < 0) {
-        debug_session_clear_hw_breakpoint(s, addr);  /* roll back */
-        printf("error: breakpoint list full\n");
+        printf("error: could not set breakpoint (rc=%d)\n", id);
         return;
     }
     printf("Breakpoint %d at 0x%08x\n", id, addr);
@@ -244,19 +196,21 @@ static void do_clear(DebugSession *s, const char *args)
 {
     if (!*args) { printf("usage: clear <id>\n"); return; }
 
-    int id = atoi(args);
-    int idx = bp_find(id);
-    if (idx < 0) {
+    int id;
+    if (debug_parse_id(args, &id) != 0) {
+        printf("error: invalid breakpoint ID\n"); return;
+    }
+    const DebugBreakpoint *bp = bp_find(s, id);
+    if (!bp) {
         printf("error: no breakpoint %d\n", id);
         return;
     }
-    uint32_t addr = s_bp[idx].addr;
-    int rc = debug_session_clear_hw_breakpoint(s, addr);
+    uint32_t addr = bp->addr;
+    int rc = debug_session_remove_breakpoint(s, id);
     if (rc != WIRE_OK) {
         printf("warning: could not clear breakpoint %d (rc=%d); record retained\n", id, rc);
         return;
     }
-    s_bp[idx] = s_bp[--s_bp_count];
     printf("Breakpoint %d (0x%08x) cleared.\n", id, addr);
 }
 
@@ -278,13 +232,21 @@ static void do_mem(DebugSession *s, const char *args)
 {
     if (!*args) { printf("usage: mem 0x<addr> [len]\n"); return; }
 
-    char addr_tok[32];
+    char addr_tok[256];
     const char *rest = split_token(args, addr_tok, sizeof(addr_tok));
-    uint32_t addr = parse_addr(addr_tok);
-    size_t len = *rest ? (size_t)strtoul(rest, NULL, 0) : 16;
-    if (len == 0 || len > 256) len = 16;
-
+    uint32_t addr;
+    if (debug_parse_address(addr_tok, &addr) != 0) {
+        printf("error: invalid address\n"); return;
+    }
     uint8_t buf[256];
+    size_t len = 16;
+    if (*rest) {
+        char len_tok[256];
+        const char *extra = split_token(rest, len_tok, sizeof(len_tok));
+        if (*extra || debug_parse_length(len_tok, sizeof(buf), &len) != 0) {
+            printf("error: invalid memory length (expected 1..256 bytes)\n"); return;
+        }
+    }
     if (debug_session_read_mem(s, addr, len, buf) != WIRE_OK) {
         printf("error: memory read failed (out of allowed RAM range?)\n");
         return;
@@ -296,12 +258,15 @@ static void do_mem(DebugSession *s, const char *args)
     }
 }
 
-static void do_info_breakpoints(void)
+static void do_info_breakpoints(DebugSession *s)
 {
-    if (s_bp_count == 0) { printf("No breakpoints.\n"); return; }
+    size_t count = debug_session_breakpoint_count(s);
+    if (count == 0) { printf("No breakpoints.\n"); return; }
     printf("Num  Address\n");
-    for (int i = 0; i < s_bp_count; i++)
-        printf("%-4d 0x%08x\n", s_bp[i].id, s_bp[i].addr);
+    for (size_t i = 0; i < count; i++) {
+        const DebugBreakpoint *bp = debug_session_breakpoint_at(s, i);
+        printf("%-4d 0x%08x\n", bp->id, bp->addr);
+    }
 }
 
 static void do_watch(DebugSession *s, const char *args, WatchpointType type)
@@ -309,15 +274,13 @@ static void do_watch(DebugSession *s, const char *args, WatchpointType type)
     if (!*args) {
         printf("usage: watch/rwatch/awatch 0x<addr>\n"); return;
     }
-    uint32_t addr = parse_addr(args);
-    if (debug_session_set_watchpoint(s, addr, 1, type) != WIRE_OK) {
-        printf("error: could not set watchpoint (no free DWT comparator?)\n");
-        return;
+    uint32_t addr;
+    if (debug_parse_address(args, &addr) != 0) {
+        printf("error: invalid address\n"); return;
     }
-    int id = wp_add(addr, type);
+    int id = debug_session_add_watchpoint(s, addr, type);
     if (id < 0) {
-        debug_session_clear_watchpoint(s, addr);
-        printf("error: watchpoint list full\n");
+        printf("error: could not set watchpoint (rc=%d)\n", id);
         return;
     }
     const char *tname = (type == WATCHPOINT_WRITE)  ? "write"  :
@@ -328,29 +291,33 @@ static void do_watch(DebugSession *s, const char *args, WatchpointType type)
 static void do_delete_watch(DebugSession *s, const char *args)
 {
     if (!*args) { printf("usage: delete watch <id>\n"); return; }
-    int id = atoi(args);
-    int idx = wp_find(id);
-    if (idx < 0) {
+    int id;
+    if (debug_parse_id(args, &id) != 0) {
+        printf("error: invalid watchpoint ID\n"); return;
+    }
+    const DebugWatchpoint *wp = wp_find(s, id);
+    if (!wp) {
         printf("error: no watchpoint %d\n", id); return;
     }
-    uint32_t addr = s_wp[idx].addr;
-    int rc = debug_session_clear_watchpoint(s, addr);
+    uint32_t addr = wp->addr;
+    int rc = debug_session_remove_watchpoint(s, id);
     if (rc != WIRE_OK) {
         printf("warning: could not clear watchpoint %d (rc=%d); record retained\n", id, rc);
         return;
     }
-    s_wp[idx] = s_wp[--s_wp_count];
     printf("Watchpoint %d (0x%08x) cleared.\n", id, addr);
 }
 
-static void do_info_watchpoints(void)
+static void do_info_watchpoints(DebugSession *s)
 {
-    if (s_wp_count == 0) { printf("No watchpoints.\n"); return; }
+    size_t count = debug_session_watchpoint_count(s);
+    if (count == 0) { printf("No watchpoints.\n"); return; }
     printf("Num  Address     Type\n");
-    for (int i = 0; i < s_wp_count; i++) {
-        const char *t = (s_wp[i].type == WATCHPOINT_WRITE)  ? "write"  :
-                        (s_wp[i].type == WATCHPOINT_READ)   ? "read"   : "access";
-        printf("%-4d 0x%08x  %s\n", s_wp[i].id, s_wp[i].addr, t);
+    for (size_t i = 0; i < count; i++) {
+        const DebugWatchpoint *wp = debug_session_watchpoint_at(s, i);
+        const char *type = wp->type == WATCHPOINT_WRITE ? "write" :
+                           wp->type == WATCHPOINT_READ ? "read" : "access";
+        printf("%-4d 0x%08x  %s\n", wp->id, wp->addr, type);
     }
 }
 
@@ -358,18 +325,25 @@ static void do_display(const char *args)
 {
     if (!*args) { printf("usage: display 0x<addr>\n"); return; }
     if (s_ndisplay >= DISPLAY_MAX) { printf("error: display list full\n"); return; }
-    s_display[s_ndisplay++] = parse_addr(args);
+    uint32_t addr;
+    if (debug_parse_address(args, &addr) != 0) {
+        printf("error: invalid address\n"); return;
+    }
+    s_display[s_ndisplay++] = addr;
     printf("display %d: 0x%08x\n", s_ndisplay, s_display[s_ndisplay - 1]);
 }
 
 static void do_undisplay(const char *args)
 {
     if (!*args) { printf("usage: undisplay <id>\n"); return; }
-    int id = atoi(args) - 1;
-    if (id < 0 || id >= s_ndisplay) { printf("error: no display %d\n", id + 1); return; }
-    for (int i = id; i < s_ndisplay - 1; i++) s_display[i] = s_display[i + 1];
+    int id;
+    if (debug_parse_id(args, &id) != 0) {
+        printf("error: invalid display ID\n"); return;
+    }
+    if (id > s_ndisplay) { printf("error: no display %d\n", id); return; }
+    for (int i = id - 1; i < s_ndisplay - 1; i++) s_display[i] = s_display[i + 1];
     s_ndisplay--;
-    printf("display %d removed\n", id + 1);
+    printf("display %d removed\n", id);
 }
 
 static void print_help(void)
@@ -516,10 +490,6 @@ int cmd_debug(const DebugOptions *opts)
         s_freertos_offset = opts->freertos_name_offset;
 
     /* Reset state for this session */
-    s_bp_count  = 0;
-    s_bp_nextid = 1;
-    s_wp_count  = 0;
-    s_wp_nextid = 1;
     s_ndisplay  = 0;
 
     char line[256];
@@ -528,6 +498,12 @@ int cmd_debug(const DebugOptions *opts)
         fflush(stdout);
 
         if (!fgets(line, sizeof(line), stdin)) { printf("\n"); break; }
+        if (!strchr(line, '\n') && strlen(line) == sizeof(line) - 1) {
+            int ch;
+            while ((ch = getchar()) != '\n' && ch != EOF) {}
+            printf("error: command line too long\n");
+            continue;
+        }
         trim_eol(line);
         if (!line[0]) continue;
 
@@ -574,8 +550,8 @@ int cmd_debug(const DebugOptions *opts)
         } else if (strcmp(cmd, "info") == 0) {
             char sub[32];
             split_token(args, sub, sizeof(sub));
-            if (strcmp(sub, "breakpoints") == 0) do_info_breakpoints();
-            else if (strcmp(sub, "watchpoints") == 0) do_info_watchpoints();
+            if (strcmp(sub, "breakpoints") == 0) do_info_breakpoints(s);
+            else if (strcmp(sub, "watchpoints") == 0) do_info_watchpoints(s);
             else if (strcmp(sub, "display") == 0) {
                 if (s_ndisplay == 0) printf("No display addresses.\n");
                 else for (int i = 0; i < s_ndisplay; i++)

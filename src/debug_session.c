@@ -11,6 +11,7 @@
 #include "wire_host.h"
 
 #include <stdio.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -21,6 +22,12 @@ struct DebugSession {
     WireTransport   *transport;    /* byte-stream backend (UART or probe) */
     int              last_signal;  /* GDB signal from most recent stop reply */
     const MkdbgArch *arch;         /* active architecture (live_debug guaranteed non-NULL) */
+    DebugBreakpoint breakpoints[DEBUG_SESSION_MAX_BREAKPOINTS];
+    DebugWatchpoint watchpoints[DEBUG_SESSION_MAX_WATCHPOINTS];
+    size_t breakpoint_count;
+    size_t watchpoint_count;
+    unsigned int next_breakpoint_id;
+    unsigned int next_watchpoint_id;
 };
 
 /* ── Hex helpers (local) ─────────────────────────────────────────────────── */
@@ -67,7 +74,7 @@ DebugSession *debug_session_open_transport(WireTransport *t,
         transport_destroy(t);
         return NULL;
     }
-    DebugSession *s = malloc(sizeof(DebugSession));
+    DebugSession *s = calloc(1, sizeof(DebugSession));
     if (!s) {
         transport_destroy(t);
         return NULL;
@@ -75,6 +82,8 @@ DebugSession *debug_session_open_transport(WireTransport *t,
     s->transport   = t;
     s->last_signal = 0;
     s->arch        = arch;
+    s->next_breakpoint_id = 1;
+    s->next_watchpoint_id = 1;
     return s;
 }
 
@@ -201,6 +210,87 @@ int debug_session_clear_watchpoint(DebugSession *s, uint32_t addr)
         if (rc == WIRE_OK && strcmp(resp, "OK") == 0) return WIRE_OK;
     }
     return WIRE_ERR_IO;
+}
+
+size_t debug_session_breakpoint_count(const DebugSession *s)
+{
+    return s ? s->breakpoint_count : 0;
+}
+
+const DebugBreakpoint *debug_session_breakpoint_at(const DebugSession *s, size_t index)
+{
+    return s && index < s->breakpoint_count ? &s->breakpoints[index] : NULL;
+}
+
+int debug_session_add_breakpoint(DebugSession *s, uint32_t addr)
+{
+    if (!s) return WIRE_ERR_IO;
+    for (size_t i = 0; i < s->breakpoint_count; i++)
+        if (s->breakpoints[i].addr == addr) return s->breakpoints[i].id;
+    if (s->breakpoint_count == DEBUG_SESSION_MAX_BREAKPOINTS ||
+        s->next_breakpoint_id > INT_MAX) return WIRE_ERR_OVERFLOW;
+    int rc = debug_session_set_hw_breakpoint(s, addr);
+    if (rc != WIRE_OK) return rc;
+    int id = (int)s->next_breakpoint_id++;
+    s->breakpoints[s->breakpoint_count++] = (DebugBreakpoint){id, addr};
+    return id;
+}
+
+int debug_session_remove_breakpoint(DebugSession *s, int id)
+{
+    if (!s) return WIRE_ERR_IO;
+    for (size_t i = 0; i < s->breakpoint_count; i++) {
+        if (s->breakpoints[i].id != id) continue;
+        int rc = debug_session_clear_hw_breakpoint(s, s->breakpoints[i].addr);
+        if (rc != WIRE_OK) return rc;
+        s->breakpoints[i] = s->breakpoints[--s->breakpoint_count];
+        return WIRE_OK;
+    }
+    return WIRE_ERR_PARSE;
+}
+
+size_t debug_session_watchpoint_count(const DebugSession *s)
+{
+    return s ? s->watchpoint_count : 0;
+}
+
+const DebugWatchpoint *debug_session_watchpoint_at(const DebugSession *s, size_t index)
+{
+    return s && index < s->watchpoint_count ? &s->watchpoints[index] : NULL;
+}
+
+int debug_session_add_watchpoint(DebugSession *s, uint32_t addr, WatchpointType type)
+{
+    if (!s) return WIRE_ERR_IO;
+    if (type < WATCHPOINT_WRITE || type > WATCHPOINT_ACCESS) return WIRE_ERR_PARSE;
+    for (size_t i = 0; i < s->watchpoint_count; i++) {
+        const DebugWatchpoint *wp = &s->watchpoints[i];
+        if (wp->addr == addr) return wp->type == type ? wp->id : WIRE_ERR_PARSE;
+    }
+    if (s->watchpoint_count == DEBUG_SESSION_MAX_WATCHPOINTS ||
+        s->next_watchpoint_id > INT_MAX) return WIRE_ERR_OVERFLOW;
+    int rc = debug_session_set_watchpoint(s, addr, 1, type);
+    if (rc != WIRE_OK) return rc;
+    int id = (int)s->next_watchpoint_id++;
+    s->watchpoints[s->watchpoint_count++] = (DebugWatchpoint){id, addr, type};
+    return id;
+}
+
+int debug_session_remove_watchpoint(DebugSession *s, int id)
+{
+    if (!s) return WIRE_ERR_IO;
+    for (size_t i = 0; i < s->watchpoint_count; i++) {
+        const DebugWatchpoint *wp = &s->watchpoints[i];
+        if (wp->id != id) continue;
+        char cmd[32], reply[16];
+        snprintf(cmd, sizeof(cmd), "z%d,%x,1", (int)wp->type, wp->addr);
+        int rc = rsp_transaction_t(s->transport, cmd, reply, sizeof(reply));
+        if (rc != WIRE_OK) return rc;
+        if (strcmp(reply, "OK") != 0) return WIRE_ERR_IO;
+        s->watchpoints[i] = s->watchpoints[--s->watchpoint_count];
+        return WIRE_OK;
+    }
+    return WIRE_ERR_PARSE;
 }
 
 /* ── Register / memory inspection ───────────────────────────────────────── */

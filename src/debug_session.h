@@ -97,6 +97,24 @@ int debug_session_set_watchpoint(DebugSession *s, uint32_t addr,
  * Returns WIRE_OK, or WIRE_ERR_IO if addr was not an active watchpoint. */
 int debug_session_clear_watchpoint(DebugSession *s, uint32_t addr);
 
+/* Session-owned UI records, shared across CLI/TUI transitions. Add returns a
+ * positive ID (existing ID for duplicates), or a negative WIRE_ERR_* code.
+ * Remove keeps the record on target failure; unknown IDs return WIRE_ERR_PARSE.
+ * Record pointers are valid until the next successful add/remove or close.
+ * Managed watchpoints cover one byte; different types at one address conflict. */
+#define DEBUG_SESSION_MAX_BREAKPOINTS 8
+#define DEBUG_SESSION_MAX_WATCHPOINTS 4
+typedef struct { int id; uint32_t addr; } DebugBreakpoint;
+typedef struct { int id; uint32_t addr; WatchpointType type; } DebugWatchpoint;
+int debug_session_add_breakpoint(DebugSession *s, uint32_t addr);
+int debug_session_remove_breakpoint(DebugSession *s, int id);
+size_t debug_session_breakpoint_count(const DebugSession *s);
+const DebugBreakpoint *debug_session_breakpoint_at(const DebugSession *s, size_t index);
+int debug_session_add_watchpoint(DebugSession *s, uint32_t addr, WatchpointType type);
+int debug_session_remove_watchpoint(DebugSession *s, int id);
+size_t debug_session_watchpoint_count(const DebugSession *s);
+const DebugWatchpoint *debug_session_watchpoint_at(const DebugSession *s, size_t index);
+
 /* ── Register / memory inspection ───────────────────────────────────────── */
 
 /* Read all CPU registers into regs[].  The number of registers is arch-dependent;

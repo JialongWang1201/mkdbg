@@ -91,6 +91,7 @@ add_executable(mkdbg-native
   src/capture_transport.c
   src/debug_session.c
   src/debug_cli.c
+  src/debug_parse.c
   src/debug_tui.c
   src/thumb_dis.c
   src/dwarf.c
@@ -280,6 +281,18 @@ if(Python3_Interpreter_FOUND)
             $<TARGET_FILE:mkdbg-native>
   )
   set_tests_properties(debug_breakpoint_state PROPERTIES TIMEOUT 30)
+  add_test(NAME debug_numeric_input
+    COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/debug_numeric_input_test.py
+            $<TARGET_FILE:mkdbg-native>
+  )
+  set_tests_properties(debug_numeric_input PROPERTIES TIMEOUT 30)
+  add_test(NAME debug_tui_snapshot
+    COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/debug_tui_snapshot_test.py
+            $<TARGET_FILE:mkdbg-native>
+  )
+  set_tests_properties(debug_tui_snapshot PROPERTIES TIMEOUT 30)
   add_test(NAME seam_frame_bounds
     COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/seam_frame_bounds_test.py
@@ -432,3 +445,8 @@ target_include_directories(parse_test PRIVATE
   ${CMAKE_CURRENT_LIST_DIR}/src
 )
 add_test(NAME strict_numeric_args COMMAND parse_test)
+
+add_executable(debug_parse_test tests/debug_parse_test.c src/debug_parse.c)
+target_compile_options(debug_parse_test PRIVATE -Wall -Wextra -Werror -O2)
+target_include_directories(debug_parse_test PRIVATE ${CMAKE_CURRENT_LIST_DIR}/src)
+add_test(NAME debug_numeric_args COMMAND debug_parse_test)

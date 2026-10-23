@@ -609,6 +609,15 @@ mod ffi_tests {
     }
 
     #[test]
+    fn malformed_unicode_memory_write_does_not_panic() {
+        assert!(parse_memory_write("20000000,2:0€").is_err());
+        assert_eq!(
+            parse_memory_write("20000000,2:00ff"),
+            Ok((0x20000000, vec![0, 255]))
+        );
+    }
+
+    #[test]
     fn list_rejects_invalid_output() {
         assert_eq!(unsafe { probe_list(std::ptr::null_mut(), 1) }, -1);
         assert_eq!(unsafe { probe_list(std::ptr::null_mut(), -1) }, -1);

@@ -284,6 +284,65 @@ static void test_continue_nak_and_disconnect(void)
     debug_session_close(s);
 }
 
+static void test_managed_breakpoints(void)
+{
+    FakeTransport fake = {0}, other = {0};
+    DebugSession *s = open_fake(&fake, "cortex-m");
+    DebugSession *second = open_fake(&other, "cortex-m");
+    append_packet(&fake, "OK");
+    expect(debug_session_add_breakpoint(s, 0x8001000) == 1, "session assigns first ID");
+    size_t written = fake.output_len;
+    expect(debug_session_add_breakpoint(s, 0x8001000) == 1 && fake.output_len == written,
+           "duplicate breakpoint does not consume a hardware comparator");
+    append_packet(&other, "OK");
+    expect(debug_session_add_breakpoint(second, 0x8002000) == 1,
+           "another session has independent IDs");
+    append_packet(&fake, "E01");
+    expect(debug_session_remove_breakpoint(s, 1) == WIRE_ERR_IO &&
+           debug_session_breakpoint_count(s) == 1, "failed clear keeps session record");
+    append_packet(&fake, "OK");
+    expect(debug_session_remove_breakpoint(s, 1) == WIRE_OK, "same ID can retry clear");
+    expect(debug_session_breakpoint_at(s, 0) == NULL, "removed record is absent");
+    for (int i = 0; i < DEBUG_SESSION_MAX_BREAKPOINTS; i++) {
+        append_packet(&fake, "OK");
+        expect(debug_session_add_breakpoint(s, 0x8002000 + (uint32_t)i * 4) == i + 2,
+               "IDs are not reused after clear");
+    }
+    written = fake.output_len;
+    expect(debug_session_add_breakpoint(s, 0x8003000) == WIRE_ERR_OVERFLOW &&
+           fake.output_len == written, "full registry rejects add before target I/O");
+    expect(debug_session_breakpoint_at(s, DEBUG_SESSION_MAX_BREAKPOINTS) == NULL,
+           "registry view bounds are checked");
+    debug_session_close(s);
+    debug_session_close(second);
+}
+
+static void test_managed_watchpoints(void)
+{
+    FakeTransport fake = {0};
+    DebugSession *s = open_fake(&fake, "cortex-m");
+    append_packet(&fake, "OK");
+    expect(debug_session_add_watchpoint(s, 0x20000000, WATCHPOINT_READ) == 1,
+           "session records watchpoint type");
+    size_t written = fake.output_len;
+    expect(debug_session_add_watchpoint(s, 0x20000000, WATCHPOINT_READ) == 1 &&
+           debug_session_add_watchpoint(s, 0x20000000, WATCHPOINT_WRITE) == WIRE_ERR_PARSE &&
+           fake.output_len == written, "duplicate/conflicting watchpoints do not touch target");
+    append_packet(&fake, "E01");
+    expect(debug_session_remove_watchpoint(s, 1) == WIRE_ERR_IO &&
+           debug_session_watchpoint_at(s, 0)->type == WATCHPOINT_READ,
+           "failed watchpoint clear keeps its type and ID");
+    expect(memcmp(fake.output + written, "$z3,20000000,1", 13) == 0,
+           "watchpoint clear uses its actual type");
+    append_packet(&fake, "OK");
+    expect(debug_session_remove_watchpoint(s, 1) == WIRE_OK &&
+           debug_session_watchpoint_count(s) == 0, "watchpoint retry removes record on OK");
+    written = fake.output_len;
+    expect(debug_session_remove_watchpoint(s, 1) == WIRE_ERR_PARSE && fake.output_len == written,
+           "unknown watchpoint does not send a packet");
+    debug_session_close(s);
+}
+
 int main(void)
 {
     test_declared_register_mismatch();
@@ -296,6 +355,8 @@ int main(void)
     test_continue_interrupt_and_following_transaction();
     test_continue_failures();
     test_continue_nak_and_disconnect();
+    test_managed_breakpoints();
+    test_managed_watchpoints();
     puts("debug_session_test: OK");
     return 0;
 }
