@@ -23,6 +23,7 @@
 #include "termbox2.h"
 
 #include "debug_tui.h"
+#include "debug_parse.h"
 #include "mkdbg.h"
 #include "thumb_dis.h"
 #include "wire_host.h"
@@ -39,7 +40,6 @@
 #define BACKTRACE_ROWS    4   /* Backtrace panel visible frame rows */
 #define TASKS_ROWS        4   /* FreeRTOS Tasks panel visible rows */
 #define MAX_DISPLAY       4
-#define TUI_WP_MAX        4
 
 /* SRAM bounds for fp-chain validity (STM32F4/F7; edit for other targets). */
 #define BACKTRACE_SRAM_BASE 0x20000000u
@@ -60,18 +60,6 @@
 
 /* ── Local state ─────────────────────────────────────────────────────────── */
 
-#define TUI_BP_MAX 8
-typedef struct { int id; uint32_t addr; } TuiBP;
-typedef struct { int id; uint32_t addr; WatchpointType type; } TuiWP;
-
-static TuiBP    s_bp[TUI_BP_MAX];
-static int      s_nbp      = 0;
-static int      s_bp_next  = 1;
-
-static TuiWP    s_wpts[TUI_WP_MAX];
-static int      s_nwpts    = 0;
-static int      s_wp_next  = 1;
-
 static uint32_t s_display[MAX_DISPLAY];
 static int      s_ndisplay = 0;
 
@@ -85,14 +73,24 @@ static char     s_task_name[32] = "";
 static uint32_t s_pc       = 0;
 static int      s_asm_scroll = 0;  /* Asm panel scroll offset (instructions) */
 
+static void tui_invalidate_regs(void)
+{
+    s_regs_ok = 0;
+    s_pc = 0;
+    s_task_name[0] = '\0';
+    memset(s_reg_changed, 0, sizeof(s_reg_changed));
+}
+
 static int tui_read_regs(DebugSession *s)
 {
     uint32_t next[DEBUG_SESSION_MAX_REGS];
     int nregs = debug_session_nregs(s);
     int pc_reg = debug_session_pc_reg(s);
 
-    if (debug_session_read_regs(s, next) != WIRE_OK)
+    if (debug_session_read_regs(s, next) != WIRE_OK) {
+        tui_invalidate_regs();
         return -1;
+    }
     for (int i = 0; i < DEBUG_SESSION_MAX_REGS; i++) {
         s_reg_changed[i] = 0;
     }
@@ -121,6 +119,16 @@ static void hline(int y, int x0, int x1)
 static void bchar(int x, int y, const char *utf8)
 {
     tb_print(x, y, TB_DEFAULT, TB_DEFAULT, utf8);
+}
+
+static void draw_unavailable(int x0, int y0, int h, int w)
+{
+    for (int r = 0; r < h; r++) {
+        bchar(x0, y0 + 1 + r, "\xe2\x94\x82");
+        if (r == 0)
+            tb_print(x0 + 2, y0 + 1, TB_RED, TB_DEFAULT, "Registers unavailable");
+        bchar(x0 + w - 1, y0 + 1 + r, "\xe2\x94\x82");
+    }
 }
 
 /* ── Syntax highlighting ─────────────────────────────────────────────────── */
@@ -252,7 +260,7 @@ static void highlight_line(int x0, int y, const char *line, int max_w)
 static void draw_source(int x0, int y0, int src_h, int w, DwarfDBI *dbi, uint32_t pc)
 {
     DwarfLocation loc;
-    int has_loc = (dbi != NULL && dwarf_pc_to_location(dbi, pc, &loc) == 0);
+    int has_loc = (s_regs_ok && dbi != NULL && dwarf_pc_to_location(dbi, pc, &loc) == 0);
 
     /* Top border */
     bchar(x0, y0, "\xe2\x94\x8c");           /* ┌ */
@@ -283,7 +291,9 @@ static void draw_source(int x0, int y0, int src_h, int w, DwarfDBI *dbi, uint32_
         for (int r = 1; r <= src_h; r++) {
             bchar(x0, y0 + r, "\xe2\x94\x82");        /* │ */
             if (y0 + r == mid) {
-                if (dbi)
+                if (!s_regs_ok)
+                    tb_print(x0 + 2, y0 + r, TB_RED, TB_DEFAULT, "[registers unavailable]");
+                else if (dbi)
                     tb_printf(x0 + 2, y0 + r, TB_DEFAULT, TB_DEFAULT,
                               "[no source for pc=0x%08x]", pc);
                 else
@@ -363,6 +373,11 @@ static void draw_asm(int x0, int y0, int h, int w,
     hline(y0, x0 + 7, x0 + w - 1);
     bchar(x0 + w - 1, y0, "\xe2\x94\xa4");                  /* ┤ */
 
+    if (!s_regs_ok) {
+        draw_unavailable(x0, y0, h, w);
+        return;
+    }
+
     /* Collect decoded instructions */
     static struct { uint32_t addr; char text[THUMB_DIS_OUT_MAX]; }
         insns[ASM_INSN_MAX];
@@ -435,6 +450,8 @@ static const int REG_PAIRS[REG_ROWS][2] = {
 
 static void draw_reg_bp(int x0, int y0, int h, int w, DebugSession *s, DwarfDBI *dbi, uint32_t pc)
 {
+    int bp_count = (int)debug_session_breakpoint_count(s);
+    int wp_count = (int)debug_session_watchpoint_count(s);
     int split = x0 + w / 2;  /* absolute column of internal Registers|BP separator */
 
     /* Separator row (top) */
@@ -481,31 +498,34 @@ static void draw_reg_bp(int x0, int y0, int h, int w, DebugSession *s, DwarfDBI 
             tb_printf(x0 + 1, y0 + 1 + r, lfg, lbg, " %-*s", reg_content_w / 2, lbuf);
             tb_printf(x0 + 1 + reg_content_w / 2 + 1, y0 + 1 + r, rfg, rbg,
                       " %-*s", reg_content_w / 2, rbuf);
+        } else if (r == 0) {
+            tb_print(x0 + 2, y0 + 1, TB_RED, TB_DEFAULT, "Registers unavailable");
         }
         (void)reg_content_w; (void)nregs; (void)pc_reg;
 
         bchar(split, y0 + 1 + r, "\xe2\x94\x82");       /* │ middle */
 
         /* ── Breakpoints + Watchpoints (right half) ── */
-        if (r < s_nbp) {
+        if (r < bp_count) {
+            const DebugBreakpoint *bp = debug_session_breakpoint_at(s, (size_t)r);
             DwarfLocation loc;
             char loc_str[64] = "";
-            if (dbi && dwarf_pc_to_location(dbi, s_bp[r].addr, &loc) == 0) {
+            if (dbi && dwarf_pc_to_location(dbi, bp->addr, &loc) == 0) {
                 const char *base = strrchr(loc.file, '/');
                 base = base ? base + 1 : loc.file;
                 snprintf(loc_str, sizeof(loc_str), " %s:%d", base, loc.line);
             }
             tb_printf(split + 1, y0 + 1 + r, TB_DEFAULT, TB_DEFAULT,
                       " #%-2d 0x%08x (BP)%-*s",
-                      s_bp[r].id, s_bp[r].addr,
+                      bp->id, bp->addr,
                       bp_content_w - 22, loc_str);
-        } else if (r - s_nbp < s_nwpts) {
-            int wi = r - s_nbp;
-            const char *t = (s_wpts[wi].type == WATCHPOINT_WRITE)  ? "W " :
-                            (s_wpts[wi].type == WATCHPOINT_READ)   ? "R " : "RW";
+        } else if (r - bp_count < wp_count) {
+            const DebugWatchpoint *wp = debug_session_watchpoint_at(s, (size_t)(r - bp_count));
+            const char *t = (wp->type == WATCHPOINT_WRITE)  ? "W " :
+                            (wp->type == WATCHPOINT_READ)   ? "R " : "RW";
             tb_printf(split + 1, y0 + 1 + r, TB_YELLOW, TB_DEFAULT,
                       " W%-2d 0x%08x (%s)%-*s",
-                      s_wpts[wi].id, s_wpts[wi].addr, t,
+                      wp->id, wp->addr, t,
                       bp_content_w - 24, "");
         }
         (void)bp_content_w;
@@ -540,6 +560,11 @@ static void draw_backtrace(int x0, int y0, int h, int w,
     tb_print(x0 + 1, y0, TB_CYAN, TB_DEFAULT, "\xe2\x94\x80 Backtrace ");
     hline(y0, x0 + 13, x0 + w - 1);
     bchar(x0 + w - 1, y0, "\xe2\x94\xa4");                  /* ┤ */
+
+    if (!s_regs_ok) {
+        draw_unavailable(x0, y0, h, w);
+        return;
+    }
 
     /* Collect frames */
     struct { uint32_t pc; } frames[BT_MAX_FRAMES];
@@ -925,7 +950,10 @@ static void redraw(DebugSession *s, DwarfDBI *dbi)
 
     draw_bottom(y_bottom, y_hint, w);
 
-    tb_present();
+    if (!s_regs_ok)
+        draw_status(y_hint, w, "Registers unavailable; PC context hidden");
+    else
+        tb_present();
 }
 
 /* ── Input prompt at the hint row ────────────────────────────────────────── */
@@ -961,30 +989,6 @@ static int tui_prompt(int y, int w, const char *label, char *out, int out_sz)
     }
 }
 
-/* ── Breakpoint helpers ──────────────────────────────────────────────────── */
-
-static int tui_bp_add(DebugSession *s, uint32_t addr)
-{
-    if (s_nbp >= TUI_BP_MAX) return -1;
-    if (debug_session_set_hw_breakpoint(s, addr) != WIRE_OK) return -1;
-    s_bp[s_nbp].id   = s_bp_next++;
-    s_bp[s_nbp].addr = addr;
-    s_nbp++;
-    return 0;
-}
-
-static int tui_bp_del(DebugSession *s, int id)
-{
-    for (int i = 0; i < s_nbp; i++) {
-        if (s_bp[i].id == id) {
-            debug_session_clear_hw_breakpoint(s, s_bp[i].addr);
-            s_bp[i] = s_bp[--s_nbp];
-            return 0;
-        }
-    }
-    return -1;
-}
-
 /* ── FreeRTOS task name helper ───────────────────────────────────────────── */
 
 static void tui_update_task(DebugSession *s, DwarfDBI *dbi)
@@ -1011,6 +1015,14 @@ static void tui_update_task(DebugSession *s, DwarfDBI *dbi)
 
 /* ── Entry point ─────────────────────────────────────────────────────────── */
 
+static int tui_interrupt_requested(void *ctx)
+{
+    (void)ctx;
+    struct tb_event ev = {0};
+    if (tb_peek_event(&ev, 0) != TB_OK) return 0;
+    return ev.type == TB_EVENT_KEY && (ev.ch == 'i' || ev.key == TB_KEY_CTRL_C);
+}
+
 int debug_tui_run(DebugSession *s, DwarfDBI *dbi)
 {
     if (tb_init() != TB_OK) {
@@ -1018,20 +1030,11 @@ int debug_tui_run(DebugSession *s, DwarfDBI *dbi)
         return TUI_CLI;
     }
 
-    /* Reset local state */
-    s_nbp      = 0;
-    s_bp_next  = 1;
-    s_nwpts    = 0;
-    s_wp_next  = 1;
-	    s_ndisplay = 0;
-	    s_regs_ok    = 0;
-	    memset(s_reg_changed, 0, sizeof(s_reg_changed));
-	    s_pc         = 0;
-	    s_asm_scroll = 0;
-	    s_task_name[0] = '\0';
-
-	    /* Read initial register state */
-	    tui_read_regs(s);
+    /* Reset presentation state; session breakpoint records remain shared. */
+    s_ndisplay = 0;
+    s_asm_scroll = 0;
+    tui_invalidate_regs();
+    tui_read_regs(s);
 
     redraw(s, dbi);
 
@@ -1064,81 +1067,92 @@ int debug_tui_run(DebugSession *s, DwarfDBI *dbi)
             draw_status(y_hint, w, "Stepping...");
             s_asm_scroll = 0;
             int rc = debug_session_step(s);
-	            if (rc == WIRE_OK && tui_read_regs(s) == 0) {
-	                tui_update_task(s, dbi);
-	            }
+            if (rc != WIRE_OK) tui_invalidate_regs();
+            else if (tui_read_regs(s) == 0) tui_update_task(s, dbi);
             redraw(s, dbi);
+            if (rc != WIRE_OK)
+                draw_status(tb_height() - 1, tb_width(),
+                            "Step failed: target halt not confirmed");
 
         } else if (ev.ch == 'c') {
-            draw_status(y_hint, w, "Running...  (waiting for breakpoint)");
+            draw_status(y_hint, w, "Running...  (i / Ctrl-C to interrupt)");
             s_asm_scroll = 0;
-            int rc = debug_session_continue(s);
-	            if (rc == WIRE_OK && tui_read_regs(s) == 0) {
-	                tui_update_task(s, dbi);
-	            }
+            int rc = debug_session_continue_interruptible(s, tui_interrupt_requested, NULL);
+            if (rc != WIRE_OK) tui_invalidate_regs();
+            else if (tui_read_regs(s) == 0) tui_update_task(s, dbi);
             redraw(s, dbi);
+            if (rc != WIRE_OK)
+                draw_status(tb_height() - 1, tb_width(),
+                            "Continue failed: target halt not confirmed");
 
         } else if (ev.ch == 'i') {
             draw_status(y_hint, w, "Sending break-in...  (waiting for halt)");
             s_asm_scroll = 0;
             int rc = debug_session_interrupt(s);
-	            if (rc == WIRE_OK && tui_read_regs(s) == 0) {
-	                tui_update_task(s, dbi);
-	            } else if (rc != WIRE_OK) {
-                draw_status(y_hint, w,
-                    "Break-in timed out (check wire_poll_break_in in firmware)");
-            }
+            if (rc != WIRE_OK) tui_invalidate_regs();
+            else if (tui_read_regs(s) == 0) tui_update_task(s, dbi);
             redraw(s, dbi);
+            if (rc != WIRE_OK)
+                draw_status(tb_height() - 1, tb_width(),
+                            "Interrupt failed: target halt not confirmed");
 
         } else if (ev.ch == 'b') {
             char inp[64] = "";
+            int rc = 0;
             if (tui_prompt(y_hint, w, "break> ", inp, sizeof(inp)) == 0
                     && inp[0]) {
-                uint32_t addr = 0;
-                if ((inp[0] == '0' && (inp[1] == 'x' || inp[1] == 'X')) ||
-                    (inp[0] >= '0' && inp[0] <= '9')) {
-                    addr = (uint32_t)strtoul(inp, NULL, 16);
-                } else if (dbi) {
-                    dwarf_sym_to_addr(dbi, inp, &addr);
-                }
-                if (addr) tui_bp_add(s, addr);
+                uint32_t addr;
+                if ((inp[0] >= '0' && inp[0] <= '9') || inp[0] == '-' || inp[0] == '+')
+                    rc = debug_parse_address(inp, &addr);
+                else
+                    rc = dbi ? dwarf_sym_to_addr(dbi, inp, &addr) : -1;
+                if (rc == 0) rc = debug_session_add_breakpoint(s, addr);
             }
             redraw(s, dbi);
+            if (rc < 0)
+                draw_status(tb_height() - 1, tb_width(), "Could not set breakpoint");
 
         } else if (ev.ch == 'd') {
             char inp[16] = "";
+            int rc = 0;
             if (tui_prompt(y_hint, w, "delete bp id> ", inp, sizeof(inp)) == 0
                     && inp[0]) {
-                tui_bp_del(s, atoi(inp));
+                int id;
+                rc = debug_parse_id(inp, &id);
+                if (rc == 0) rc = debug_session_remove_breakpoint(s, id);
             }
             redraw(s, dbi);
+            if (rc != 0)
+                draw_status(tb_height() - 1, tb_width(),
+                            "Could not clear breakpoint; list unchanged");
 
         } else if (ev.ch == 'm') {
+            int rc = 0;
             if (s_ndisplay < MAX_DISPLAY) {
                 char inp[32] = "";
                 if (tui_prompt(y_hint, w, "display addr> 0x", inp, sizeof(inp)) == 0
                         && inp[0]) {
-                    s_display[s_ndisplay++] = (uint32_t)strtoul(inp, NULL, 16);
+                    uint32_t addr;
+                    rc = debug_parse_address(inp, &addr);
+                    if (rc == 0) s_display[s_ndisplay++] = addr;
                 }
             }
             redraw(s, dbi);
+            if (rc != 0)
+                draw_status(tb_height() - 1, tb_width(), "Invalid display address");
 
         } else if (ev.ch == 'w') {
-            if (s_nwpts < TUI_WP_MAX) {
-                char inp[32] = "";
-                if (tui_prompt(y_hint, w, "watch addr> 0x", inp, sizeof(inp)) == 0
-                        && inp[0]) {
-                    uint32_t addr = (uint32_t)strtoul(inp, NULL, 16);
-                    if (addr && debug_session_set_watchpoint(
-                            s, addr, 1, WATCHPOINT_WRITE) == WIRE_OK) {
-                        s_wpts[s_nwpts].id   = s_wp_next++;
-                        s_wpts[s_nwpts].addr = addr;
-                        s_wpts[s_nwpts].type = WATCHPOINT_WRITE;
-                        s_nwpts++;
-                    }
-                }
+            char inp[32] = "";
+            int rc = 0;
+            if (tui_prompt(y_hint, w, "watch addr> 0x", inp, sizeof(inp)) == 0
+                    && inp[0]) {
+                uint32_t addr;
+                rc = debug_parse_address(inp, &addr);
+                if (rc == 0) rc = debug_session_add_watchpoint(s, addr, WATCHPOINT_WRITE);
             }
             redraw(s, dbi);
+            if (rc < 0)
+                draw_status(tb_height() - 1, tb_width(), "Could not set watchpoint");
 
         } else if (ev.ch == 't') {
             result = TUI_CLI;

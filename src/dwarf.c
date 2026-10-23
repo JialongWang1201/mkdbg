@@ -51,6 +51,8 @@
 /* ── Internal types ──────────────────────────────────────────────────────── */
 
 typedef struct {
+    uint64_t end_address;      /* exclusive; may be one past UINT32_MAX */
+    uint64_t max_end_address;  /* maximum end in the sorted prefix */
     uint32_t address;
     uint32_t file_idx;   /* index into DwarfDBI.files[] */
     int      line;
@@ -172,8 +174,12 @@ static int dbi_add_file(DwarfDBI *dbi, const char *path)
 }
 
 static int dbi_emit_row(DwarfDBI *dbi,
-                        uint32_t addr, uint32_t fidx, int line, int col)
+                        uint64_t addr, uint32_t fidx, int line, int col,
+                        size_t sequence_start)
 {
+    if (addr > UINT32_MAX ||
+        (dbi->nrows > sequence_start && addr < dbi->rows[dbi->nrows - 1].address))
+        return -1;
     if (dbi->nrows >= dbi->rows_cap) {
         size_t nc = dbi->rows_cap ? dbi->rows_cap * 2 : 4096;
         DwarfRow *nr = realloc(dbi->rows, nc * sizeof(DwarfRow));
@@ -181,7 +187,11 @@ static int dbi_emit_row(DwarfDBI *dbi,
         dbi->rows     = nr;
         dbi->rows_cap = nc;
     }
-    dbi->rows[dbi->nrows].address  = addr;
+    if (dbi->nrows > sequence_start)
+        dbi->rows[dbi->nrows - 1].end_address = addr;
+    dbi->rows[dbi->nrows].end_address = addr;
+    dbi->rows[dbi->nrows].max_end_address = 0;
+    dbi->rows[dbi->nrows].address  = (uint32_t)addr;
     dbi->rows[dbi->nrows].file_idx = fidx;
     dbi->rows[dbi->nrows].line     = line;
     dbi->rows[dbi->nrows].column   = col;
@@ -310,7 +320,9 @@ static ptrdiff_t parse_line_cu(DwarfDBI *dbi,
     p = prog;
 
     /* State machine registers (initial values per DWARF spec) */
-    uint32_t address  = 0;
+    const uint64_t address_limit = (uint64_t)UINT32_MAX + 1u;
+    uint64_t address  = 0;
+    size_t sequence_start = dbi->nrows;
     uint32_t file_reg = 1;  /* 1-based index into file_map */
     int      line_reg = 1;
     int      col_reg  = 0;
@@ -332,15 +344,24 @@ static ptrdiff_t parse_line_cu(DwarfDBI *dbi,
 
             switch (ext_op) {
             case DW_LNE_end_sequence:
-                /* End of a sequence: reset state, do NOT emit a row */
+                if (ext_len != 1) { free(file_map); return -1; }
+                if (dbi->nrows > sequence_start) {
+                    DwarfRow *last = &dbi->rows[dbi->nrows - 1];
+                    if (address < last->address) { free(file_map); return -1; }
+                    last->end_address = address;
+                }
+                sequence_start = dbi->nrows;
                 address = 0; file_reg = 1; line_reg = 1; col_reg = 0;
                 is_stmt = default_is_stmt;
                 break;
 
             case DW_LNE_set_address: {
                 size_t addr_sz = (size_t)(ext_len - 1);
-                if (addr_sz == 4)      address = le32(p);
-                else if (addr_sz == 8) address = le32(p);  /* take low 32 bits */
+                if (addr_sz == 4) address = le32(p);
+                else if (addr_sz == 8)
+                    address = le32(p) | ((uint64_t)le32(p + 4) << 32);
+                else { free(file_map); return -1; }
+                if (address > address_limit) { free(file_map); return -1; }
                 p += addr_sz;
                 break;
             }
@@ -359,9 +380,11 @@ static ptrdiff_t parse_line_cu(DwarfDBI *dbi,
             /* Standard opcode */
             switch (op) {
             case DW_LNS_copy:
-                if (file_reg >= 1 && file_reg <= nfiles_cu)
-                    dbi_emit_row(dbi, address,
-                                 file_map[file_reg - 1], line_reg, col_reg);
+                if (file_reg >= 1 && file_reg <= nfiles_cu &&
+                    dbi_emit_row(dbi, address, file_map[file_reg - 1],
+                                 line_reg, col_reg, sequence_start) != 0) {
+                    free(file_map); return -1;
+                }
                 break;
 
             case DW_LNS_advance_pc: {
@@ -369,7 +392,10 @@ static ptrdiff_t parse_line_cu(DwarfDBI *dbi,
                 if (read_uleb128(&p, cu_end, &delta) != 0) {
                     free(file_map); return -1;
                 }
-                address += (uint32_t)(delta * min_insn);
+                if (delta > (address_limit - address) / min_insn) {
+                    free(file_map); return -1;
+                }
+                address += delta * min_insn;
                 break;
             }
 
@@ -414,13 +440,16 @@ static ptrdiff_t parse_line_cu(DwarfDBI *dbi,
 
             case DW_LNS_const_add_pc: {
                 uint8_t adj = (uint8_t)(255 - opcode_base);
-                address += (uint32_t)((adj / line_range) * min_insn);
+                uint32_t delta = (uint32_t)((adj / line_range) * min_insn);
+                if (delta > address_limit - address) { free(file_map); return -1; }
+                address += delta;
                 break;
             }
 
             case DW_LNS_fixed_advance_pc: {
                 if ((size_t)(cu_end - p) < 2u) { free(file_map); return -1; }
                 uint16_t delta = le16(p); p += 2;
+                if (delta > address_limit - address) { free(file_map); return -1; }
                 address += delta;
                 break;
             }
@@ -455,15 +484,25 @@ static ptrdiff_t parse_line_cu(DwarfDBI *dbi,
         } else {
             /* Special opcode: encodes both PC and line advance + implicit emit */
             uint8_t adj = (uint8_t)(op - opcode_base);
-            line_reg += line_base + (int)(adj % line_range);
-            address  += (uint32_t)((adj / line_range) * min_insn);
-            if (file_reg >= 1 && file_reg <= nfiles_cu)
-                dbi_emit_row(dbi, address,
-                             file_map[file_reg - 1], line_reg, col_reg);
+            int line_delta = line_base + (int)(adj % line_range);
+            uint32_t addr_delta = (uint32_t)((adj / line_range) * min_insn);
+            if ((line_delta > 0 && line_reg > INT_MAX - line_delta) ||
+                (line_delta < 0 && line_reg < INT_MIN - line_delta) ||
+                addr_delta > address_limit - address) {
+                free(file_map); return -1;
+            }
+            line_reg += line_delta;
+            address += addr_delta;
+            if (file_reg >= 1 && file_reg <= nfiles_cu &&
+                dbi_emit_row(dbi, address, file_map[file_reg - 1],
+                             line_reg, col_reg, sequence_start) != 0) {
+                free(file_map); return -1;
+            }
         }
     }
 
     free(file_map);
+    if (dbi->nrows != sequence_start) return -1; /* missing end_sequence */
     return (ptrdiff_t)(cu_end - cu_start);
 }
 
@@ -561,6 +600,11 @@ static DwarfDBI *dwarf_open_owned(uint8_t *data, size_t size)
     /* Sort by address for binary search */
     if (dbi->nrows > 0)
         qsort(dbi->rows, dbi->nrows, sizeof(DwarfRow), row_cmp);
+    uint64_t max_end = 0;
+    for (size_t i = 0; i < dbi->nrows; i++) {
+        if (dbi->rows[i].end_address > max_end) max_end = dbi->rows[i].end_address;
+        dbi->rows[i].max_end_address = max_end;
+    }
 
     /* Optional: ELF symbol table for name→address lookups (e.g. break main).
      * Failure here is non-fatal — dwarf_sym_to_addr() will return -1. */
@@ -629,16 +673,19 @@ int dwarf_pc_to_location(DwarfDBI *dbi, uint32_t pc, DwarfLocation *out)
         else
             hi = mid;
     }
-    if (lo == 0) return 1;  /* all rows have address > pc */
-
-    size_t idx = lo - 1;
-    uint32_t fidx = dbi->rows[idx].file_idx;
-    if (fidx >= (uint32_t)dbi->nfiles) return -1;
-
-    out->file   = dbi->files[fidx];
-    out->line   = dbi->rows[idx].line;
-    out->column = dbi->rows[idx].column;
-    return 0;
+    /* A shorter overlapping sequence may have ended while an earlier one
+     * still covers pc. Prefix maxima let gaps return without a full scan. */
+    while (lo > 0) {
+        const DwarfRow *row = &dbi->rows[--lo];
+        if (pc >= row->max_end_address) break;
+        if (pc >= row->end_address) continue;
+        if (row->file_idx >= dbi->nfiles) return -1;
+        out->file   = dbi->files[row->file_idx];
+        out->line   = row->line;
+        out->column = row->column;
+        return 0;
+    }
+    return 1;
 }
 
 int dwarf_sym_to_addr(DwarfDBI *dbi, const char *name, uint32_t *addr)

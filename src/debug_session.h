@@ -49,13 +49,19 @@ void debug_session_close(DebugSession *s);
  * Returns WIRE_OK on halt, WIRE_ERR_TIMEOUT if no halt within 60 s. */
 int debug_session_continue(DebugSession *s);
 
+/* As above, polling a UI callback that requests a Ctrl-C break-in.
+ * The callback must not access the session or transport. */
+int debug_session_continue_interruptible(DebugSession *s,
+                                         int (*interrupt_requested)(void *),
+                                         void *ctx);
+
 /* Send 'c' and return immediately (do not wait for a stop reply).
  * Used on quit to leave the MCU running. */
 int debug_session_detach(DebugSession *s);
 
-/* Send a Ctrl-C (0x03) break-in byte to the MCU and wait for the halt
- * stop reply.  The firmware must be polling wire_poll_break_in() from its
- * main loop for this to work.  Returns WIRE_OK on halt,
+/* Send a Ctrl-C (0x03) break-in byte and wait for the halt stop reply.
+ * The probe backend halts the core directly. UART firmware must poll
+ * wire_poll_break_in() from its main loop. Returns WIRE_OK on halt,
  * WIRE_ERR_TIMEOUT if the MCU does not halt within 60 s. */
 int debug_session_interrupt(DebugSession *s);
 
@@ -90,6 +96,24 @@ int debug_session_set_watchpoint(DebugSession *s, uint32_t addr,
 /* Clear DWT watchpoint at addr.
  * Returns WIRE_OK, or WIRE_ERR_IO if addr was not an active watchpoint. */
 int debug_session_clear_watchpoint(DebugSession *s, uint32_t addr);
+
+/* Session-owned UI records, shared across CLI/TUI transitions. Add returns a
+ * positive ID (existing ID for duplicates), or a negative WIRE_ERR_* code.
+ * Remove keeps the record on target failure; unknown IDs return WIRE_ERR_PARSE.
+ * Record pointers are valid until the next successful add/remove or close.
+ * Managed watchpoints cover one byte; different types at one address conflict. */
+#define DEBUG_SESSION_MAX_BREAKPOINTS 8
+#define DEBUG_SESSION_MAX_WATCHPOINTS 4
+typedef struct { int id; uint32_t addr; } DebugBreakpoint;
+typedef struct { int id; uint32_t addr; WatchpointType type; } DebugWatchpoint;
+int debug_session_add_breakpoint(DebugSession *s, uint32_t addr);
+int debug_session_remove_breakpoint(DebugSession *s, int id);
+size_t debug_session_breakpoint_count(const DebugSession *s);
+const DebugBreakpoint *debug_session_breakpoint_at(const DebugSession *s, size_t index);
+int debug_session_add_watchpoint(DebugSession *s, uint32_t addr, WatchpointType type);
+int debug_session_remove_watchpoint(DebugSession *s, int id);
+size_t debug_session_watchpoint_count(const DebugSession *s);
+const DebugWatchpoint *debug_session_watchpoint_at(const DebugSession *s, size_t index);
 
 /* ── Register / memory inspection ───────────────────────────────────────── */
 

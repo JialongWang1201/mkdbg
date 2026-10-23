@@ -28,6 +28,12 @@ int rsp_send_packet_t(WireTransport *t, const char *data);
  */
 int rsp_wait_for_stop_t(WireTransport *t, char *out_buf, size_t out_size);
 
+/* Resume with ACK/NAK handling, then wait for a real stop (ignoring S00).
+ * If non-NULL, interrupt_requested is polled during the wait; a nonzero
+ * result sends one raw Ctrl-C. The callback must not perform transport I/O. */
+int rsp_continue_t(WireTransport *t, char *out_buf, size_t out_size,
+                   int (*interrupt_requested)(void *), void *ctx);
+
 /*
  * Send cmd and receive the server response, with NAK/retransmit (up to 3×).
  * Returns WIRE_OK on success.
