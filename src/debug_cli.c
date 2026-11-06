@@ -9,7 +9,7 @@
  *   mem 0x<addr> [len]  hexdump target memory (default 16 bytes, max 256)
  *   info breakpoints    list active breakpoints
  *   tui                 switch to TUI mode (implemented in PR 11)
- *   quit      (q)       resume MCU and exit
+ *   quit      (q)       clear owned break/watchpoints, resume MCU, and exit
  *
  * SPDX-License-Identifier: MIT
  */
@@ -369,7 +369,7 @@ static void print_help(void)
         "  info display             list memory display addresses\n"
         "  freertos current         show current FreeRTOS task name (requires --elf)\n"
         "  tui                      TUI mode\n"
-        "  quit      (q)            resume MCU and exit\n"
+        "  quit      (q)            clear owned break/watchpoints, resume MCU and exit\n"
     );
 }
 
@@ -492,12 +492,20 @@ int cmd_debug(const DebugOptions *opts)
     /* Reset state for this session */
     s_ndisplay  = 0;
 
+    int exit_status = 0;
     char line[256];
     for (;;) {
         printf("(mkdbg) ");
         fflush(stdout);
 
-        if (!fgets(line, sizeof(line), stdin)) { printf("\n"); break; }
+        if (!fgets(line, sizeof(line), stdin)) {
+            printf("\n");
+            if (ferror(stdin)) {
+                fprintf(stderr, "mkdbg: failed to read debug command\n");
+                exit_status = 1;
+            }
+            break;
+        }
         if (!strchr(line, '\n') && strlen(line) == sizeof(line) - 1) {
             int ch;
             while ((ch = getchar()) != '\n' && ch != EOF) {}
@@ -567,23 +575,25 @@ int cmd_debug(const DebugOptions *opts)
                 printf("(pxCurrentTCB not found — not a FreeRTOS build?)\n");
         } else if (strcmp(cmd, "tui") == 0) {
             int ret = debug_tui_run(s, s_dbi);
-            if (ret == TUI_QUIT) {
-                debug_session_detach(s);
-                break;
-            }
+            if (ret == TUI_QUIT) break;
             printf("(back in CLI mode — type 'help' for commands)\n");
         } else if (strcmp(cmd, "help") == 0 || strcmp(cmd, "?") == 0) {
             print_help();
         } else if (strcmp(cmd, "quit") == 0 || strcmp(cmd, "q") == 0) {
-            debug_session_detach(s);
             break;
         } else {
             printf("unknown command: %s  (type 'help')\n", cmd);
         }
     }
 
+    int rc = debug_session_detach(s);
+    if (rc != WIRE_OK) {
+        fprintf(stderr, "mkdbg: detach failed (rc=%d); target resume not confirmed; "
+                        "breakpoints/watchpoints may remain\n", rc);
+        exit_status = 1;
+    }
     debug_session_close(s);
     dwarf_close(s_dbi);
     s_dbi = NULL;
-    return 0;
+    return exit_status;
 }
