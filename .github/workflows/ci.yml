@@ -12,7 +12,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-14, windows-latest]
+        os: [ubuntu-latest, macos-15, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -64,7 +64,7 @@ jobs:
           - runner: ubuntu-latest
             host_os: linux
             host_arch: x86_64
-          - runner: macos-14
+          - runner: macos-15
             host_os: darwin
             host_arch: arm64
     runs-on: ${{ matrix.runner }}
@@ -81,6 +81,8 @@ jobs:
         run: sudo apt-get update -q && sudo apt-get install -y libudev-dev
 
       - name: Build mkdbg-native and wire-host (CMake, with libgit2)
+        env:
+          MACOSX_DEPLOYMENT_TARGET: ${{ matrix.host_os == 'darwin' && '14.0' || '' }}
         run: |
           set -euxo pipefail
           cmake -S . -B build_host \
