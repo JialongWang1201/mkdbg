@@ -80,7 +80,48 @@ def test_interrupt(binary, running_confirmation):
         os.close(slave)
 
 
+def test_spontaneous_stop_before_regs(binary):
+    master, slave = pty.openpty()
+    process = None
+    try:
+        process = subprocess.Popen(
+            [binary, "debug", "--port", os.ttyname(slave)],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        # Wait for raw serial configuration before queuing an unsolicited stop.
+        initial_output = bytearray()
+        deadline = time.monotonic() + 5
+        while b"(mkdbg) " not in initial_output:
+            remaining = deadline - time.monotonic()
+            assert remaining > 0 and select.select([process.stdout], [], [], remaining)[0]
+            chunk = os.read(process.stdout.fileno(), 4096)
+            assert chunk, "debugger exited before the initial prompt"
+            initial_output.extend(chunk)
+
+        target = Target(master)
+        os.write(master, packet(b"S05"))
+        process.stdin.write(b"regs\nmem 0x20000000 4\nquit\n")
+        process.stdin.flush()
+        assert target.event() == b"g"
+        os.write(master, b"+" + packet(b"00000000" * 17))
+        assert target.event() == b"m20000000,4", "stop notification caused a command retransmission"
+        os.write(master, b"+" + packet(b"01020304"))
+        assert target.event() == b"c"
+        stdout, stderr = process.communicate(timeout=5)
+        assert process.returncode == 0, (stdout, stderr)
+        assert b"r0" in stdout and b"01 02 03 04" in stdout, stdout
+        assert b"error:" not in stdout, stdout
+    finally:
+        if process is not None:
+            if process.poll() is None:
+                process.kill()
+            process.communicate()
+        os.close(master)
+        os.close(slave)
+
+
 if __name__ == "__main__":
     for confirmation in (False, True):
         test_interrupt(sys.argv[1], confirmation)
+    test_spontaneous_stop_before_regs(sys.argv[1])
     print("debug_run_control_test: OK")

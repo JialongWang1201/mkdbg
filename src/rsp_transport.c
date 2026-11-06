@@ -115,18 +115,12 @@ int rsp_send_packet_t(WireTransport *t, const char *data)
 
 /* ── receive ─────────────────────────────────────────────────────────────── */
 
-static int rsp_recv_packet_t(WireTransport *t, char *out_buf, size_t out_size,
-                             StopWait *wait)
+/* The caller has consumed '$'. Share framing/checksum handling between the
+ * command ACK phase and normal response/stop reception. */
+static int recv_packet_body(WireTransport *t, char *out_buf, size_t out_size,
+                            StopWait *wait)
 {
     uint8_t c;
-
-    /* drain until '$' */
-    for (;;) {
-        int r = read_wait_byte(t, &c, wait);
-        if (r == WIRE_ERR_IO)      return WIRE_ERR_IO;
-        if (r == WIRE_ERR_TIMEOUT) return WIRE_ERR_TIMEOUT;
-        if (c == '$') break;
-    }
 
     /* accumulate data until '#' */
     size_t  dlen        = 0;
@@ -168,6 +162,23 @@ static int rsp_recv_packet_t(WireTransport *t, char *out_buf, size_t out_size,
     return write_byte_t(t, '+');
 }
 
+static int rsp_recv_packet_t(WireTransport *t, char *out_buf, size_t out_size,
+                             StopWait *wait)
+{
+    uint8_t c;
+    for (;;) {
+        int rc = read_wait_byte(t, &c, wait);
+        if (rc != 1) return rc;
+        if (c == '$') return recv_packet_body(t, out_buf, out_size, wait);
+    }
+}
+
+static int is_stop_reply(const char *reply)
+{
+    return (reply[0] == 'S' || reply[0] == 'T') && strlen(reply) >= 3 &&
+           hex_nibble(reply[1]) >= 0 && hex_nibble(reply[2]) >= 0;
+}
+
 /* ── public API ──────────────────────────────────────────────────────────── */
 
 static int wait_for_stop(WireTransport *t, char *out_buf, size_t out_size,
@@ -200,22 +211,33 @@ int rsp_wait_for_stop_t(WireTransport *t, char *out_buf, size_t out_size)
 
 static int send_command(WireTransport *t, const char *cmd)
 {
+    char notification[RSP_BUF_MAX];
     for (int cmd_try = 0; cmd_try < RSP_MAX_RETRIES; cmd_try++) {
         int rc = rsp_send_packet_t(t, cmd);
         if (rc != WIRE_OK) return rc;
 
-        /* Wait for server ACK/NAK of our command */
-        uint8_t ack;
-        int r = read_byte_t(t, &ack, RSP_TIMEOUT_MS);
-        if (r == WIRE_ERR_IO)      return WIRE_ERR_IO;
-        if (r == WIRE_ERR_TIMEOUT) return WIRE_ERR_TIMEOUT;
-        if (ack == '-') {
-            fprintf(stderr, "mkdbg: RSP NAK on '%s', retrying (%d/%d)\n",
-                    cmd, cmd_try + 1, RSP_MAX_RETRIES);
-            continue;
+        int64_t now = monotonic_ms();
+        if (now < 0) return WIRE_ERR_IO;
+        StopWait wait = {.deadline_ms = now + RSP_TIMEOUT_MS};
+        for (;;) {
+            uint8_t ack;
+            rc = read_wait_byte(t, &ack, &wait);
+            if (rc != 1) return rc;
+            if (ack == '+') return WIRE_OK;
+            if (ack == '-') {
+                fprintf(stderr, "mkdbg: RSP NAK on '%s', retrying (%d/%d)\n",
+                        cmd, cmd_try + 1, RSP_MAX_RETRIES);
+                break;
+            }
+            if (ack != '$') continue;  /* noise is not a command NAK */
+
+            rc = recv_packet_body(t, notification, sizeof(notification), &wait);
+            if (rc == WIRE_ERR_CHECKSUM) continue; /* packet already NAKed */
+            if (rc != WIRE_OK) return rc;
+            if (!is_stop_reply(notification)) return WIRE_ERR_PARSE;
+            /* A pre-ACK stop describes the previous run. A continue must
+             * still wait for a new stop after its command is acknowledged. */
         }
-        if (ack != '+') continue;  /* unexpected byte, retransmit */
-        return WIRE_OK;
     }
     return WIRE_ERR_CHECKSUM;
 }
@@ -233,12 +255,31 @@ int rsp_transaction_t(WireTransport *t, const char *cmd,
 {
     int rc = send_command(t, cmd);
     if (rc != WIRE_OK) return rc;
-    for (int resp_try = 0; resp_try < RSP_MAX_RETRIES; resp_try++) {
-        rc = rsp_recv_packet_t(t, resp_buf, resp_size, NULL);
-        if (rc == WIRE_OK) return WIRE_OK;
+    char packet[RSP_BUF_MAX];
+    int64_t now = monotonic_ms();
+    if (now < 0) return WIRE_ERR_IO;
+    /* Stop traffic must not keep a transaction alive indefinitely. Normal
+     * response bodies retain their existing per-byte timeout. */
+    int64_t notification_deadline = now + RSP_TIMEOUT_MS;
+    int resp_try = 0;
+    for (;;) {
+        rc = rsp_recv_packet_t(t, packet, sizeof(packet), NULL);
+        if (rc == WIRE_OK) {
+            if (strcmp(cmd, "?") != 0 && is_stop_reply(packet)) {
+                now = monotonic_ms();
+                if (now < 0) return WIRE_ERR_IO;
+                if (now >= notification_deadline) return WIRE_ERR_TIMEOUT;
+                continue;
+            }
+            size_t len = strlen(packet);
+            if (len >= resp_size) return WIRE_ERR_OVERFLOW;
+            memcpy(resp_buf, packet, len + 1);
+            return WIRE_OK;
+        }
         if (rc != WIRE_ERR_CHECKSUM) return rc;
+        resp_try++;
         fprintf(stderr, "mkdbg: RSP response checksum error, retry %d/%d\n",
-                resp_try + 1, RSP_MAX_RETRIES);
+                resp_try, RSP_MAX_RETRIES);
+        if (resp_try == RSP_MAX_RETRIES) return WIRE_ERR_CHECKSUM;
     }
-    return WIRE_ERR_CHECKSUM;
 }
