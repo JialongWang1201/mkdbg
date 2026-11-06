@@ -255,6 +255,7 @@ set_target_properties(wire-host PROPERTIES
 
 # ── ctest: seam-analyze smoke ─────────────────────────────────────────────────
 enable_testing()
+add_subdirectory(deps/wire/test/host wire_crash_tests)
 add_test(NAME cli_version COMMAND mkdbg-native --version)
 set_tests_properties(cli_version PROPERTIES
   PASS_REGULAR_EXPRESSION "mkdbg-native ${MKDBG_VERSION}"

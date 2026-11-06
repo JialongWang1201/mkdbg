@@ -5,9 +5,30 @@ on:
     branches: ["main"]
     tags: ["v*"]
   pull_request:
-    branches: ["main"]
+    branches: ["main", "next"]
 
 jobs:
+  portable-crash-tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Initialise wire submodule
+        run: git submodule update --init deps/wire
+
+      - name: Configure strict C11 crash output tests
+        run: cmake -S deps/wire/test/host -B build_crash -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build crash output tests
+        run: cmake --build build_crash --config Release --parallel
+
+      - name: Run crash output tests
+        run: ctest --test-dir build_crash -C Release --output-on-failure
+
   unit-tests:
     runs-on: ubuntu-latest
     steps:
