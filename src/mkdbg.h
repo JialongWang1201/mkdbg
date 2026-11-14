@@ -416,6 +416,7 @@ int cmd_git_push_current(const GitOptions *opts);
 int cmd_probe_halt(const ProbeOptions *opts);
 int cmd_probe_resume(const ProbeOptions *opts);
 int cmd_probe_reset(const ProbeOptions *opts);
+int cmd_probe_status(const ProbeOptions *opts);
 int cmd_probe_flash(const ProbeOptions *opts);
 int cmd_probe_read32(const ProbeOptions *opts);
 int cmd_probe_write32(const ProbeOptions *opts);

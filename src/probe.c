@@ -164,8 +164,7 @@ int cmd_probe_reset(const ProbeOptions *opts)
   return 0;
 }
 
-/* probe flash: program configured ELF via OpenOCD. */
-int cmd_probe_flash(const ProbeOptions *opts)
+static int cmd_probe_openocd(const ProbeOptions *opts, int flash)
 {
   char config_path[PATH_MAX];
   char repo_root[PATH_MAX];
@@ -192,12 +191,33 @@ int cmd_probe_flash(const ProbeOptions *opts)
   if (repo->openocd_cfg[0] == '\0') {
     die("repo `%s` has no `openocd_cfg` configured", repo_name);
   }
+
+  resolve_repo_root(config_path, repo, repo_root, sizeof(repo_root));
+  resolve_path(repo_root, repo->openocd_cfg, openocd_cfg, sizeof(openocd_cfg));
+  if (!flash) {
+    char *status_argv[] = {
+        "openocd", "-f", openocd_cfg,
+        "-c", "gdb_port disabled; tcl_port disabled; telnet_port disabled; "
+              "foreach _mkdbg_target [target names] {"
+              "$_mkdbg_target configure -gdb-port disabled}",
+        "-c", "init; set _mkdbg_polled 0; set _mkdbg_failed 0; "
+              "foreach _mkdbg_target [target names] {"
+              "if {![$_mkdbg_target was_examined]} {"
+              "echo \"$_mkdbg_target: not examined\"; continue}; "
+              "if {[catch {$_mkdbg_target arp_poll}]} {"
+              "echo \"$_mkdbg_target: poll failed\"; set _mkdbg_failed 1"
+              "} else {incr _mkdbg_polled}}; "
+              "echo [targets]; "
+              "if {$_mkdbg_failed || !$_mkdbg_polled} {shutdown error}; shutdown",
+        NULL,
+    };
+    return run_process(status_argv, repo_root, opts->dry_run);
+  }
+
   if (repo->elf_path[0] == '\0') {
     die("repo `%s` has no `elf_path` configured", repo_name);
   }
 
-  resolve_repo_root(config_path, repo, repo_root, sizeof(repo_root));
-  resolve_path(repo_root, repo->openocd_cfg, openocd_cfg, sizeof(openocd_cfg));
   resolve_path(repo_root, repo->elf_path, elf_path, sizeof(elf_path));
   openocd_quote_arg(elf_path, quoted_elf, sizeof(quoted_elf));
   snprintf(command, sizeof(command),
@@ -210,6 +230,19 @@ int cmd_probe_flash(const ProbeOptions *opts)
   argv[4] = command;
   argv[5] = NULL;
   return run_process(argv, repo_root, opts->dry_run);
+}
+
+int cmd_probe_status(const ProbeOptions *opts)
+{
+  if (opts->port != NULL || opts->baud != NULL) {
+    die("probe status uses openocd_cfg and does not accept --port or --baud");
+  }
+  return cmd_probe_openocd(opts, 0);
+}
+
+int cmd_probe_flash(const ProbeOptions *opts)
+{
+  return cmd_probe_openocd(opts, 1);
 }
 
 /* probe read32: read 4 bytes via RSP 'm addr,4' */
