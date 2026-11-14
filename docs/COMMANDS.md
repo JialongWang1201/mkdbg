@@ -50,6 +50,7 @@ mkdbg doctor
 mkdbg doctor --live --port /dev/cu.usbmodem21303
 mkdbg build
 mkdbg flash
+mkdbg probe status --target microkernel
 mkdbg probe halt
 mkdbg probe flash
 mkdbg incident open --name irq-timeout
@@ -113,6 +114,37 @@ mkdbg build --target tahoe
 mkdbg run --target tahoe -- make test
 ```
 
+### Board and SoC debug
+
+Set `openocd_cfg` to the OpenOCD configuration for the board revision. Use
+`mkdbg probe status --target <name> --dry-run` to check which file will be used.
+The live command starts an OpenOCD session, polls examined targets, and prints
+the `targets` table. An unsuccessful poll or zero polled targets gives a
+nonzero exit status. Use a board configuration that leaves `init` to mkdbg.
+Use this command outside an active debug session. OpenOCD initialization runs
+board and target hooks, and some target drivers clear hardware breakpoints.
+Power rails, reset timing, and boot progress require separate measurements.
+
+Keep one profile per board revision. The profile maps probe wiring, instrument
+channels, edge thresholds, and expected delays from a common power-on trigger.
+Feed voltage and logic instrument exports as CSV with columns
+`time_ns,channel,value`. Each instrument's `offset_ns` maps its sample clock to
+the capture clock, and `error_ns` bounds the alignment error. Use an ID unique to
+that synchronized capture for `clock`.
+
+```bash
+python3 tools/board_evidence.py tests/fixtures/platform/board.json \
+  --samples scope=tests/fixtures/platform/scope.csv \
+  --samples logic=tests/fixtures/platform/logic.csv
+```
+
+A transition is bounded by the samples on both sides of the threshold. The
+report retains uncertainty when that interval overlaps an expected timing
+limit or the CPU observation window. Pass a same-clock CPU capture with
+`--cpu-state` to compare the intervals. A boot marker confirms execution reached
+the instrumented point. Confirm the first instruction with a reset-vector
+breakpoint or execution trace specific to the target.
+
 ## Config
 
 `mkdbg` searches upward from the current working directory for
@@ -168,6 +200,7 @@ Current MVP supports:
 - `mkdbg incident status`
 - `mkdbg incident close`
 - `mkdbg incident export`
+- `mkdbg probe status`
 - `mkdbg probe reset`
 - `mkdbg probe halt`
 - `mkdbg probe resume`
