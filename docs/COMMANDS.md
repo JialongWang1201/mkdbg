@@ -145,6 +145,40 @@ limit or the CPU observation window. Pass a same-clock CPU capture with
 the instrumented point. Confirm the first instruction with a reset-vector
 breakpoint or execution trace specific to the target.
 
+### SoC core and trace inspection
+
+Maintain one `soc.json` per chip revision. Name the power and reset domains,
+map each core to its OpenOCD target and local GDB port, and declare bounded
+physical address spaces and safe read ranges for status, error, and trace.
+The simulated profile at `tests/fixtures/platform/soc.json` shows the schema.
+
+Start the board's OpenOCD server with Tcl and GDB endpoints bound to loopback.
+Use one operator per debug session and a board configuration with independent
+halt/resume behavior for each core when using a declared halt group.
+
+```bash
+python3 tools/soc_debug.py board/soc.json capture
+python3 tools/soc_debug.py board/soc.json capture --halt-group application-and-mcu
+python3 tools/soc_debug.py board/soc.json attach mcu-0 --elf build/firmware.elf
+```
+
+The capture records initial run states and trace/error words. A halt group
+issues all halt requests before waiting and restores previously running cores
+when the command exits, including after a failed capture. If a transport or
+restore error occurs, verify target states through the existing session.
+The halt sequence has an observation window and can have inter-core skew.
+Use `--clock` with the same calibrated capture identifier as the board profile
+to compare that window to instrument events.
+
+Only configure memory-mapped ranges the target permits reading. A register
+with a read side effect needs target-specific handling. Interpret transaction
+IDs, latch semantics, reset persistence, and trace records using the chip
+revision's register map. Before tape-out, record those semantics for the
+fabric errors, power-domain state, boot milestones, and trace buffers needed
+for bring-up.
+
+[OpenOCD Tcl RPC documentation](https://openocd.org/doc-release/html/Tcl-Scripting-API.html)
+
 ## Config
 
 `mkdbg` searches upward from the current working directory for
