@@ -14,7 +14,10 @@
 #define FAULT_MAGIC 0xFA17EADU
 #define FAULT_HISTORY_LEN 8U
 #define FAULT_RETENTION_MAGIC 0xFA17C0DEU
-#define FAULT_RETENTION_VERSION 1U
+#define FAULT_RETENTION_VERSION 2U
+#define FAULT_BUILD_ID_SIZE 20U
+
+extern const uint8_t __mkdbg_build_id[FAULT_BUILD_ID_SIZE];
 
 typedef struct {
   uint32_t magic;
@@ -23,6 +26,8 @@ typedef struct {
   uint32_t last_reset_flags;
   uint32_t retained_fault_valid;
   uint32_t fault_reboot_pending;
+  uint32_t fault_boot_count;
+  uint8_t fault_build_id[FAULT_BUILD_ID_SIZE];
   FaultRecord retained_fault;
 } FaultRetentionBlob;
 
@@ -81,8 +86,9 @@ static void fault_retention_init_if_needed(void)
     return;
   }
   memset((void *)&g_fault_retained, 0, sizeof(g_fault_retained));
-  g_fault_retained.magic = FAULT_RETENTION_MAGIC;
   g_fault_retained.version = FAULT_RETENTION_VERSION;
+  __DMB();
+  g_fault_retained.magic = FAULT_RETENTION_MAGIC;
 }
 
 static void fault_store_retained_cpu(const FaultRecord *src)
@@ -91,7 +97,15 @@ static void fault_store_retained_cpu(const FaultRecord *src)
     return;
   }
   fault_retention_init_if_needed();
+  g_fault_retained.fault_reboot_pending = 0U;
+  g_fault_retained.retained_fault_valid = 0U;
+  __DMB();
   g_fault_retained.retained_fault = *src;
+  g_fault_retained.fault_boot_count = g_fault_retained.boot_count;
+  for (size_t i = 0U; i < FAULT_BUILD_ID_SIZE; ++i) {
+    g_fault_retained.fault_build_id[i] = __mkdbg_build_id[i];
+  }
+  __DMB();
   g_fault_retained.retained_fault_valid = 1U;
   g_fault_retained.fault_reboot_pending = 1U;
 }
@@ -371,6 +385,10 @@ void fault_dispatch(const FaultRecord *record)
 
 void fault_boot_init(uint32_t reset_flags)
 {
+  if ((reset_flags & (RCC_CSR_PORRSTF | RCC_CSR_BORRSTF)) != 0U) {
+    g_fault_retained.magic = 0U;
+    __DMB();
+  }
   fault_retention_init_if_needed();
   g_fault_boot_reset_flags = reset_flags;
   g_fault_boot_fault_reboot =
@@ -516,6 +534,40 @@ void fault_emit_retained_json(void)
   if (g_fault_retained.retained_fault_valid != 0U) {
     fault_emit_json_record(&g_fault_retained.retained_fault);
   }
+}
+
+void fault_emit_evidence_json(void)
+{
+  static const char hex[] = "0123456789abcdef";
+  char build_id[FAULT_BUILD_ID_SIZE * 2U + 1U];
+  const int valid = g_fault_retained.retained_fault_valid != 0U;
+  const volatile FaultRecord *record = &g_fault_retained.retained_fault;
+
+  build_id[0] = '\0';
+  if (valid) {
+    for (size_t i = 0U; i < FAULT_BUILD_ID_SIZE; ++i) {
+      uint8_t byte = g_fault_retained.fault_build_id[i];
+      build_id[i * 2U] = hex[byte >> 4];
+      build_id[i * 2U + 1U] = hex[byte & 0x0FU];
+    }
+    build_id[sizeof(build_id) - 1U] = '\0';
+  }
+  snprintf(g_fault_emit_buf, sizeof(g_fault_emit_buf),
+           "{\"type\":\"firmware-evidence\",\"version\":1,\"reset\":\"%s\","
+           "\"reset_flags\":\"0x%08lX\",\"boot_count\":%lu,\"fault_reboot\":%u,"
+           "\"valid\":%d,\"fault_boot\":%lu,\"build_id\":\"%s\","
+           "\"fault\":\"%s\",\"pc\":\"0x%08lX\",\"lr\":\"0x%08lX\"}\r\n",
+           fault_reset_primary_name(g_fault_boot_reset_flags),
+           (unsigned long)g_fault_boot_reset_flags,
+           (unsigned long)g_fault_retained.boot_count,
+           (unsigned)g_fault_boot_fault_reboot,
+           valid,
+           valid ? (unsigned long)g_fault_retained.fault_boot_count : 0UL,
+           build_id,
+           valid ? fault_cpu_name((FaultCpuType)record->cpu_type) : "",
+           valid ? (unsigned long)record->pc : 0UL,
+           valid ? (unsigned long)record->lr : 0UL);
+  board_uart_write(g_fault_emit_buf);
 }
 
 void fault_emit_retained_human(void)

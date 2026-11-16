@@ -179,6 +179,22 @@ for bring-up.
 
 [OpenOCD Tcl RPC documentation](https://openocd.org/doc-release/html/Tcl-Scripting-API.html)
 
+### Firmware identity after reset
+
+On the STM32F446 example, send `fault evidence json` through the UART console
+after reboot and save the reply. It includes the reset flags and, for a retained
+CPU fault, the faulting boot, PC, LR, and GNU build ID of the faulting image.
+
+```bash
+python3 tools/firmware_evidence.py fault-uart.log --elf build/MicroKernel_MPU.elf
+```
+
+The ID comes from the loaded ELF note. The verifier compares the full ID
+before accepting the ELF for symbol lookup. Use the ELF from the original
+firmware build. Power-on and brownout invalidate the volatile SRAM evidence.
+
+[GNU linker build ID options](https://www.sourceware.org/binutils/docs/ld/Options.html)
+
 ## Config
 
 `mkdbg` searches upward from the current working directory for

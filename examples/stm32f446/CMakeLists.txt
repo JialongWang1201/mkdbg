@@ -126,12 +126,15 @@ target_compile_options(${PROJECT_NAME}.elf PRIVATE
   -Wextra
 )
 
+set_property(TARGET ${PROJECT_NAME}.elf APPEND PROPERTY LINK_DEPENDS "${LINKER_SCRIPT}")
+
 target_link_options(${PROJECT_NAME}.elf PRIVATE
   -T${LINKER_SCRIPT}
   -mcpu=cortex-m4
   -mthumb
   -mfpu=fpv4-sp-d16
   -mfloat-abi=hard
+  -Wl,--build-id=sha1
   -Wl,--gc-sections
   -Wl,-Map=${PROJECT_NAME}.map
   -specs=nosys.specs

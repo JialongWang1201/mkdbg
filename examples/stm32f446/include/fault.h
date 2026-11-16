@@ -69,6 +69,7 @@ int fault_retained_copy(FaultRetentionInfo *out);
 void fault_emit_last_json(void);
 void fault_emit_last_human(void);
 void fault_emit_retained_json(void);
+void fault_emit_evidence_json(void);
 void fault_emit_retained_human(void);
 void fault_emit_reset_cause_json(void);
 void fault_emit_reset_cause_human(void);
