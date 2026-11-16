@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "tests" / "fixtures" / "platform"
 sys.path.insert(0, str(ROOT / "tools"))
 import soc_debug
+import firmware_evidence
 
 
 class BoardTests(unittest.TestCase):
@@ -94,6 +95,31 @@ interp alias {} soc.mcu {} core soc.mcu
         report = self.run_snapshot(coordinated=False)
         self.assertEqual(report["reads"]["fabric-error"]["data"], [0x77])
         self.assertEqual(report["errors"], [])
+
+
+
+class FirmwareTests(unittest.TestCase):
+    def test_retention_expectations_by_reset_type(self):
+        records = {
+            "hardfault": {"fault": "HardFault", "fault_boot": 7, "boot_count": 8,
+                          "valid": 1, "frame_valid": 1, "fault_reboot": 1},
+            "deadlock": {"reset": "independent_watchdog", "runtime_valid": 1, "task": "cli"},
+            "power-loss": {"reset": "power_on", "runtime_valid": 0, "valid": 0, "boot_count": 1},
+        }
+        for scenario, record in records.items():
+            with self.subTest(scenario=scenario):
+                firmware_evidence.verify_scenario(record, scenario)
+                with self.assertRaises(ValueError):
+                    firmware_evidence.verify_scenario({"valid": 0}, scenario)
+
+    def test_watchdog_checks_previous_runtime_image(self):
+        record = {"valid": 1, "build_id": "1" * 40, "runtime_valid": 1,
+                  "runtime_build_id": "a" * 40}
+        with patch.object(firmware_evidence, "elf_build_id", return_value="a" * 40):
+            self.assertEqual(firmware_evidence.verify_build(record, Path("image"), "readelf",
+                                                            runtime=True), "a" * 40)
+            with self.assertRaisesRegex(ValueError, "build ID mismatch"):
+                firmware_evidence.verify_build(record, Path("image"), "readelf")
 
 
 if __name__ == "__main__":

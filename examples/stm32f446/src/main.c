@@ -6365,6 +6365,23 @@ static void cli_task(void *arg)
           fault_emit_retained_json();
         } else if (strcmp(line, "fault evidence json") == 0) {
           fault_emit_evidence_json();
+#if MKDBG_FAULT_HIL
+        } else if (strcmp(line, "fault hil hardfault") == 0) {
+          __disable_irq();
+          SCB->SHCSR &= ~SCB_SHCSR_USGFAULTENA_Msk;
+          __DSB();
+          __ISB();
+          __asm volatile ("udf #0");
+        } else if (strcmp(line, "fault hil deadlock") == 0) {
+          __disable_irq();
+          IWDG->KR = 0xCCCCU; /* Start the independent watchdog. */
+          IWDG->KR = 0x5555U; /* Enable configuration writes. */
+          IWDG->PR = 3U;
+          IWDG->RLR = 500U;
+          while (IWDG->SR != 0U) {}
+          IWDG->KR = 0xAAAAU;
+          for (;;) {}
+#endif
         } else if (strcmp(line, "reset cause") == 0) {
           fault_emit_reset_cause_human();
         } else if (strcmp(line, "reset cause json") == 0) {

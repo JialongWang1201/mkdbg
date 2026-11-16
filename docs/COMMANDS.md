@@ -190,8 +190,27 @@ python3 tools/firmware_evidence.py fault-uart.log --elf build/MicroKernel_MPU.el
 ```
 
 The ID comes from the loaded ELF note. The verifier compares the full ID
-before accepting the ELF for symbol lookup. Use the ELF from the original
-firmware build. Power-on and brownout invalidate the volatile SRAM evidence.
+before resolving PC and LR. The previous boot also reports the last FreeRTOS
+task switch and the exception number of any instrumented ISR active at reset.
+The reference instruments SysTick. For another interrupt, pair
+`fault_note_isr_enter()` with `fault_note_isr_exit(previous)` in its handler.
+A zero exception number means no instrumented ISR was active. Task and cycle
+values describe the last recorded execution, with cycle counts modulo 2^32.
+
+The optional `--with-board` HIL checks exercise `reset cause json` and
+`fault retained json`. For the three reset scenarios, build the reference
+firmware with `-DMKDBG_FAULT_HIL=ON` and use a dedicated test board:
+
+| Scenario | Trigger on the board | Expected record |
+| --- | --- | --- |
+| HardFault | Send `fault hil hardfault` | Preceding boot's HardFault frame with exact image ID |
+| Deadlock | Send `fault hil deadlock` | Independent watchdog flag and previous-boot task context |
+| Power loss | Remove target power and power on again | Power-on or brownout flag and invalidated SRAM evidence |
+
+After each reboot, send `fault evidence json` and capture it into a separate log.
+Add `--expect hardfault`, `--expect deadlock`, or `--expect power-loss` to check
+the relevant record. HardFault and watchdog checks require the test ELF. For
+power loss, omit `--elf` because the expected evidence is a fresh boot.
 
 [GNU linker build ID options](https://www.sourceware.org/binutils/docs/ld/Options.html)
 
