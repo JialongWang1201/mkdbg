@@ -150,6 +150,8 @@ breakpoint or execution trace specific to the target.
 Maintain one `soc.json` per chip revision. Name the power and reset domains,
 map each core to its OpenOCD target and local GDB port, and declare bounded
 physical address spaces and safe read ranges for status, error, and trace.
+Optional fields extract named bit ranges from those words, such as the last
+transaction ID.
 The simulated profile at `tests/fixtures/platform/soc.json` shows the schema.
 
 Start the board's OpenOCD server with Tcl and GDB endpoints bound to loopback.
@@ -194,7 +196,9 @@ before resolving PC and LR. The previous boot also reports the last FreeRTOS
 task switch and the exception number of any instrumented ISR active at reset.
 The reference instruments SysTick. For another interrupt, pair
 `fault_note_isr_enter()` with `fault_note_isr_exit(previous)` in its handler.
-A zero exception number means no instrumented ISR was active. Task and cycle
+The host maps system exception numbers to names and computes the NVIC IRQ
+number for external interrupts. A zero IRQ observation means that no
+instrumented ISR was active. Task and cycle
 values describe the last recorded execution, with cycle counts modulo 2^32.
 
 The optional `--with-board` HIL checks exercise `reset cause json` and
@@ -213,6 +217,33 @@ the relevant record. HardFault and watchdog checks require the test ELF. For
 power loss, omit `--elf` because the expected evidence is a fresh boot.
 
 [GNU linker build ID options](https://www.sourceware.org/binutils/docs/ld/Options.html)
+
+### Linux kernel debug
+
+Use the matching unstripped `vmlinux` and a debugger built for the kernel's
+architecture. For live debugging, enable KGDB and configure the target's KGDB
+I/O transport, then enter KGDB on the target. For panic analysis, enable kdump
+on the target in advance and save its `vmcore` for local analysis.
+
+```bash
+python3 tools/linux_debug.py kgdb --vmlinux ./vmlinux \
+  --endpoint /dev/ttyUSB0 --baud 115200 --gdb gdb-multiarch
+python3 tools/linux_debug.py kdump --vmlinux ./vmlinux \
+  --vmcore ./dumps/vmcore --pid 72 --module example=./example.ko
+```
+
+The interactive KGDB entry opens GDB with kernel symbols. Use `--batch` for
+the threads reported by KGDB and their backtraces. Kdump analysis runs
+`crash` on a Linux analysis host and prints the panic log, active stack on
+each CPU, task list, address mappings, modules, and IRQ state. Use `--section`
+to limit output. Supply a PID to inspect the waiting task's stack and maps.
+Pass matching module objects to resolve driver frames. These observations
+provide the starting point for following a lock owner, interrupt, or firmware
+response in the affected driver's data structures.
+
+[Linux KGDB](https://docs.kernel.org/process/debugging/kgdb.html) ·
+[Linux kdump](https://www.kernel.org/doc/html/latest/admin-guide/kdump/kdump.html) ·
+[crash backtraces](https://crash-utility.github.io/help_pages/bt.html)
 
 ## Config
 

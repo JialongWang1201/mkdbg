@@ -2,15 +2,18 @@ import json
 import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 from pathlib import Path
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "tests" / "fixtures" / "platform"
 sys.path.insert(0, str(ROOT / "tools"))
 import soc_debug
 import firmware_evidence
+import linux_debug
 
 
 class BoardTests(unittest.TestCase):
@@ -84,6 +87,7 @@ interp alias {} soc.mcu {} core soc.mcu
     def test_coordinated_halt_restores_preexisting_halt(self):
         report = self.run_snapshot()
         self.assertEqual(report["reads"]["last-transaction"]["data"], [0x77] * 4)
+        self.assertEqual(report["reads"]["last-transaction"]["decoded"], {"transaction-id": 0x77})
         self.assertEqual(report["errors"], [])
 
     def test_failed_wait_still_restores_running_core(self):
@@ -112,6 +116,11 @@ class FirmwareTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     firmware_evidence.verify_scenario({"valid": 0}, scenario)
 
+    def test_cortex_m_exceptions_preserve_missing_observations(self):
+        self.assertEqual(firmware_evidence.decode_exception(0, "unobserved"), {"kind": "unobserved"})
+        self.assertEqual(firmware_evidence.decode_exception(15, "unobserved")["name"], "SysTick")
+        self.assertEqual(firmware_evidence.decode_exception(54, "thread")["irq"], 38)
+
     def test_watchdog_checks_previous_runtime_image(self):
         record = {"valid": 1, "build_id": "1" * 40, "runtime_valid": 1,
                   "runtime_build_id": "a" * 40}
@@ -120,6 +129,39 @@ class FirmwareTests(unittest.TestCase):
                                                             runtime=True), "a" * 40)
             with self.assertRaisesRegex(ValueError, "build ID mismatch"):
                 firmware_evidence.verify_build(record, Path("image"), "readelf")
+
+
+
+class LinuxTests(unittest.TestCase):
+    def test_kgdb_plan_selects_symbols_threads_and_stacks(self):
+        args = SimpleNamespace(vmlinux=FIXTURE / "board.json", endpoint="127.0.0.1:1234",
+                               gdb="gdb-multiarch", batch=True, baud=None)
+        command = linux_debug.kgdb_command(args)
+        self.assertEqual(command[0], "gdb-multiarch")
+        self.assertIn("target remote 127.0.0.1:1234", command)
+        self.assertIn("thread apply all bt", command)
+        args.endpoint = "host:1234\ncontinue"
+        with self.assertRaisesRegex(ValueError, "serial device or host:port"):
+            linux_debug.kgdb_command(args)
+
+    def test_kdump_commands_cover_cpu_tasks_panic_modules_and_mappings(self):
+        with tempfile.TemporaryDirectory() as directory:
+            module = Path(directory) / "driver.ko"
+            module.touch()
+            args = SimpleNamespace(vmlinux=FIXTURE / "board.json", vmcore=FIXTURE / "soc.json",
+                                   pid=72, section=None, module=[f"driver={module}"], crash="crash")
+
+            def invoke(argv):
+                self.assertEqual(argv[:3], ["crash", "-s", "-i"])
+                commands = Path(argv[3]).read_text().splitlines()
+                self.assertEqual(commands[0], f"mod -s driver {module.resolve()}")
+                self.assertEqual(commands[1:], ["sys", "log", "bt -a", "ps", "vm 72",
+                                                "mod", "irq", "bt 72", "exit"])
+                self.assertEqual(argv[-2:], [str(args.vmlinux), str(args.vmcore)])
+                return 37
+
+            with patch.object(linux_debug.subprocess, "call", side_effect=invoke):
+                self.assertEqual(linux_debug.inspect_dump(args), 37)
 
 
 if __name__ == "__main__":
