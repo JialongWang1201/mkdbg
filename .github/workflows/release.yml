@@ -14,6 +14,10 @@ concurrency:
 permissions:
   contents: write
 
+env:
+  # Rebuild this exact version tag without notarization or release uploads.
+  MKDBG_UNNOTARIZED_REBUILD_TAG: ${{ vars.MKDBG_UNNOTARIZED_REBUILD_TAG }}
+
 jobs:
   # ── Build matrix ────────────────────────────────────────────────────────────
   build:
@@ -138,7 +142,8 @@ jobs:
           fi
 
           source_ref="${{ github.event.workflow_run.head_branch }}"
-          if [[ "${{ matrix.os }}" == "darwin" && "${source_ref}" == v* ]]; then
+          if [[ "${{ matrix.os }}" == "darwin" && "${source_ref}" == v* &&
+                "${source_ref}" != "${MKDBG_UNNOTARIZED_REBUILD_TAG}" ]]; then
             for name in MACOS_CERTIFICATE_P12 MACOS_CERTIFICATE_PASSWORD \
                         MACOS_SIGNING_IDENTITY APPLE_ID APPLE_TEAM_ID \
                         APPLE_APP_PASSWORD; do
@@ -233,6 +238,10 @@ jobs:
         run: |
           set -euo pipefail
           tag="${{ steps.tag.outputs.name }}"
+          if [[ "${tag}" == v* && "${tag}" == "${MKDBG_UNNOTARIZED_REBUILD_TAG}" ]]; then
+            printf 'Rebuilt %s without notarization. Build artifacts are available in this run.\n' "${tag}"
+            exit 0
+          fi
           if gh release view "${tag}" >/dev/null 2>&1; then
             gh release upload "${tag}" dist/* --clobber
             exit 0
