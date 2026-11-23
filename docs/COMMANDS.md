@@ -50,6 +50,7 @@ mkdbg doctor
 mkdbg doctor --live --port /dev/cu.usbmodem21303
 mkdbg build
 mkdbg flash
+mkdbg probe status --target microkernel
 mkdbg probe halt
 mkdbg probe flash
 mkdbg incident open --name irq-timeout
@@ -113,6 +114,137 @@ mkdbg build --target tahoe
 mkdbg run --target tahoe -- make test
 ```
 
+### Board and SoC debug
+
+Set `openocd_cfg` to the OpenOCD configuration for the board revision. Use
+`mkdbg probe status --target <name> --dry-run` to check which file will be used.
+The live command starts an OpenOCD session, polls examined targets, and prints
+the `targets` table. An unsuccessful poll or zero polled targets gives a
+nonzero exit status. Use a board configuration that leaves `init` to mkdbg.
+Use this command outside an active debug session. OpenOCD initialization runs
+board and target hooks, and some target drivers clear hardware breakpoints.
+Power rails, reset timing, and boot progress require separate measurements.
+
+Keep one profile per board revision. The profile maps probe wiring, instrument
+channels, edge thresholds, and expected delays from a common power-on trigger.
+Feed voltage and logic instrument exports as CSV with columns
+`time_ns,channel,value`. Each instrument's `offset_ns` maps its sample clock to
+the capture clock, and `error_ns` bounds the alignment error. Use an ID unique to
+that synchronized capture for `clock`.
+
+```bash
+python3 tools/board_evidence.py tests/fixtures/platform/board.json \
+  --samples scope=tests/fixtures/platform/scope.csv \
+  --samples logic=tests/fixtures/platform/logic.csv
+```
+
+A transition is bounded by the samples on both sides of the threshold. The
+report retains uncertainty when that interval overlaps an expected timing
+limit or the CPU observation window. Pass a same-clock CPU capture with
+`--cpu-state` to compare the intervals. A boot marker confirms execution reached
+the instrumented point. Confirm the first instruction with a reset-vector
+breakpoint or execution trace specific to the target.
+
+### SoC core and trace inspection
+
+Maintain one `soc.json` per chip revision. Name the power and reset domains,
+map each core to its OpenOCD target and local GDB port, and declare bounded
+physical address spaces and safe read ranges for status, error, and trace.
+Optional fields extract named bit ranges from those words, such as the last
+transaction ID.
+The simulated profile at `tests/fixtures/platform/soc.json` shows the schema.
+
+Start the board's OpenOCD server with Tcl and GDB endpoints bound to loopback.
+Use one operator per debug session and a board configuration with independent
+halt/resume behavior for each core when using a declared halt group.
+
+```bash
+python3 tools/soc_debug.py board/soc.json capture
+python3 tools/soc_debug.py board/soc.json capture --halt-group application-and-mcu
+python3 tools/soc_debug.py board/soc.json attach mcu-0 --elf build/firmware.elf
+```
+
+The capture records initial run states and trace/error words. A halt group
+issues all halt requests before waiting and restores previously running cores
+when the command exits, including after a failed capture. If a transport or
+restore error occurs, verify target states through the existing session.
+The halt sequence has an observation window and can have inter-core skew.
+Use `--clock` with the same calibrated capture identifier as the board profile
+to compare that window to instrument events.
+
+Only configure memory-mapped ranges the target permits reading. A register
+with a read side effect needs target-specific handling. Interpret transaction
+IDs, latch semantics, reset persistence, and trace records using the chip
+revision's register map. Before tape-out, record those semantics for the
+fabric errors, power-domain state, boot milestones, and trace buffers needed
+for bring-up.
+
+[OpenOCD Tcl RPC documentation](https://openocd.org/doc-release/html/Tcl-Scripting-API.html)
+
+### Firmware identity after reset
+
+On the STM32F446 example, send `fault evidence json` through the UART console
+after reboot and save the reply. It includes the reset flags and, for a retained
+CPU fault, the faulting boot, PC, LR, and GNU build ID of the faulting image.
+
+```bash
+python3 tools/firmware_evidence.py fault-uart.log --elf build/MicroKernel_MPU.elf
+```
+
+The ID comes from the loaded ELF note. The verifier compares the full ID
+before resolving PC and LR. The previous boot also reports the last FreeRTOS
+task switch and the exception number of any instrumented ISR active at reset.
+The reference instruments SysTick. For another interrupt, pair
+`fault_note_isr_enter()` with `fault_note_isr_exit(previous)` in its handler.
+The host maps system exception numbers to names and computes the NVIC IRQ
+number for external interrupts. A zero IRQ observation means that no
+instrumented ISR was active. Task and cycle
+values describe the last recorded execution, with cycle counts modulo 2^32.
+
+The optional `--with-board` HIL checks exercise `reset cause json` and
+`fault retained json`. For the three reset scenarios, build the reference
+firmware with `-DMKDBG_FAULT_HIL=ON` and use a dedicated test board:
+
+| Scenario | Trigger on the board | Expected record |
+| --- | --- | --- |
+| HardFault | Send `fault hil hardfault` | Preceding boot's HardFault frame with exact image ID |
+| Deadlock | Send `fault hil deadlock` | Independent watchdog flag and previous-boot task context |
+| Power loss | Remove target power and power on again | Power-on or brownout flag and invalidated SRAM evidence |
+
+After each reboot, send `fault evidence json` and capture it into a separate log.
+Add `--expect hardfault`, `--expect deadlock`, or `--expect power-loss` to check
+the relevant record. HardFault and watchdog checks require the test ELF. For
+power loss, omit `--elf` because the expected evidence is a fresh boot.
+
+[GNU linker build ID options](https://www.sourceware.org/binutils/docs/ld/Options.html)
+
+### Linux kernel debug
+
+Use the matching unstripped `vmlinux` and a debugger built for the kernel's
+architecture. For live debugging, enable KGDB and configure the target's KGDB
+I/O transport, then enter KGDB on the target. For panic analysis, enable kdump
+on the target in advance and save its `vmcore` for local analysis.
+
+```bash
+python3 tools/linux_debug.py kgdb --vmlinux ./vmlinux \
+  --endpoint /dev/ttyUSB0 --baud 115200 --gdb gdb-multiarch
+python3 tools/linux_debug.py kdump --vmlinux ./vmlinux \
+  --vmcore ./dumps/vmcore --pid 72 --module example=./example.ko
+```
+
+The interactive KGDB entry opens GDB with kernel symbols. Use `--batch` for
+the threads reported by KGDB and their backtraces. Kdump analysis runs
+`crash` on a Linux analysis host and prints the panic log, active stack on
+each CPU, task list, address mappings, modules, and IRQ state. Use `--section`
+to limit output. Supply a PID to inspect the waiting task's stack and maps.
+Pass matching module objects to resolve driver frames. These observations
+provide the starting point for following a lock owner, interrupt, or firmware
+response in the affected driver's data structures.
+
+[Linux KGDB](https://docs.kernel.org/process/debugging/kgdb.html) ·
+[Linux kdump](https://www.kernel.org/doc/html/latest/admin-guide/kdump/kdump.html) ·
+[crash backtraces](https://crash-utility.github.io/help_pages/bt.html)
+
 ## Config
 
 `mkdbg` searches upward from the current working directory for
@@ -168,6 +300,7 @@ Current MVP supports:
 - `mkdbg incident status`
 - `mkdbg incident close`
 - `mkdbg incident export`
+- `mkdbg probe status`
 - `mkdbg probe reset`
 - `mkdbg probe halt`
 - `mkdbg probe resume`

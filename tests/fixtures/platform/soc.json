@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "soc": "simulated-soc",
+  "revision": "B1",
+  "tcl_port": 6666,
+  "power_domains": ["application", "always-on"],
+  "reset_domains": ["application", "mcu"],
+  "cores": {
+    "ap-0": {"target": "soc.ap", "gdb_port": 3333, "power_domain": "application", "reset_domain": "application"},
+    "mcu-0": {"target": "soc.mcu", "gdb_port": 3334, "power_domain": "always-on", "reset_domain": "mcu"}
+  },
+  "address_spaces": {
+    "system": {"core": "ap-0", "base": "0x10000000", "size": 256},
+    "trace-sram": {"core": "mcu-0", "base": "0x20000000", "size": 1024}
+  },
+  "reads": {
+    "fabric-error": {"space": "system", "offset": "0x8", "words": 1, "kind": "error", "requires_halt": false},
+    "last-transaction": {
+      "space": "trace-sram", "offset": 0, "words": 4, "kind": "trace", "requires_halt": true,
+      "fields": {"transaction-id": {"word": 0, "lsb": 0, "width": 8}}
+    }
+  },
+  "halt_groups": {"application-and-mcu": ["ap-0", "mcu-0"]}
+}

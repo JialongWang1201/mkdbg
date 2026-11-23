@@ -1,8 +1,6 @@
 #include "fault.h"
 #include "board.h"
 #include "stm32f4xx.h"
-#include "FreeRTOS.h"
-#include "task.h"
 #include <string.h>
 #include <stdio.h>
 #include "seam_agent.h"
@@ -14,7 +12,19 @@
 #define FAULT_MAGIC 0xFA17EADU
 #define FAULT_HISTORY_LEN 8U
 #define FAULT_RETENTION_MAGIC 0xFA17C0DEU
-#define FAULT_RETENTION_VERSION 1U
+#define FAULT_RETENTION_VERSION 3U
+#define FAULT_BUILD_ID_SIZE 20U
+
+extern const uint8_t __mkdbg_build_id[FAULT_BUILD_ID_SIZE];
+
+typedef struct {
+  uint32_t valid;
+  uint32_t task;
+  uint32_t cycle;
+  uint32_t exception;
+  uint8_t build_id[FAULT_BUILD_ID_SIZE];
+  char name[16];
+} FaultRuntime;
 
 typedef struct {
   uint32_t magic;
@@ -23,7 +33,10 @@ typedef struct {
   uint32_t last_reset_flags;
   uint32_t retained_fault_valid;
   uint32_t fault_reboot_pending;
+  uint32_t fault_boot_count;
+  uint8_t fault_build_id[FAULT_BUILD_ID_SIZE];
   FaultRecord retained_fault;
+  FaultRuntime runtime;
 } FaultRetentionBlob;
 
 static volatile FaultRecord g_fault_last;
@@ -35,7 +48,8 @@ static volatile FaultRetentionBlob g_fault_retained
   __attribute__((section(".fault_retained"), aligned(64)));
 static uint32_t g_fault_boot_reset_flags = 0U;
 static uint8_t g_fault_boot_fault_reboot = 0U;
-static char g_fault_emit_buf[512];
+static FaultRuntime g_fault_previous_runtime;
+static char g_fault_emit_buf[640];
 
 static const char *fault_cpu_name(FaultCpuType type)
 {
@@ -51,29 +65,6 @@ static const char *fault_cpu_name(FaultCpuType type)
   }
 }
 
-static void fault_copy_task(char *dst, size_t max)
-{
-  if (dst == NULL || max == 0U) {
-    return;
-  }
-  dst[0] = '\0';
-  if (__get_IPSR() != 0U) {
-    return;
-  }
-  if (xTaskGetSchedulerState() != taskSCHEDULER_RUNNING) {
-    return;
-  }
-  const char *name = pcTaskGetName(NULL);
-  if (name == NULL) {
-    return;
-  }
-  size_t i = 0;
-  for (; i + 1U < max && name[i] != '\0'; ++i) {
-    dst[i] = name[i];
-  }
-  dst[i] = '\0';
-}
-
 static void fault_retention_init_if_needed(void)
 {
   if (g_fault_retained.magic == FAULT_RETENTION_MAGIC &&
@@ -81,8 +72,9 @@ static void fault_retention_init_if_needed(void)
     return;
   }
   memset((void *)&g_fault_retained, 0, sizeof(g_fault_retained));
-  g_fault_retained.magic = FAULT_RETENTION_MAGIC;
   g_fault_retained.version = FAULT_RETENTION_VERSION;
+  __DMB();
+  g_fault_retained.magic = FAULT_RETENTION_MAGIC;
 }
 
 static void fault_store_retained_cpu(const FaultRecord *src)
@@ -91,9 +83,49 @@ static void fault_store_retained_cpu(const FaultRecord *src)
     return;
   }
   fault_retention_init_if_needed();
+  g_fault_retained.fault_reboot_pending = 0U;
+  g_fault_retained.retained_fault_valid = 0U;
+  __DMB();
   g_fault_retained.retained_fault = *src;
+  g_fault_retained.fault_boot_count = g_fault_retained.boot_count;
+  for (size_t i = 0U; i < FAULT_BUILD_ID_SIZE; ++i) {
+    g_fault_retained.fault_build_id[i] = __mkdbg_build_id[i];
+  }
+  __DMB();
   g_fault_retained.retained_fault_valid = 1U;
   g_fault_retained.fault_reboot_pending = 1U;
+}
+
+void fault_note_task_switch(uint32_t task, const char *name)
+{
+  volatile FaultRuntime *runtime = &g_fault_retained.runtime;
+  size_t i = 0U;
+
+  runtime->valid = 0U;
+  __DMB();
+  runtime->task = task;
+  runtime->cycle = DWT->CYCCNT;
+  while (i + 1U < sizeof(runtime->name) && name[i] != '\0') {
+    unsigned char c = (unsigned char)name[i];
+    runtime->name[i++] = (c < 32U || c >= 127U || c == '"' || c == '\\') ? '?' : (char)c;
+  }
+  runtime->name[i] = '\0';
+  __DMB();
+  runtime->valid = 1U;
+}
+
+uint32_t fault_note_isr_enter(void)
+{
+  uint32_t previous = g_fault_retained.runtime.exception;
+  g_fault_retained.runtime.exception = __get_IPSR();
+  __DMB();
+  return previous;
+}
+
+void fault_note_isr_exit(uint32_t previous)
+{
+  g_fault_retained.runtime.exception = previous;
+  __DMB();
 }
 
 static const char *fault_reset_primary_name(uint32_t flags)
@@ -371,7 +403,17 @@ void fault_dispatch(const FaultRecord *record)
 
 void fault_boot_init(uint32_t reset_flags)
 {
+  if ((reset_flags & (RCC_CSR_PORRSTF | RCC_CSR_BORRSTF)) != 0U) {
+    g_fault_retained.magic = 0U;
+    __DMB();
+  }
   fault_retention_init_if_needed();
+  g_fault_previous_runtime = g_fault_retained.runtime;
+  g_fault_retained.runtime.valid = 0U;
+  g_fault_retained.runtime.exception = 0U;
+  for (size_t i = 0U; i < FAULT_BUILD_ID_SIZE; ++i) {
+    g_fault_retained.runtime.build_id[i] = __mkdbg_build_id[i];
+  }
   g_fault_boot_reset_flags = reset_flags;
   g_fault_boot_fault_reboot =
     (g_fault_retained.fault_reboot_pending != 0U &&
@@ -398,17 +440,23 @@ void fault_report_cpu(FaultCpuType type, uint32_t *stacked, uint32_t exc_return)
   r.mmfar = SCB->MMFAR;
   r.bfar = SCB->BFAR;
 
-  if (stacked != NULL) {
-    uint32_t *frame = stacked;
-    if ((exc_return & (1U << 4)) == 0U) {
-      frame = stacked + 18U; /* Skip FP context if present. */
-    }
-    r.pc = frame[6];
-    r.lr = frame[5];
-    r.xpsr = frame[7];
+  uintptr_t stack = (uintptr_t)stacked;
+  const uint32_t stack_errors = SCB_CFSR_STKERR_Msk | SCB_CFSR_MSTKERR_Msk;
+  if ((r.cfsr & stack_errors) == 0U && (stack & 3U) == 0U &&
+      stack >= 0x20000000U && stack <= 0x20020000U - 8U * sizeof(uint32_t)) {
+    /* r0..xPSR lead both basic and FP-extended Cortex-M4 frames. */
+    r.pc = stacked[6];
+    r.lr = stacked[5];
+    r.xpsr = stacked[7];
+    r.frame_valid = 1U;
   }
-  r.sp = (exc_return & (1U << 2)) ? r.psp : r.msp;
-  fault_copy_task(r.task, sizeof(r.task));
+  r.sp = (uint32_t)stack;
+  const volatile FaultRuntime *runtime = &g_fault_retained.runtime;
+  if (runtime->valid != 0U && r.frame_valid != 0U && (r.xpsr & 0x1FFU) == 0U) {
+    for (size_t i = 0U; i < sizeof(r.task); ++i) {
+      r.task[i] = runtime->name[i];
+    }
+  }
   fault_capture_mpu_region(&r);
   fault_store_retained_cpu(&r);
 
@@ -516,6 +564,60 @@ void fault_emit_retained_json(void)
   if (g_fault_retained.retained_fault_valid != 0U) {
     fault_emit_json_record(&g_fault_retained.retained_fault);
   }
+}
+
+static void fault_format_build_id(char *out, const volatile uint8_t *id, int valid)
+{
+  static const char hex[] = "0123456789abcdef";
+
+  out[0] = '\0';
+  if (valid) {
+    for (size_t i = 0U; i < FAULT_BUILD_ID_SIZE; ++i) {
+      uint8_t byte = id[i];
+      out[i * 2U] = hex[byte >> 4];
+      out[i * 2U + 1U] = hex[byte & 0x0FU];
+    }
+    out[FAULT_BUILD_ID_SIZE * 2U] = '\0';
+  }
+}
+
+void fault_emit_evidence_json(void)
+{
+  char build_id[FAULT_BUILD_ID_SIZE * 2U + 1U];
+  char runtime_id[sizeof(build_id)];
+  const int valid = g_fault_retained.retained_fault_valid != 0U;
+  const volatile FaultRecord *record = &g_fault_retained.retained_fault;
+  const FaultRuntime *runtime = &g_fault_previous_runtime;
+
+  fault_format_build_id(build_id, g_fault_retained.fault_build_id, valid);
+  fault_format_build_id(runtime_id, runtime->build_id, runtime->valid != 0U);
+  snprintf(g_fault_emit_buf, sizeof(g_fault_emit_buf),
+           "{\"type\":\"firmware-evidence\",\"version\":1,\"reset\":\"%s\","
+           "\"reset_flags\":\"0x%08lX\",\"boot_count\":%lu,\"fault_reboot\":%u,"
+           "\"valid\":%d,\"fault_boot\":%lu,\"build_id\":\"%s\","
+           "\"fault\":\"%s\",\"pc\":\"0x%08lX\",\"lr\":\"0x%08lX\","
+           "\"frame_valid\":%u,\"fault_exception\":%lu,"
+           "\"runtime_valid\":%lu,\"runtime_build_id\":\"%s\",\"task\":\"%s\","
+           "\"task_handle\":\"0x%08lX\",\"task_cycle\":%lu,\"irq_exception\":%lu}\r\n",
+           fault_reset_primary_name(g_fault_boot_reset_flags),
+           (unsigned long)g_fault_boot_reset_flags,
+           (unsigned long)g_fault_retained.boot_count,
+           (unsigned)g_fault_boot_fault_reboot,
+           valid,
+           valid ? (unsigned long)g_fault_retained.fault_boot_count : 0UL,
+           build_id,
+           valid ? fault_cpu_name((FaultCpuType)record->cpu_type) : "",
+           valid ? (unsigned long)record->pc : 0UL,
+           valid ? (unsigned long)record->lr : 0UL,
+           valid ? (unsigned)record->frame_valid : 0U,
+           valid ? (unsigned long)(record->xpsr & 0x1FFU) : 0UL,
+           (unsigned long)runtime->valid,
+           runtime_id,
+           runtime->valid ? runtime->name : "",
+           runtime->valid ? (unsigned long)runtime->task : 0UL,
+           runtime->valid ? (unsigned long)runtime->cycle : 0UL,
+           (unsigned long)runtime->exception);
+  board_uart_write(g_fault_emit_buf);
 }
 
 void fault_emit_retained_human(void)

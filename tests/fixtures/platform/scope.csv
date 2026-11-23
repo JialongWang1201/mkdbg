@@ -1,0 +1,5 @@
+time_ns,channel,value
+99,CH1,0
+100,CH1,3.3
+113,CH2,0.1
+115,CH2,1.2

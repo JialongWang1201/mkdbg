@@ -43,7 +43,7 @@ static void usage(void)
          C_BOLD, C_RESET, C_DIM, C_RESET);
   printf("  %sflash%s     %srun flash_cmd from config%s\n",
          C_BOLD, C_RESET, C_DIM, C_RESET);
-  printf("  %sprobe%s     %shardware control (halt, resume, reset, read32, write32)%s\n\n",
+  printf("  %sprobe%s     %starget status and hardware control%s\n\n",
          C_BOLD, C_RESET, C_DIM, C_RESET);
 
   printf("%sMonitor:%s\n", C_BOLD, C_RESET);
@@ -292,6 +292,10 @@ int main(int argc, char **argv)
     ProbeOptions opts;
     if (argc < 3) {
       die("probe requires a subcommand");
+    }
+    if (strcmp(argv[2], "status") == 0) {
+      parse_probe_args(argc - 3, argv + 3, &opts);
+      return cmd_probe_status(&opts);
     }
     if (strcmp(argv[2], "reset") == 0) {
       parse_probe_args(argc - 3, argv + 3, &opts);

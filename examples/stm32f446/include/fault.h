@@ -44,6 +44,7 @@ typedef struct {
   uint8_t vm_dtop;
   uint8_t vm_rtop;
   char task[16];
+  uint8_t frame_valid;
 } FaultRecord;
 
 typedef struct {
@@ -69,6 +70,10 @@ int fault_retained_copy(FaultRetentionInfo *out);
 void fault_emit_last_json(void);
 void fault_emit_last_human(void);
 void fault_emit_retained_json(void);
+void fault_emit_evidence_json(void);
+void fault_note_task_switch(uint32_t task, const char *name);
+uint32_t fault_note_isr_enter(void);
+void fault_note_isr_exit(uint32_t previous);
 void fault_emit_retained_human(void);
 void fault_emit_reset_cause_json(void);
 void fault_emit_reset_cause_human(void);

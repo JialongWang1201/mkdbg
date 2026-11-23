@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "board": "simulated-board",
+  "revision": "A",
+  "clock": "bench-session-1",
+  "probe": {"transport": "swd", "connector": "J1", "openocd_cfg": "board-a.cfg"},
+  "instruments": {
+    "scope": {"offset_ns": 0, "error_ns": 0},
+    "logic": {"offset_ns": 10, "error_ns": 1}
+  },
+  "trigger": "power-enable",
+  "signals": {
+    "power-enable": {"instrument": "scope", "channel": "CH1", "kind": "trigger", "direction": "rising", "threshold": 1},
+    "core-rail": {"instrument": "scope", "channel": "CH2", "kind": "power", "direction": "rising", "threshold": 1.1, "min_delay_ns": 5, "max_delay_ns": 25},
+    "reset-release": {"instrument": "logic", "channel": "D0", "kind": "reset", "direction": "rising", "threshold": 0.5, "min_delay_ns": 20, "max_delay_ns": 45},
+    "boot-marker": {"instrument": "logic", "channel": "D1", "kind": "boot-marker", "direction": "rising", "threshold": 0.5, "min_delay_ns": 35, "max_delay_ns": 70}
+  }
+}
