@@ -254,39 +254,19 @@ All jobs are in `.github/workflows/ci.yml`:
 
 ## 6. Contribution guide
 
-### Change policy
-
-- One logical change per commit.
-- Minimal diff: change only what is necessary.
-- New C code must compile with `-Wall -Wextra -Werror`.
-- CI must pass before merging.
-
-### Commit style
-
-```
-subsystem: short description
-
-Optional body explaining why.
-```
-
-Examples:
-- `arch: add ESP32 DPORT register decoder`
-- `wire: increase RSP timeout to 5s`
-- `docs: fix PORTING.md baud rate example`
+See the [contribution guide](../CONTRIBUTING.md) for branch conventions,
+engineering standards, validation, and pull request expectations.
 
 ### Adding a command
 
-1. Add a handler function in `src/action.c`.
-2. Wire it into the dispatch table in `src/core.c`.
-3. Document in `docs/COMMANDS.md`.
+1. Register the command in `src/main.c` and add its options to the existing
+   parser where applicable.
+2. Put the handler in the module responsible for the operation. Reuse
+   `src/action.c` for configured actions.
+3. Update CLI help and the [command reference](COMMANDS.md). Verify the command
+   through the native CLI entry point.
 
 ### Extending WireCrashReport
 
-`WireCrashReport` is defined in `src/mkdbg.h`.  Add fields additively — do
-not remove or reorder existing fields, as the JSON parser in `src/wire.c`
-matches by field name.
-
-### Submodule policy
-
-`deps/wire`, `deps/seam`, `deps/libgit2` are external submodules.  Do not
-commit changes to them in this repo — send PRs upstream instead.
+`WireCrashReport` is defined in `src/mkdbg.h`. Preserve existing report fields
+when extending it. The JSON parser in `src/wire.c` looks up fields by name.

@@ -126,6 +126,17 @@ int debug_session_continue_interruptible(DebugSession *s,
 
 int debug_session_detach(DebugSession *s)
 {
+    if (!s) return WIRE_ERR_IO;
+    while (s->breakpoint_count > 0) {
+        int id = s->breakpoints[s->breakpoint_count - 1].id;
+        int rc = debug_session_remove_breakpoint(s, id);
+        if (rc != WIRE_OK) return rc;
+    }
+    while (s->watchpoint_count > 0) {
+        int id = s->watchpoints[s->watchpoint_count - 1].id;
+        int rc = debug_session_remove_watchpoint(s, id);
+        if (rc != WIRE_OK) return rc;
+    }
     /* Send 'c' but do NOT wait — leave the MCU running and return. */
     return rsp_send_packet_t(s->transport, "c");
 }

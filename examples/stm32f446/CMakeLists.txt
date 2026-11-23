@@ -10,6 +10,7 @@ set(MKDBG_ROOT "${CMAKE_CURRENT_LIST_DIR}/../..")
 # ── Build identity ────────────────────────────────────────────────────────────
 set(VM32_MEM_SIZE  "4096" CACHE STRING "VM32 memory size in bytes (256/1024/4096)")
 set(BOARD_UART_PORT "2"   CACHE STRING "UART port for VCP (1/2/3)")
+option(MKDBG_FAULT_HIL "Enable STM32 fault injection console commands" OFF)
 set(BUILD_PROFILE  "default" CACHE STRING "Build profile label embedded in firmware identity")
 
 set(BUILD_INFO_FIRMWARE_NAME "MicroKernel-MPU")
@@ -113,6 +114,7 @@ target_compile_definitions(${PROJECT_NAME}.elf PRIVATE
   VM32_MEM_SIZE=${VM32_MEM_SIZE}
   BOARD_UART_PORT=${BOARD_UART_PORT}
   SEAM_RING_SIZE=8
+  $<$<BOOL:${MKDBG_FAULT_HIL}>:MKDBG_FAULT_HIL=1>
 )
 
 target_compile_options(${PROJECT_NAME}.elf PRIVATE
@@ -126,12 +128,15 @@ target_compile_options(${PROJECT_NAME}.elf PRIVATE
   -Wextra
 )
 
+set_property(TARGET ${PROJECT_NAME}.elf APPEND PROPERTY LINK_DEPENDS "${LINKER_SCRIPT}")
+
 target_link_options(${PROJECT_NAME}.elf PRIVATE
   -T${LINKER_SCRIPT}
   -mcpu=cortex-m4
   -mthumb
   -mfpu=fpv4-sp-d16
   -mfloat-abi=hard
+  -Wl,--build-id=sha1
   -Wl,--gc-sections
   -Wl,-Map=${PROJECT_NAME}.map
   -specs=nosys.specs

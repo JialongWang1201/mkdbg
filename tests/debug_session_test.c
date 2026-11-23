@@ -21,6 +21,7 @@ typedef struct {
     int interrupts;
     int fail_interrupt;
     int close_when_empty;
+    int fail_resume;
 } FakeTransport;
 
 static int fake_read(void *ctx, uint8_t *buf, int len, int timeout_ms)
@@ -43,6 +44,8 @@ static int fake_read(void *ctx, uint8_t *buf, int len, int timeout_ms)
 static int fake_write(void *ctx, const uint8_t *buf, int len)
 {
     FakeTransport *f = ctx;
+    if (f->fail_resume && len == 5 && memcmp(buf, "$c#63", 5) == 0)
+        return TRANSPORT_ERR_IO;
     if (len == 1 && buf[0] == 0x03) {
         f->interrupts++;
         if (f->fail_interrupt) return TRANSPORT_ERR_IO;
@@ -313,7 +316,10 @@ static void test_managed_breakpoints(void)
            fake.output_len == written, "full registry rejects add before target I/O");
     expect(debug_session_breakpoint_at(s, DEBUG_SESSION_MAX_BREAKPOINTS) == NULL,
            "registry view bounds are checked");
+    written = fake.output_len;
     debug_session_close(s);
+    expect(fake.closed && fake.output_len == written,
+           "close only releases resources even with active breakpoint records");
     debug_session_close(second);
 }
 
@@ -343,6 +349,109 @@ static void test_managed_watchpoints(void)
     debug_session_close(s);
 }
 
+static void test_detach_clears_owned_records(void)
+{
+    FakeTransport fake = {0};
+    DebugSession *s = open_fake(&fake, "cortex-m");
+    for (int i = 0; i < 2; i++) {
+        append_packet(&fake, "OK");
+        expect(debug_session_add_breakpoint(s, 0x8001000 + (uint32_t)i * 0x1000) > 0,
+               "set breakpoint before detach");
+    }
+    for (int i = 0; i < 3; i++) {
+        append_packet(&fake, "OK");
+        expect(debug_session_add_watchpoint(s, 0x20000000 + (uint32_t)i * 4,
+                                            (WatchpointType)(WATCHPOINT_WRITE + i)) > 0,
+               "set each watchpoint type before detach");
+    }
+    for (int i = 0; i < 5; i++) append_packet(&fake, "OK");
+    size_t written = fake.output_len;
+    expect(debug_session_detach(s) == WIRE_OK, "detach clears all owned records");
+    expect(debug_session_breakpoint_count(s) == 0 && debug_session_watchpoint_count(s) == 0,
+           "successful detach leaves no managed records");
+    static const char expected[] = "$z1,8002000,4#91+$z1,8001000,4#90+"
+                                  "$z4,20000008,1#c1+$z3,20000004,1#bc+"
+                                  "$z2,20000000,1#b7+$c#63";
+    expect(fake.output_len - written == sizeof(expected) - 1 &&
+           memcmp(fake.output + written, expected, sizeof(expected) - 1) == 0,
+           "detach clears exact breakpoint/watchpoint types before resuming once");
+    expect(!fake.closed, "detach does not destroy the transport");
+    debug_session_close(s);
+    expect(fake.closed, "close releases the detached transport");
+}
+
+static void test_detach_clear_failure_can_retry(void)
+{
+    FakeTransport fake = {0};
+    DebugSession *s = open_fake(&fake, "cortex-m");
+    for (int i = 0; i < 2; i++) {
+        append_packet(&fake, "OK");
+        expect(debug_session_add_breakpoint(s, 0x8001000 + (uint32_t)i * 0x1000) > 0,
+               "set breakpoint before failed detach");
+    }
+    append_packet(&fake, "OK");
+    expect(debug_session_add_watchpoint(s, 0x20000000, WATCHPOINT_WRITE) > 0,
+           "set watchpoint before failed detach");
+    append_packet(&fake, "OK");
+    append_packet(&fake, "E01");
+    size_t written = fake.output_len;
+    expect(debug_session_detach(s) == WIRE_ERR_IO, "detach propagates failed target clear");
+    expect(debug_session_breakpoint_count(s) == 1 &&
+           debug_session_breakpoint_at(s, 0)->id == 1 &&
+           debug_session_watchpoint_count(s) == 1,
+           "failed detach retains only records not successfully cleared");
+    static const char expected[] = "$z1,8002000,4#91+$z1,8001000,4#90+";
+    expect(fake.output_len - written == sizeof(expected) - 1 &&
+           memcmp(fake.output + written, expected, sizeof(expected) - 1) == 0,
+           "failed clear stops detach before resume or further target commands");
+    append_packet(&fake, "OK");
+    append_packet(&fake, "OK");
+    expect(debug_session_detach(s) == WIRE_OK &&
+           debug_session_breakpoint_count(s) == 0 && debug_session_watchpoint_count(s) == 0,
+           "retry can complete a partially cleared detach");
+    debug_session_close(s);
+}
+
+static void test_detach_watchpoint_and_resume_failures(void)
+{
+    FakeTransport fake = {0};
+    DebugSession *s = open_fake(&fake, "cortex-m");
+    append_packet(&fake, "OK");
+    expect(debug_session_add_watchpoint(s, 0x20000004, WATCHPOINT_READ) > 0,
+           "set read watchpoint before detach failure");
+    append_packet(&fake, "E01");
+    size_t written = fake.output_len;
+    expect(debug_session_detach(s) == WIRE_ERR_IO && debug_session_watchpoint_count(s) == 1,
+           "watchpoint clear failure retains the record");
+    static const char expected[] = "$z3,20000004,1#bc+";
+    expect(fake.output_len - written == sizeof(expected) - 1 &&
+           memcmp(fake.output + written, expected, sizeof(expected) - 1) == 0,
+           "watchpoint failure prevents resume");
+    append_packet(&fake, "OK");
+    fake.fail_resume = 1;
+    expect(debug_session_detach(s) == WIRE_ERR_IO && debug_session_watchpoint_count(s) == 0,
+           "resume write failure is propagated after successful cleanup");
+    fake.fail_resume = 0;
+    expect(debug_session_detach(s) == WIRE_OK, "resume can retry without clearing removed records");
+    debug_session_close(s);
+
+    memset(&fake, 0, sizeof(fake));
+    s = open_fake(&fake, "cortex-m");
+    append_packet(&fake, "OK");
+    expect(debug_session_add_watchpoint(s, 0x20000004, WATCHPOINT_READ) > 0,
+           "set watchpoint before transport disconnect");
+    fake.close_when_empty = 1;
+    written = fake.output_len;
+    expect(debug_session_detach(s) == WIRE_ERR_IO && debug_session_watchpoint_count(s) == 1,
+           "disconnect during detach retains the uncleared record");
+    static const char request[] = "$z3,20000004,1#bc";
+    expect(fake.output_len - written == sizeof(request) - 1 &&
+           memcmp(fake.output + written, request, sizeof(request) - 1) == 0,
+           "disconnect aborts detach without a resume packet");
+    debug_session_close(s);
+    expect(debug_session_detach(NULL) == WIRE_ERR_IO, "NULL detach fails without a crash");
+}
+
 int main(void)
 {
     test_declared_register_mismatch();
@@ -357,6 +466,9 @@ int main(void)
     test_continue_nak_and_disconnect();
     test_managed_breakpoints();
     test_managed_watchpoints();
+    test_detach_clears_owned_records();
+    test_detach_clear_failure_can_retry();
+    test_detach_watchpoint_and_resume_failures();
     puts("debug_session_test: OK");
     return 0;
 }

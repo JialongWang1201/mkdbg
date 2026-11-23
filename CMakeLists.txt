@@ -255,6 +255,7 @@ set_target_properties(wire-host PROPERTIES
 
 # ── ctest: seam-analyze smoke ─────────────────────────────────────────────────
 enable_testing()
+add_subdirectory(deps/wire/test/host wire_crash_tests)
 add_test(NAME cli_version COMMAND mkdbg-native --version)
 set_tests_properties(cli_version PROPERTIES
   PASS_REGULAR_EXPRESSION "mkdbg-native ${MKDBG_VERSION}"
@@ -269,6 +270,11 @@ set_tests_properties(seam_analyze_kdi_cascade PROPERTIES
 )
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
+  add_test(NAME platform_diagnostics
+    COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/platform_diagnostics_test.py
+  )
+  set_tests_properties(platform_diagnostics PROPERTIES TIMEOUT 30)
   add_test(NAME debug_run_control
     COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/debug_run_control_test.py

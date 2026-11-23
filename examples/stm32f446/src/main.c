@@ -6330,7 +6330,7 @@ static void cli_task(void *arg)
           log_send_blocking("snapshot\r\n");
           log_send_blocking("profile [json|reset]\r\n");
           log_send_blocking("mode <hb|adc|all> | alarm <mv> | alarm off | dump [n] | clear\r\n");
-          log_send_blocking("fault last | fault dump | fault retained [json] | reset cause [json]\r\n");
+          log_send_blocking("fault last | fault dump | fault retained [json] | fault evidence json | reset cause [json]\r\n");
           log_send_blocking("bringup [check|json|mpu|phase ...|stage ...] | kdi ... | dep show|json|impact|impact-json <driver> | dep whatif|whatif-json <reset|throttle|deny> <driver> | profile [json|reset]\r\n");
         } else if (strcmp(line, "status") == 0) {
           log_status();
@@ -6363,6 +6363,25 @@ static void cli_task(void *arg)
           fault_emit_retained_human();
         } else if (strcmp(line, "fault retained json") == 0) {
           fault_emit_retained_json();
+        } else if (strcmp(line, "fault evidence json") == 0) {
+          fault_emit_evidence_json();
+#if MKDBG_FAULT_HIL
+        } else if (strcmp(line, "fault hil hardfault") == 0) {
+          __disable_irq();
+          SCB->SHCSR &= ~SCB_SHCSR_USGFAULTENA_Msk;
+          __DSB();
+          __ISB();
+          __asm volatile ("udf #0");
+        } else if (strcmp(line, "fault hil deadlock") == 0) {
+          __disable_irq();
+          IWDG->KR = 0xCCCCU; /* Start the independent watchdog. */
+          IWDG->KR = 0x5555U; /* Enable configuration writes. */
+          IWDG->PR = 3U;
+          IWDG->RLR = 500U;
+          while (IWDG->SR != 0U) {}
+          IWDG->KR = 0xAAAAU;
+          for (;;) {}
+#endif
         } else if (strcmp(line, "reset cause") == 0) {
           fault_emit_reset_cause_human();
         } else if (strcmp(line, "reset cause json") == 0) {

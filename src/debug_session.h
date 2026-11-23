@@ -40,7 +40,8 @@ DebugSession *debug_session_open(const char *port, int baud,
 DebugSession *debug_session_open_transport(WireTransport *t,
                                             const MkdbgArch *arch);
 
-/* Close UART and free the session. */
+/* Release transport and session resources without target I/O.
+ * Use debug_session_detach() first for a normal debugger exit. */
 void debug_session_close(DebugSession *s);
 
 /* ── Execution control ───────────────────────────────────────────────────── */
@@ -55,8 +56,10 @@ int debug_session_continue_interruptible(DebugSession *s,
                                          int (*interrupt_requested)(void *),
                                          void *ctx);
 
-/* Send 'c' and return immediately (do not wait for a stop reply).
- * Used on quit to leave the MCU running. */
+/* Clear session-owned breakpoints/watchpoints, then send 'c' without waiting
+ * for a stop reply. On clear failure, retain uncleared records and return the
+ * error without resuming. A resume write failure is also returned to the caller.
+ * This does not close the transport; callers must still close the session. */
 int debug_session_detach(DebugSession *s);
 
 /* Send a Ctrl-C (0x03) break-in byte and wait for the halt stop reply.

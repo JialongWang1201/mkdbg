@@ -1,4 +1,4 @@
-"""Failed target clears must retain local IDs in the CLI and TUI."""
+"""Managed records survive failed clears and are released on CLI/TUI exit."""
 
 import fcntl
 import os
@@ -68,7 +68,79 @@ def test_cli(binary, watchpoint=False, disconnected=False):
     assert f"{noun.capitalize()} 2 (0x{addresses[1]:08x}) cleared." in result.stdout, result.stdout
 
 
-def test_tui(binary):
+def test_exit_cleanup(binary, eof=False, failed_clear=None):
+    master, slave = pty.openpty()
+    process = None
+    try:
+        process = subprocess.Popen(
+            [binary, "debug", "--port", os.ttyname(slave)],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        commands = b"break 0x08001000\nrwatch 0x20000004\n"
+        process.stdin.write(commands + (b"" if eof else b"quit\n"))
+        process.stdin.close()
+        process.stdin = None
+        target = Target(master)
+        for request in (b"Z1,8001000,4", b"Z3,20000004,1"):
+            assert target.event() == request
+            os.write(master, b"+" + packet(b"OK"))
+        for request, kind in ((b"z1,8001000,4", "breakpoint"),
+                              (b"z3,20000004,1", "watchpoint")):
+            assert target.event() == request, "exit resumed before clearing owned records"
+            os.write(master, b"+" + packet(b"E01" if failed_clear == kind else b"OK"))
+            if failed_clear == kind:
+                break
+        if failed_clear is None:
+            assert target.event() == b"c", "exit must resume exactly once after cleanup"
+        stdout, stderr = process.communicate(timeout=5)
+        assert process.returncode == (1 if failed_clear else 0), (stdout, stderr)
+        if failed_clear:
+            assert b"detach failed" in stderr and b"target resume not confirmed" in stderr, stderr
+        else:
+            assert b"detach failed" not in stderr, stderr
+        try:
+            extra = target.event(timeout=0.05)
+        except AssertionError as error:
+            assert str(error) == "timed out waiting for debugger request", error
+        else:
+            raise AssertionError(("unexpected request after detach", extra))
+    finally:
+        if process is not None:
+            if process.poll() is None:
+                process.kill()
+            process.communicate()
+        os.close(master)
+        os.close(slave)
+
+
+def test_resume_write_failure(binary):
+    capture = b"MKDBGCAP" + struct.pack("<I32sII", 1, b"cortex-m", 0, 17)
+    capture += record(b"W", packet(b"c"), status=-1)
+    with tempfile.TemporaryDirectory(prefix="mkdbg-detach-failure-") as directory:
+        path = Path(directory) / "resume-failed.cap"
+        path.write_bytes(capture)
+        for commands in ("quit\n", ""):
+            result = subprocess.run(
+                [binary, "debug", "--replay-debug", str(path)],
+                input=commands, text=True, capture_output=True, timeout=5,
+            )
+            assert result.returncode == 1, (result.stdout, result.stderr)
+            assert "detach failed" in result.stderr, result.stderr
+        # A directory fd makes fgets fail with an input error rather than EOF.
+        input_fd = os.open(directory, os.O_RDONLY)
+        try:
+            result = subprocess.run(
+                [binary, "debug", "--replay-debug", str(path)],
+                stdin=input_fd, text=True, capture_output=True, timeout=5,
+            )
+        finally:
+            os.close(input_fd)
+        assert result.returncode == 1, (result.stdout, result.stderr)
+        assert "failed to read debug command" in result.stderr, result.stderr
+        assert "detach failed" in result.stderr, "input failure skipped the detach attempt"
+
+
+def test_tui(binary, quit_in_tui=False):
     master, slave = pty.openpty()
     port = os.ttyname(slave)
     pid, terminal = pty.fork()
@@ -142,13 +214,17 @@ def test_tui(binary):
             os.write(master, b"+" + packet(b"OK"))
         serve_until(b"g")
         os.write(master, b"+" + packet(b"00000000" * 17))
-        os.write(terminal, b"d4\rw0x20000004\rt")
+        os.write(terminal, b"d4\rw0x20000004\r" + (b"q" if quit_in_tui else b"t"))
         for request in (b"z1,8004000,4", b"Z2,20000004,1"):
             serve_until(request)
             os.write(master, b"+" + packet(b"OK"))
-        return_to_cli(2)
-        os.write(terminal, b"info watchpoints\ndelete watch 1\ndelete watch 2\ninfo watchpoints\nquit\n")
-        for request in (b"z3,20000000,1", b"z2,20000004,1"):
+        if quit_in_tui:
+            clears = (b"z2,20000004,1", b"z3,20000000,1")
+        else:
+            return_to_cli(2)
+            os.write(terminal, b"info watchpoints\ndelete watch 1\ndelete watch 2\ninfo watchpoints\nquit\n")
+            clears = (b"z3,20000000,1", b"z2,20000004,1")
+        for request in clears:
             serve_until(request)
             os.write(master, b"+" + packet(b"OK"))
         serve_until(b"c")
@@ -163,9 +239,10 @@ def test_tui(binary):
         assert pid is None, "TUI did not exit"
         reader.join(timeout=1)
         assert re.search(rb"3\s+0x08003000", output), bytes(output[-2000:])
-        assert re.search(rb"1\s+0x20000000\s+read", output), bytes(output[-2000:])
-        assert re.search(rb"2\s+0x20000004\s+write", output), bytes(output[-2000:])
-        assert b"No watchpoints." in output, bytes(output[-2000:])
+        if not quit_in_tui:
+            assert re.search(rb"1\s+0x20000000\s+read", output), bytes(output[-2000:])
+            assert re.search(rb"2\s+0x20000004\s+write", output), bytes(output[-2000:])
+            assert b"No watchpoints." in output, bytes(output[-2000:])
     finally:
         if pid is not None:
             os.kill(pid, signal.SIGKILL)
@@ -181,5 +258,10 @@ if __name__ == "__main__":
     test_cli(binary)
     test_cli(binary, disconnected=True)
     test_cli(binary, watchpoint=True)
+    for eof in (False, True):
+        for failed_clear in (None, "breakpoint", "watchpoint"):
+            test_exit_cleanup(binary, eof=eof, failed_clear=failed_clear)
+    test_resume_write_failure(binary)
     test_tui(binary)
+    test_tui(binary, quit_in_tui=True)
     print("debug_breakpoint_state_test: OK")

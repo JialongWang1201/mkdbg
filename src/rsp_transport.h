@@ -36,6 +36,8 @@ int rsp_continue_t(WireTransport *t, char *out_buf, size_t out_size,
 
 /*
  * Send cmd and receive the server response, with NAK/retransmit (up to 3×).
+ * Unsolicited S/T stop packets are acknowledged separately from command ACKs
+ * and responses. A '?' query returns its stop reply as the requested response.
  * Returns WIRE_OK on success.
  */
 int rsp_transaction_t(WireTransport *t, const char *cmd,

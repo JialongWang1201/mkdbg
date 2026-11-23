@@ -50,6 +50,7 @@ PHDRS
 {
   flash PT_LOAD FLAGS(5); /* R_X */
   ram   PT_LOAD FLAGS(6); /* RW_ */
+  build_note PT_NOTE FLAGS(4);
 }
 
 /* Sections */
@@ -153,6 +154,14 @@ SECTIONS
     PROVIDE_HIDDEN (__fini_array_end = .);
     . = ALIGN(4);
   } >FLASH :flash
+
+  .note.gnu.build-id : ALIGN(4)
+  {
+    KEEP(*(.note.gnu.build-id))
+  } >FLASH :flash :build_note
+  ASSERT(SIZEOF(.note.gnu.build-id) == 36, "Expected one GNU SHA-1 build ID")
+  /* ELF32 note header (12 bytes) followed by the 4-byte GNU owner. */
+  __mkdbg_build_id = ADDR(.note.gnu.build-id) + 16;
 
   /* Used by the startup to initialize data */
   _sidata = LOADADDR(.data);

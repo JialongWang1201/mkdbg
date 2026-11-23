@@ -79,9 +79,10 @@ STATIC_ASSERT((configMAX_SYSCALL_INTERRUPT_PRIORITY & ((1U << configPRIO_SHIFT) 
 #define portCONFIGURE_TIMER_FOR_RUN_TIME_STATS()
 #define portGET_RUN_TIME_COUNTER_VALUE()
 
-#define traceISR_ENTER()
-#define traceISR_EXIT()
-#define traceISR_EXIT_TO_SCHEDULER()
+#include "fault.h"
+#define traceISR_ENTER() uint32_t fault_previous_isr = fault_note_isr_enter()
+#define traceISR_EXIT() fault_note_isr_exit(fault_previous_isr)
+#define traceISR_EXIT_TO_SCHEDULER() traceISR_EXIT()
 
 /* ── seam RTOS instrumentation ───────────────────────────────────────────── */
 /* seam_agent.h has no FreeRTOS dependency so there is no circular include.  */
@@ -91,8 +92,11 @@ STATIC_ASSERT((configMAX_SYSCALL_INTERRUPT_PRIORITY & ((1U << configPRIO_SHIFT) 
 #include "seam_agent.h"
 
 #define traceTASK_SWITCHED_IN() \
-    seam_emit(CFL_LAYER_RTOS, CFL_EV_TASK_SWITCH, \
-              (uint32_t)(uintptr_t)xTaskGetCurrentTaskHandle(), 0, 0, 0)
+    do { \
+      uint32_t task = (uint32_t)(uintptr_t)xTaskGetCurrentTaskHandle(); \
+      fault_note_task_switch(task, pcTaskGetName(NULL)); \
+      seam_emit(CFL_LAYER_RTOS, CFL_EV_TASK_SWITCH, task, 0, 0, 0); \
+    } while (0)
 
 #define traceBLOCKED_ON_QUEUE_PEEK_FROM_ISR() \
     seam_emit(CFL_LAYER_RTOS, CFL_EV_TASK_BLOCK, \

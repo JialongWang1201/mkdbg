@@ -130,6 +130,7 @@ sudo cp tools/69-probe-rs.rules /etc/udev/rules.d/ && sudo udevadm control --rel
 | [`docs/COMMANDS.md`](docs/COMMANDS.md) | Full command reference and config format |
 | [`docs/PORTING.md`](docs/PORTING.md) | Porting the firmware agent to a new board |
 | [`docs/DEVELOPER_GUIDE.md`](docs/DEVELOPER_GUIDE.md) | Build system, testing, adding arch plugins |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md) | Contribution workflow, engineering standards, and validation |
 
 ---
 

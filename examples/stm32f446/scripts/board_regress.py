@@ -92,6 +92,18 @@ def run_step(ser: serial.Serial, step: Step, char_delay_s: float, retries: int) 
 def build_steps(include_mpu_overflow: bool) -> list[Step]:
     steps = [
         Step(
+            name="reset_cause",
+            command="reset cause json",
+            timeout_s=3.0,
+            must_contain=('"type":"reset-cause"', '"flags":', '"boot_count":'),
+        ),
+        Step(
+            name="fault_retained",
+            command="fault retained json",
+            timeout_s=3.0,
+            must_contain=('"type":"fault-retained"', '"valid":', '"fault_reboot":'),
+        ),
+        Step(
             name="io_flood",
             command="vm scenario io_flood",
             timeout_s=5.0,
