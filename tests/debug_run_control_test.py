@@ -1,11 +1,13 @@
 """Exercise the CLI's real SIGINT path over a PTY without target hardware."""
 
 import os
+from pathlib import Path
 import pty
 import select
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 
 
@@ -120,8 +122,52 @@ def test_spontaneous_stop_before_regs(binary):
         os.close(slave)
 
 
+def test_debug_target(binary):
+    with tempfile.TemporaryDirectory(prefix="mkdbg-debug-target-") as tmp:
+        root = Path(tmp).resolve()
+        board = root / "boards" / "pico"
+        board.mkdir(parents=True)
+        nested = root / "nested"
+        nested.mkdir()
+        elf = board / "build" / "swift-blinky.elf"
+
+        def run(*args, cwd=root, expected=0):
+            result = subprocess.run([binary, *args], cwd=cwd, text=True,
+                                    capture_output=True, timeout=5)
+            assert result.returncode == expected, (args, result.stdout, result.stderr)
+            return result.stdout + result.stderr
+
+        run("init", "--preset", "generic", "--name", "default-board")
+        run("target", "add", "pico", "--path", "boards/pico",
+            "--elf-path", "build/swift-blinky.elf", "--openocd-cfg", "openocd.cfg",
+            "--chip", "RP2040", "--arch", "cortex-m", "--port", "/dev/ttyPico")
+        run("target", "add", "legacy", "--path", ".")
+
+        flash = run("probe", "flash", "--target", "pico", "--dry-run", cwd=nested)
+        assert str(elf) in flash, flash
+        debug = run("debug", "--target", "pico", "--probe", "--dry-run", cwd=nested)
+        assert "probe_open(auto, RP2040)" in debug and "arch=cortex-m" in debug, debug
+        assert f"elf={elf}" in debug, debug
+        serial = run("debug", "--target", "pico", "--dry-run", cwd=nested)
+        assert "uart_open(/dev/ttyPico, 115200)" in serial and f"elf={elf}" in serial, serial
+        replay = run("debug", "--target", "pico", "--replay-debug", "session.cap", "--dry-run")
+        assert "replay debug capture=session.cap arch=cortex-m" in replay and f"elf={elf}" in replay, replay
+
+        override = run("debug", "--target", "pico", "--probe", "0",
+                       "--chip", "Override", "--arch", "riscv32", "--elf", "override.elf", "--dry-run")
+        assert "probe_open(selected, Override)" in override and "arch=riscv32" in override, override
+        assert "elf=override.elf" in override and str(elf) not in override, override
+
+        legacy = run("debug", "--target", "legacy", "--probe", "--dry-run")
+        assert "probe_open(auto, auto)" in legacy and "arch=cortex-m" in legacy, legacy
+        assert "elf=" not in legacy, legacy
+        missing = run("debug", "--target", "unknown", "--probe", "--dry-run", expected=2)
+        assert "repo `unknown` not found" in missing, missing
+
+
 if __name__ == "__main__":
     for confirmation in (False, True):
         test_interrupt(sys.argv[1], confirmation)
     test_spontaneous_stop_before_regs(sys.argv[1])
+    test_debug_target(os.path.abspath(sys.argv[1]))
     print("debug_run_control_test: OK")

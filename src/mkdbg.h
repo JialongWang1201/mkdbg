@@ -65,6 +65,8 @@ typedef struct {
   char snapshot_cmd[MAX_VALUE];
   char attach_cmd[MAX_VALUE];
   char elf_path[MAX_VALUE];
+  char chip[MAX_NAME];
+  char arch[MAX_NAME];
   char snapshot_output[MAX_VALUE];
   char openocd_cfg[MAX_VALUE];
   char openocd_server_cmd[MAX_VALUE];
@@ -105,6 +107,8 @@ typedef struct {
   const char *snapshot_cmd;
   const char *attach_cmd;
   const char *elf_path;
+  const char *chip;
+  const char *arch;
   const char *snapshot_output;
   const char *openocd_cfg;
   const char *openocd_server_cmd;
@@ -227,6 +231,7 @@ typedef struct {
 } DashboardOptions;
 
 typedef struct {
+  const char *target;
   const char *port;
   int         baud;
   const char *elf_path;
@@ -365,6 +370,8 @@ void incidents_root_from_config(const char *config_path, char *out, size_t out_s
 void current_incident_path_from_config(const char *config_path, char *out, size_t out_size);
 void incident_meta_path(const char *incident_dir, char *out, size_t out_size);
 int resolve_repo_name(const MkdbgConfig *config, const char *repo, const char *target, const char **out_name);
+/* Load a copy of the selected repo and fill config_path. Exits on config errors. */
+RepoConfig load_selected_repo(const char *repo, const char *target, char config_path[PATH_MAX]);
 
 /* ---- incident.c ---- */
 void sanitize_slug(const char *input, char *out, size_t out_size);

@@ -40,6 +40,7 @@ MKDBG_SOURCE=/absolute/path/to/mkdbg
 elf_path=build/swift-blinky.elf
 
 mkdbg target add pico --path "$PWD" --preset generic --elf-path "$elf_path" \
+  --chip RP2040 --arch cortex-m \
   --openocd-cfg "$MKDBG_SOURCE/examples/rp2040/openocd.cfg"
 mkdbg probe status --target pico --dry-run
 mkdbg probe status --target pico
@@ -56,7 +57,7 @@ Build mkdbg with probe support enabled to run this check.
 [Probe build steps](../../CONTRIBUTING.md#build-and-test-on-the-host)
 
 ```bash
-mkdbg debug --probe --chip RP2040 --arch cortex-m --elf "$elf_path"
+mkdbg debug --target pico --probe
 ```
 
 Run `regs` and check that it lists 17 registers, including PC, SP and xPSR.

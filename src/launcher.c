@@ -187,23 +187,9 @@ int cmd_attach(const AttachOptions *opts)
 {
   char config_path[PATH_MAX];
   char repo_root[PATH_MAX];
-  const char *repo_name;
-  const RepoConfig *repo;
-  MkdbgConfig config;
   char *shell_argv[4];
-
-  if (find_config_upward(config_path, sizeof(config_path)) != 0) {
-    die("missing %s; run `mkdbg init` first", CONFIG_NAME);
-  }
-  if (load_config_file(config_path, &config) != 0) {
-    die("invalid config: %s", config_path);
-  }
-  resolve_repo_name(&config, opts->repo, opts->target, &repo_name);
-  repo = find_repo_const(&config, repo_name);
-  if (repo == NULL) {
-    die("repo `%s` not found in %s", repo_name, config_path);
-  }
-  resolve_repo_root(config_path, repo, repo_root, sizeof(repo_root));
+  RepoConfig repo = load_selected_repo(opts->repo, opts->target, config_path);
+  resolve_repo_root(config_path, &repo, repo_root, sizeof(repo_root));
 
   /* wire-host --dump path: triggered by --port flag (direct UART attach) */
   if (!opts->use_probe && opts->port != NULL) {
@@ -248,13 +234,13 @@ int cmd_attach(const AttachOptions *opts)
     return 0;
   }
 
-  if (repo->attach_cmd[0] != '\0') {
+  if (repo.attach_cmd[0] != '\0') {
     if (opts->breakpoint_count > 0U || opts->gdb_command_count > 0U || opts->batch) {
       die("attach_cmd cannot be combined with --break, --command, or --batch");
     }
     shell_argv[0] = "/bin/sh";
     shell_argv[1] = "-lc";
-    shell_argv[2] = (char *)repo->attach_cmd;
+    shell_argv[2] = repo.attach_cmd;
     shell_argv[3] = NULL;
     return run_process(shell_argv, repo_root, opts->dry_run);
   }

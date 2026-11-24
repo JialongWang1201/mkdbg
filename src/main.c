@@ -70,7 +70,8 @@ static void usage(void)
 
   printf("%sQuick start:%s\n", C_BOLD, C_RESET);
   printf("  mkdbg init --name myboard --port /dev/ttyUSB0\n");
-  printf("  mkdbg attach --port /dev/ttyUSB0\n\n");
+  printf("  mkdbg attach --port /dev/ttyUSB0\n");
+  printf("  mkdbg debug --target myboard --probe\n\n");
   printf("  %sDocs:%s https://github.com/JialongWang1201/mkdbg\n\n", C_DIM, C_RESET);
 }
 
