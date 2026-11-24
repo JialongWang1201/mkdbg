@@ -84,13 +84,13 @@ static void tui_invalidate_regs(void)
 static int tui_read_regs(DebugSession *s)
 {
     uint32_t next[DEBUG_SESSION_MAX_REGS];
-    int nregs = debug_session_nregs(s);
     int pc_reg = debug_session_pc_reg(s);
 
     if (debug_session_read_regs(s, next) != WIRE_OK) {
         tui_invalidate_regs();
         return -1;
     }
+    int nregs = debug_session_nregs(s);
     for (int i = 0; i < DEBUG_SESSION_MAX_REGS; i++) {
         s_reg_changed[i] = 0;
     }

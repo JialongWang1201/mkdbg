@@ -1,7 +1,7 @@
 /* dwarf.h — ELF/DWARF .debug_line parser (32-bit little-endian ELF)
  *
  * Parses the .debug_line section of an ELF file and exposes a
- * PC → file:line lookup.  Handles DWARF 2, 3, and 4.
+ * PC → file:line lookup. Handles DWARF 2–5 line tables with 32-bit offsets.
  *
  * SPDX-License-Identifier: MIT
  */

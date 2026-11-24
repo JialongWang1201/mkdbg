@@ -149,7 +149,21 @@ static void test_required_cortex_registers(void)
 
     expect(debug_session_read_regs(s, regs) == WIRE_OK, "core registers parse");
     expect(regs[0] == 0 && regs[16] == 16, "register values use little endian");
+    expect(debug_session_nregs(s) == 17, "Cortex-M0+ exposes 17 core registers");
     expect(regs[17] == 0 && regs[49] == 0, "unavailable optional registers are zero");
+
+    char fpu_payload[50 * 8 + 1];
+    append_registers(fpu_payload, sizeof(fpu_payload), 50);
+    append_packet(&fake, fpu_payload);
+    expect(debug_session_read_regs(s, regs) == WIRE_OK &&
+           debug_session_nregs(s) == 50 && regs[49] == 49,
+           "a full register reply exposes the FPU registers");
+
+    fpu_payload[17 * 8] = 'x';
+    append_packet(&fake, fpu_payload);
+    expect(debug_session_read_regs(s, regs) == WIRE_ERR_PARSE &&
+           debug_session_nregs(s) == 50,
+           "a malformed reply leaves the last valid register count intact");
     debug_session_close(s);
     expect(fake.closed, "session closes owned transport");
 }
