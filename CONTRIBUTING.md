@@ -31,6 +31,59 @@ git switch -c fix/short-description upstream/next
 git submodule update --init --recursive
 ```
 
+## Code style
+
+Match the surrounding code when editing an existing file. Give new files the
+same style as their subsystem, and keep formatting-only changes in a separate
+commit so reviewers can see the behavior change clearly.
+
+- **C.** Use spaces. The native CLI and STM32F446 firmware commonly use two
+  spaces per level. The debug session and architecture decoders commonly use
+  four. For a new module with no nearby convention, use two spaces. See the
+  [CLI probe commands](src/probe.c), [debug session](src/debug_session.c), and
+  [firmware fault handling](examples/stm32f446/src/fault.c).
+- **Rust.** Use default `rustfmt` formatting. See the
+  [probe run control module](probe-bridge/src/run_control.rs).
+- **Python.** Use four spaces per level, `snake_case` for functions and
+  variables, and `PascalCase` for classes. Prefer the standard library for
+  standalone diagnostics. See the [board evidence tool](tools/board_evidence.py).
+- **Shell.** Follow the script's declared interpreter. Quote paths and argument
+  expansions and pass external commands their arguments individually. See the
+  [CI smoke script](scripts/ci_smoke.sh).
+
+In new C code, put a function's opening brace on its own line. Put the opening
+brace of a control block on the same line as its condition or keyword. Write
+pointers as `const char *name`. Use `snake_case` for functions and variables,
+`PascalCase` for project-defined types, and `UPPER_SNAKE_CASE` for new macros.
+Use `static` for helpers used in one translation unit.
+
+Use names that expose units or side effects, such as `timeout_ms` or
+`halt_target`. Keep parsing and decoding separate from target I/O where
+practical so they can be tested with fixtures. Comment invariants that a
+reviewer cannot infer from the code, such as byte order, ownership transfers,
+or why a memory barrier is required.
+
+### Check formatting before opening a PR
+
+From the repository root, check your pending edits and your branch's commits.
+
+```bash
+git diff --check HEAD
+git diff --check upstream/next...HEAD
+```
+
+For changes to the Rust probe bridge, use the crate's format check. Remove
+`--check` to apply `rustfmt`, then review the result.
+
+```bash
+cargo fmt --manifest-path probe-bridge/Cargo.toml --check
+```
+
+Run the existing tests for the area you changed. For example, run
+`python3 tests/platform_diagnostics_test.py` for the platform diagnostic
+tools. See the [host build and test commands](#build-and-test-on-the-host) and
+[verification table](#choose-verification-for-the-change) for broader checks.
+
 ## Build and test on the host
 
 Use CMake 3.20 or later, a C11 compiler, Git, and Python 3.10 or later.
@@ -67,11 +120,10 @@ on PRs targeting `next` or `main`.
 - **Scope.** Keep each commit focused on one behavior. Trace the failure through
   its normal entry point before changing code. When the cause is shared
   state or a broken boundary, fix the ownership or contract at that boundary.
-- **Host code.** Match surrounding C or Rust conventions and keep changed code
-  warning-free under the target's compiler flags. For native C code, check
-  `-Wall -Wextra -Werror`. Keep resource ownership and
-  cleanup visible. Errors should identify the operation that failed and
-  whether target state was confirmed.
+- **Host code.** Keep changed code warning-free under the target's compiler
+  flags. The native CLI is built with `-Wall -Wextra -Werror`. Keep resource
+  ownership and cleanup visible. Errors should identify the operation that
+  failed and whether target state was confirmed.
 - **Inputs and compatibility.** Treat UART and probe responses, ELF/DWARF files,
   and saved captures as untrusted input. Bound lengths and offsets before
   reading. Use explicit widths and byte order at protocol boundaries. Preserve
