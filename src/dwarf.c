@@ -1,7 +1,7 @@
 /* dwarf.c — ELF/DWARF .debug_line parser for 32-bit little-endian ELF
  *
  * Parses ELF32 section headers, locates .debug_line, runs the DWARF line
- * number state machine (DWARF 2/3/4), and builds a sorted PC→file:line
+ * number state machine (DWARF 2–5), and builds a sorted PC→file:line
  * table for fast binary-search lookup.
  *
  * SPDX-License-Identifier: MIT
@@ -48,7 +48,31 @@
 #define DW_LNE_set_address   2
 #define DW_LNE_define_file   3
 
+#define DW_LNCT_path             0x01
+#define DW_LNCT_directory_index  0x02
+#define DW_FORM_data2            0x05
+#define DW_FORM_data4            0x06
+#define DW_FORM_data8            0x07
+#define DW_FORM_string           0x08
+#define DW_FORM_data1            0x0b
+#define DW_FORM_strp             0x0e
+#define DW_FORM_udata            0x0f
+#define DW_FORM_data16           0x1e
+#define DW_FORM_line_strp        0x1f
+
+#define MAX_DIRS 512
+
 /* ── Internal types ──────────────────────────────────────────────────────── */
+
+typedef struct {
+    const uint8_t *data;
+    size_t size;
+} DwarfSection;
+
+typedef struct {
+    DwarfSection debug_str;
+    DwarfSection line_str;
+} DwarfStrings;
 
 typedef struct {
     uint64_t end_address;      /* exclusive; may be one past UINT32_MAX */
@@ -173,6 +197,18 @@ static int dbi_add_file(DwarfDBI *dbi, const char *path)
     return (int)(dbi->nfiles++);
 }
 
+static int dbi_file_index(DwarfDBI *dbi, const char *dir, const char *name)
+{
+    char path[1024];
+    if (dir) snprintf(path, sizeof(path), "%s/%s", dir, name);
+    else snprintf(path, sizeof(path), "%s", name);
+
+    for (size_t i = 0; i < dbi->nfiles; i++) {
+        if (strcmp(dbi->files[i], path) == 0) return (int)i;
+    }
+    return dbi_add_file(dbi, path);
+}
+
 static int dbi_emit_row(DwarfDBI *dbi,
                         uint64_t addr, uint32_t fidx, int line, int col,
                         size_t sequence_start)
@@ -201,12 +237,167 @@ static int dbi_emit_row(DwarfDBI *dbi,
 
 /* ── DWARF line program state machine ────────────────────────────────────── */
 
+typedef struct {
+    uint64_t kind;
+    uint64_t form;
+} LineColumn;
+
+typedef struct {
+    LineColumn columns[UINT8_MAX];
+    uint8_t column_count;
+    uint64_t entry_count;
+} LineTable;
+
+static int read_line_table(const uint8_t **p, const uint8_t *end, LineTable *table)
+{
+    if (*p == end) return -1;
+    table->column_count = **p;
+    (*p)++;
+    for (unsigned int i = 0; i < table->column_count; i++) {
+        if (read_uleb128(p, end, &table->columns[i].kind) != 0 ||
+            read_uleb128(p, end, &table->columns[i].form) != 0) return -1;
+    }
+    if (read_uleb128(p, end, &table->entry_count) != 0 ||
+        table->entry_count > (uint64_t)(end - *p) ||
+        (table->entry_count && !table->column_count)) return -1;
+    return 0;
+}
+
+/* Return 1 for a form that needs metadata beyond the supported line tables. */
+static int read_line_entry(const uint8_t **p, const uint8_t *end,
+                           const LineTable *table, const DwarfStrings *strings,
+                           const char **path, uint64_t *dir_index)
+{
+    *path = NULL;
+    *dir_index = 0;
+    for (unsigned int i = 0; i < table->column_count; i++) {
+        const LineColumn *col = &table->columns[i];
+        const char *string = NULL;
+        uint64_t number = 0;
+        size_t bytes = 0;
+        switch (col->form) {
+        case DW_FORM_string:
+            if (read_bounded_string(p, end, &string) != 0) return -1;
+            break;
+        case DW_FORM_strp:
+        case DW_FORM_line_strp: {
+            if (end - *p < 4) return -1;
+            uint32_t offset = le32(*p);
+            *p += 4;
+            DwarfSection section = col->form == DW_FORM_strp
+                ? strings->debug_str : strings->line_str;
+            if (offset >= section.size) return -1;
+            const uint8_t *str = section.data + offset;
+            if (read_bounded_string(&str, section.data + section.size, &string) != 0)
+                return -1;
+            break;
+        }
+        case DW_FORM_udata:
+            if (read_uleb128(p, end, &number) != 0) return -1;
+            break;
+        case DW_FORM_data1:  bytes = 1; break;
+        case DW_FORM_data2:  bytes = 2; break;
+        case DW_FORM_data4:  bytes = 4; break;
+        case DW_FORM_data8:  bytes = 8; break;
+        case DW_FORM_data16: bytes = 16; break;
+        default: return 1;
+        }
+        if (bytes > (size_t)(end - *p)) return -1;
+        if (bytes && bytes <= sizeof(number)) {
+            for (size_t j = 0; j < bytes; j++)
+                number |= (uint64_t)(*p)[j] << (j * 8);
+        }
+        *p += bytes;
+
+        if (col->kind == DW_LNCT_path) {
+            if (!string) return -1;
+            *path = string;
+        } else if (col->kind == DW_LNCT_directory_index) {
+            if (string || bytes > sizeof(number)) return -1;
+            *dir_index = number;
+        }
+    }
+    return *path ? 0 : -1;
+}
+
+static int read_v5_files(DwarfDBI *dbi, const uint8_t *p, const uint8_t *end,
+                         const DwarfStrings *strings, uint32_t **files, size_t *count)
+{
+    LineTable table;
+    const char *dirs[MAX_DIRS];
+    if (read_line_table(&p, end, &table) != 0) return -1;
+    if (table.entry_count > MAX_DIRS) return 1;
+    size_t ndirs = (size_t)table.entry_count;
+    for (size_t i = 0; i < ndirs; i++) {
+        uint64_t ignored;
+        int rc = read_line_entry(&p, end, &table, strings, &dirs[i], &ignored);
+        if (rc != 0) return rc;
+    }
+
+    if (read_line_table(&p, end, &table) != 0 ||
+        table.entry_count > SIZE_MAX / sizeof(**files)) return -1;
+    *count = (size_t)table.entry_count;
+    if (*count) {
+        *files = malloc(*count * sizeof(**files));
+        if (!*files) return -1;
+    }
+    for (size_t i = 0; i < *count; i++) {
+        const char *name;
+        uint64_t dir_index;
+        int rc = read_line_entry(&p, end, &table, strings, &name, &dir_index);
+        if (rc != 0) return rc;
+        const char *dir = name[0] != '/' && dir_index < ndirs ? dirs[dir_index] : NULL;
+        int index = dbi_file_index(dbi, dir, name);
+        if (index < 0) return -1;
+        (*files)[i] = (uint32_t)index;
+    }
+    return p == end ? 0 : -1;
+}
+
+static int read_legacy_files(DwarfDBI *dbi, const uint8_t *p, const uint8_t *end,
+                             uint32_t **files, size_t *count)
+{
+    const char *dirs[MAX_DIRS];
+    size_t ndirs = 0;
+    for (;;) {
+        const char *dir;
+        if (read_bounded_string(&p, end, &dir) != 0) return -1;
+        if (!dir[0]) break;
+        if (ndirs < MAX_DIRS) dirs[ndirs++] = dir;
+    }
+
+    size_t capacity = 0;
+    for (;;) {
+        const char *name;
+        uint64_t dir_index;
+        uint64_t ignored;
+        if (read_bounded_string(&p, end, &name) != 0) return -1;
+        if (!name[0]) return 0;
+        if (read_uleb128(&p, end, &dir_index) != 0 ||
+            read_uleb128(&p, end, &ignored) != 0 ||
+            read_uleb128(&p, end, &ignored) != 0) return -1;
+
+        const char *dir = dir_index > 0 && dir_index <= ndirs ? dirs[dir_index - 1] : NULL;
+        int index = dbi_file_index(dbi, dir, name);
+        if (index < 0) return -1;
+        if (*count == capacity) {
+            size_t new_capacity = capacity ? capacity * 2 : 32;
+            uint32_t *new_files = realloc(*files, new_capacity * sizeof(**files));
+            if (!new_files) return -1;
+            *files = new_files;
+            capacity = new_capacity;
+        }
+        (*files)[(*count)++] = (uint32_t)index;
+    }
+}
+
 /* Parse one compilation unit of .debug_line data.
  * Returns bytes consumed on success (>0), or -1 on a fatal parse error.
  * Skips unsupported DWARF versions gracefully. */
 static ptrdiff_t parse_line_cu(DwarfDBI *dbi,
                                 const uint8_t *p,
-                                const uint8_t *sect_end)
+                                const uint8_t *sect_end,
+                                const DwarfStrings *strings)
 {
     const uint8_t *cu_start = p;
 
@@ -221,9 +412,14 @@ static ptrdiff_t parse_line_cu(DwarfDBI *dbi,
     /* version */
     if ((size_t)(cu_end - p) < 2u) return -1;
     uint16_t version = le16(p); p += 2;
-    if (version < 2 || version > 4) {
+    if (version < 2 || version > 5) {
         /* Unknown version — skip this CU without error */
         return (ptrdiff_t)(cu_end - cu_start);
+    }
+    if (version == 5) {
+        if (cu_end - p < 2) return -1;
+        if (p[0] != 4 || p[1] != 0) return (ptrdiff_t)(cu_end - cu_start);
+        p += 2;
     }
 
     /* header_length */
@@ -233,88 +429,46 @@ static ptrdiff_t parse_line_cu(DwarfDBI *dbi,
     const uint8_t *prog = p + hdr_len;  /* start of the line program */
 
     /* minimum_instruction_length */
-    if (p >= cu_end) return -1;
+    if (p >= prog) return -1;
     uint8_t min_insn = *p++; if (!min_insn) min_insn = 1;
 
-    /* maximum_operations_per_instruction (DWARF 4 only; always 1 for Cortex-M) */
-    if (version >= 4) { if (p >= cu_end) return -1; p++; }
+    /* Cortex-M line programs advance one operation per instruction. */
+    if (version >= 4) {
+        if (p >= prog) return -1;
+        if (version == 5 && *p != 1) return (ptrdiff_t)(cu_end - cu_start);
+        p++;
+    }
 
     /* default_is_stmt */
-    if (p >= cu_end) return -1;
+    if (p >= prog) return -1;
     uint8_t default_is_stmt = *p++;
 
     /* line_base (signed) */
-    if (p >= cu_end) return -1;
+    if (p >= prog) return -1;
     int8_t line_base = (int8_t)*p++;
 
     /* line_range */
-    if (p >= cu_end) return -1;
+    if (p >= prog) return -1;
     uint8_t line_range = *p++; if (!line_range) return -1;
 
     /* opcode_base */
-    if (p >= cu_end) return -1;
+    if (p >= prog) return -1;
     uint8_t opcode_base = *p++;
     if (!opcode_base) return -1;
 
     /* standard_opcode_lengths[opcode_base - 1] */
-    if ((size_t)(cu_end - p) < (size_t)(opcode_base - 1u)) return -1;
+    if ((size_t)(prog - p) < (size_t)(opcode_base - 1u)) return -1;
     const uint8_t *opcode_lengths = p;
     p += opcode_base - 1;
 
-    /* include_directories: null-terminated strings, final empty entry */
-    /* Pointers into elf_data — valid for lifetime of DBI. */
-#define MAX_DIRS 512
-    const char *dirs[MAX_DIRS];
-    size_t ndirs = 0;
-    for (;;) {
-        const char *dir;
-        if (read_bounded_string(&p, cu_end, &dir) != 0) return -1;
-        if (!dir[0]) break;
-        if (ndirs < MAX_DIRS) dirs[ndirs++] = dir;
-    }
-
-    /* file_names: map CU-local (1-based) indices to global DBI file indices */
     uint32_t *file_map   = NULL;
     size_t    nfiles_cu  = 0;
-    size_t    fmap_cap   = 0;
-
-    for (;;) {
-        const char *fname;
-        uint64_t dir_idx;
-        uint64_t ignored;
-        if (read_bounded_string(&p, cu_end, &fname) != 0) {
-            free(file_map); return -1;
-        }
-        if (!fname[0]) break;
-        if (read_uleb128(&p, cu_end, &dir_idx) != 0 ||
-            read_uleb128(&p, cu_end, &ignored) != 0 ||
-            read_uleb128(&p, cu_end, &ignored) != 0) {
-            free(file_map); return -1;
-        }
-
-        char path_buf[1024];
-        if (dir_idx > 0 && dir_idx <= ndirs)
-            snprintf(path_buf, sizeof(path_buf), "%s/%s", dirs[dir_idx - 1], fname);
-        else
-            snprintf(path_buf, sizeof(path_buf), "%s", fname);
-
-        /* Find or add in global file table */
-        uint32_t gidx = (uint32_t)dbi->nfiles;
-        for (size_t j = 0; j < dbi->nfiles; j++) {
-            if (strcmp(dbi->files[j], path_buf) == 0) { gidx = (uint32_t)j; break; }
-        }
-        if (gidx == (uint32_t)dbi->nfiles) {
-            if (dbi_add_file(dbi, path_buf) < 0) { free(file_map); return -1; }
-        }
-
-        /* Grow file_map */
-        if (nfiles_cu >= fmap_cap) {
-            size_t nc = fmap_cap ? fmap_cap * 2 : 32;
-            uint32_t *nm = realloc(file_map, nc * sizeof(uint32_t));
-            if (!nm) { free(file_map); return -1; }
-            file_map = nm; fmap_cap = nc;
-        }
-        file_map[nfiles_cu++] = gidx;
+    int files_rc = version == 5
+        ? read_v5_files(dbi, p, prog, strings, &file_map, &nfiles_cu)
+        : read_legacy_files(dbi, p, prog, &file_map, &nfiles_cu);
+    if (files_rc != 0) {
+        free(file_map);
+        return files_rc > 0 ? (ptrdiff_t)(cu_end - cu_start) : -1;
     }
     /* ── Run the line number program ─────────────────────────────────────── */
     p = prog;
@@ -323,7 +477,8 @@ static ptrdiff_t parse_line_cu(DwarfDBI *dbi,
     const uint64_t address_limit = (uint64_t)UINT32_MAX + 1u;
     uint64_t address  = 0;
     size_t sequence_start = dbi->nrows;
-    uint32_t file_reg = 1;  /* 1-based index into file_map */
+    const uint64_t first_file = version == 5 ? 0 : 1;
+    uint64_t file_reg = 1;  /* DWARF 5 also initializes this register to 1. */
     int      line_reg = 1;
     int      col_reg  = 0;
     int      is_stmt  = default_is_stmt;
@@ -358,7 +513,7 @@ static ptrdiff_t parse_line_cu(DwarfDBI *dbi,
             case DW_LNE_set_address: {
                 size_t addr_sz = (size_t)(ext_len - 1);
                 if (addr_sz == 4) address = le32(p);
-                else if (addr_sz == 8)
+                else if (addr_sz == 8 && version < 5)
                     address = le32(p) | ((uint64_t)le32(p + 4) << 32);
                 else { free(file_map); return -1; }
                 if (address > address_limit) { free(file_map); return -1; }
@@ -380,8 +535,8 @@ static ptrdiff_t parse_line_cu(DwarfDBI *dbi,
             /* Standard opcode */
             switch (op) {
             case DW_LNS_copy:
-                if (file_reg >= 1 && file_reg <= nfiles_cu &&
-                    dbi_emit_row(dbi, address, file_map[file_reg - 1],
+                if (file_reg >= first_file && file_reg - first_file < nfiles_cu &&
+                    dbi_emit_row(dbi, address, file_map[file_reg - first_file],
                                  line_reg, col_reg, sequence_start) != 0) {
                     free(file_map); return -1;
                 }
@@ -418,7 +573,7 @@ static ptrdiff_t parse_line_cu(DwarfDBI *dbi,
                 if (read_uleb128(&p, cu_end, &f) != 0) {
                     free(file_map); return -1;
                 }
-                file_reg = (uint32_t)f;
+                file_reg = f;
                 break;
             }
 
@@ -493,8 +648,8 @@ static ptrdiff_t parse_line_cu(DwarfDBI *dbi,
             }
             line_reg += line_delta;
             address += addr_delta;
-            if (file_reg >= 1 && file_reg <= nfiles_cu &&
-                dbi_emit_row(dbi, address, file_map[file_reg - 1],
+            if (file_reg >= first_file && file_reg - first_file < nfiles_cu &&
+                dbi_emit_row(dbi, address, file_map[file_reg - first_file],
                              line_reg, col_reg, sequence_start) != 0) {
                 free(file_map); return -1;
             }
@@ -585,11 +740,15 @@ static DwarfDBI *dwarf_open_owned(uint8_t *data, size_t size)
     dbi->elf_data = data;
     dbi->elf_size = size;
 
+    DwarfStrings strings = {0};
+    find_elf_section(data, size, ".debug_str", &strings.debug_str.data, &strings.debug_str.size);
+    find_elf_section(data, size, ".debug_line_str", &strings.line_str.data, &strings.line_str.size);
+
     /* Parse all compilation units */
     const uint8_t *p   = dl_p;
     const uint8_t *end = dl_p + dl_sz;
     while (p < end) {
-        ptrdiff_t consumed = parse_line_cu(dbi, p, end);
+        ptrdiff_t consumed = parse_line_cu(dbi, p, end, &strings);
         if (consumed <= 0) {
             dwarf_close(dbi);
             return NULL;

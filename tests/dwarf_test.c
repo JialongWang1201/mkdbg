@@ -241,6 +241,73 @@ static int location_matches(DwarfDBI *dbi, uint32_t pc, const char *file, int li
            strcmp(location.file, file) == 0 && location.line == line;
 }
 
+static DwarfDBI *open_v5_line_unit(uint32_t filename_offset, uint32_t header_trim)
+{
+    static const char section_names[] = "\0.shstrtab\0.debug_line\0.debug_line_str";
+    static const char strings[] = "/project\0Main.swift\0/generated/Thunk.swift";
+    static const uint8_t prologue[] = {
+        1, 1, 1, 0xfb, 14, 13,                 /* line machine and opcode base */
+        0, 1, 1, 1, 1, 0, 0, 0, 1, 0, 0, 1,   /* opcode lengths */
+        1, 1, 0x1f, 1, 0, 0, 0, 0,             /* directory 0: line_strp */
+        2, 1, 0x1f, 2, 0x0f, 2,                /* two files: line_strp and udata */
+        9, 0, 0, 0, 0,                         /* file 0: Main.swift, directory 0 */
+        20, 0, 0, 0, 0,                        /* file 1: absolute Thunk.swift */
+    };
+    static const uint8_t program[] = {
+        0,5,2,0,0x10,0,0, 1, 2,4, 4,0, 3,13, 1, 2,4, 0,1,1,
+        0,5,2,0,0x20,0,0, 1, 2,4, 0,1,1,
+    };
+    uint8_t elf[ELF_SIZE + sizeof(section_names) + sizeof(strings) +
+                12 + sizeof(prologue) + sizeof(program)];
+    build_test_elf(elf);
+    pu16(elf + 48, 4);
+
+    const uint32_t line_offset = ELF_SIZE + sizeof(section_names) + sizeof(strings);
+    uint8_t *shstr = elf + ELF_SHOFF + 40;
+    pu32(shstr + 16, ELF_SIZE);
+    pu32(shstr + 20, sizeof(section_names));
+    memcpy(elf + ELF_SIZE, section_names, sizeof(section_names));
+
+    uint8_t *line = elf + ELF_SHOFF + 80;
+    pu32(line + 16, line_offset);
+    pu32(line + 20, 12 + sizeof(prologue) + sizeof(program));
+    uint8_t *line_str = elf + ELF_SHOFF + 120;
+    memset(line_str, 0, 40);
+    pu32(line_str, 23);  /* .debug_line_str name in section_names */
+    pu32(line_str + 4, 1);
+    pu32(line_str + 16, ELF_SIZE + sizeof(section_names));
+    pu32(line_str + 20, sizeof(strings));
+    memcpy(elf + ELF_SIZE + sizeof(section_names), strings, sizeof(strings));
+
+    uint8_t *cu = elf + line_offset;
+    pu32(cu, 8 + sizeof(prologue) + sizeof(program));
+    pu16(cu + 4, 5);
+    cu[6] = 4;  /* address size */
+    cu[7] = 0;  /* segment selector size */
+    pu32(cu + 8, sizeof(prologue) - header_trim);
+    memcpy(cu + 12, prologue, sizeof(prologue));
+    pu32(cu + 12 + 32, filename_offset);
+    memcpy(cu + 12 + sizeof(prologue), program, sizeof(program));
+    return dwarf_open_memory(elf, sizeof(elf));
+}
+
+static void test_v5_line_tables(void)
+{
+    DwarfDBI *dbi = open_v5_line_unit(9, 0);
+    CHECK(location_matches(dbi, 0x1000, "/generated/Thunk.swift", 1),
+          "DWARF 5 starts with file 1 and preserves its absolute path");
+    CHECK(location_matches(dbi, 0x1004, "/project/Main.swift", 14),
+          "DWARF 5 resolves file 0 using directory 0 and .debug_line_str");
+    CHECK(location_matches(dbi, 0x2000, "/generated/Thunk.swift", 1),
+          "DWARF 5 resets the file register on a new sequence");
+    dwarf_close(dbi);
+
+    CHECK(open_v5_line_unit(UINT32_MAX, 0) == NULL,
+          "DWARF 5 rejects a string offset outside its section");
+    CHECK(open_v5_line_unit(9, 1) == NULL,
+          "DWARF 5 rejects a file table that crosses the prologue boundary");
+}
+
 static void test_line_sequence_bounds(void)
 {
     /* Two sequences: [0x1000,0x1008) with a line change at 0x1004,
@@ -349,6 +416,7 @@ int main(void)
 {
     printf("dwarf_test\n");
     test_line_sequence_bounds();
+    test_v5_line_tables();
 
     /* Write synthetic ELF to a temp file */
     char tmppath[] = "/tmp/dwarf_test_XXXXXX.elf";
