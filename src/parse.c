@@ -131,6 +131,8 @@ int parse_repo_add_args(int argc, char **argv, RepoAddOptions *opts)
     else if (strcmp(argv[i], "--snapshot-cmd") == 0 && i + 1 < argc) opts->snapshot_cmd = argv[++i];
     else if (strcmp(argv[i], "--attach-cmd") == 0 && i + 1 < argc) opts->attach_cmd = argv[++i];
     else if (strcmp(argv[i], "--elf-path") == 0 && i + 1 < argc) opts->elf_path = argv[++i];
+    else if (strcmp(argv[i], "--chip") == 0 && i + 1 < argc) opts->chip = argv[++i];
+    else if (strcmp(argv[i], "--arch") == 0 && i + 1 < argc) opts->arch = argv[++i];
     else if (strcmp(argv[i], "--snapshot-output") == 0 && i + 1 < argc) opts->snapshot_output = argv[++i];
     else if (strcmp(argv[i], "--openocd-cfg") == 0 && i + 1 < argc) opts->openocd_cfg = argv[++i];
     else if (strcmp(argv[i], "--openocd-server-cmd") == 0 && i + 1 < argc) opts->openocd_server_cmd = argv[++i];
@@ -563,7 +565,11 @@ int parse_debug_args(int argc, char **argv, DebugOptions *opts)
   opts->probe_idx = -1;
 
   for (i = 0; i < argc; ++i) {
-    if (strcmp(argv[i], "--port") == 0) {
+    if (strcmp(argv[i], "--target") == 0) {
+      if (i + 1 >= argc || !argv[i + 1][0])
+        die("missing value for --target");
+      opts->target = argv[++i];
+    } else if (strcmp(argv[i], "--port") == 0) {
       if (i + 1 >= argc) die("missing value for --port");
       opts->port = argv[++i];
     } else if (strcmp(argv[i], "--baud") == 0) {
