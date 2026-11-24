@@ -8,7 +8,7 @@
 
 Use mkdbg to check board power, reset, and boot timing, inspect a core, or trace what happened before a fault. On MCU firmware with the `wire` agent, you can capture faults and debug over the same UART connection you use for logs. mkdbg also supports hardware probes, multicore captures, and Linux kernel crash dumps.
 
-[Quick start](#quick-start) · [Documentation](#documentation) · [Community](#community)
+[Quick start](#quick-start) · [Board support](#board-support) · [Documentation](#documentation) · [Community](#community)
 
 ---
 
@@ -116,14 +116,27 @@ wire-host --port /dev/ttyUSB0
 
 ## Architecture support
 
-| | Cortex-M (M0/M3/M4/M7) | RISC-V 32 |
+| | Cortex-M (M0/M0+/M3/M4/M7) | RISC-V 32 |
 |--|:---:|:---:|
 | Crash report | ✓ | ✓ |
 | Live debug TUI | ✓ | ✓ |
-| FPU registers | ✓ | — |
+| FPU registers | On targets with an FPU | — |
 | Hardware probe | ✓ | — |
 
 The built-in disassembler covers the full Thumb/Thumb-2 instruction set including FPU (VFPv4). No dependency on `objdump` or `addr2line`.
+
+### Board support
+
+| Chip | Board | Debug workflow | Validation |
+|---|---|---|---|
+| STM32F446RE | [NUCLEO-F446RE](examples/stm32f446/README.md) | UART crash capture, FreeRTOS fault diagnostics, and SWD live debugging | Reference board |
+| RP2040 | [Raspberry Pi Pico](examples/rp2040/README.md) | Core 0 breakpoints, single-step, register reads, and Embedded Swift source lines | Simulator verified. OpenOCD flashing and CMSIS-DAP SWD still need hardware validation. |
+
+For Pico, use a probe-enabled mkdbg build and an Embedded Swift ELF with debug information.
+
+```bash
+mkdbg debug --probe --chip RP2040 --arch cortex-m --elf build/swift-blinky.elf
+```
 
 ---
 

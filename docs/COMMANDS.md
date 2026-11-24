@@ -125,6 +125,9 @@ Use this command outside an active debug session. OpenOCD initialization runs
 board and target hooks, and some target drivers clear hardware breakpoints.
 Power rails, reset timing, and boot progress require separate measurements.
 
+For a Raspberry Pi Pico, use the [RP2040 bring-up example](../examples/rp2040/README.md)
+to register its OpenOCD configuration and start a native core 0 debug session.
+
 Keep one profile per board revision. The profile maps probe wiring, instrument
 channels, edge thresholds, and expected delays from a common power-on trigger.
 Feed voltage and logic instrument exports as CSV with columns
