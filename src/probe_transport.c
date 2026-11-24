@@ -35,6 +35,36 @@ static void pt_close(void *ctx)
 
 /* ── public API ──────────────────────────────────────────────────────────── */
 
+int probe_transport_select(int requested)
+{
+    ProbeInfo probes[16];
+    const int capacity = (int)(sizeof(probes) / sizeof(probes[0]));
+    int count = probe_list(probes, capacity);
+    if (count < 0) {
+        fprintf(stderr, "mkdbg: probe enumeration failed\n");
+        return -1;
+    }
+    if (count == 0) {
+        fprintf(stderr, "mkdbg: no debug probe detected\n");
+        return -1;
+    }
+    if (requested >= count) {
+        fprintf(stderr, "mkdbg: --probe %d out of range (%d probe(s) found)\n",
+                requested, count);
+        return -1;
+    }
+    if (requested >= 0) return requested;
+    if (count == 1) return 0;
+
+    fprintf(stderr, "mkdbg: %d probes found — select one with --probe N:\n", count);
+    for (int i = 0; i < count && i < capacity; i++) {
+        fprintf(stderr, "  [%d] %s  serial: %s\n", i,
+                probes[i].identifier[0] ? probes[i].identifier : "unknown",
+                probes[i].serial[0] ? probes[i].serial : "(none)");
+    }
+    return -1;
+}
+
 WireTransport *probe_transport_open(int probe_idx, const char *chip)
 {
     ProbeHandle *h = probe_open(probe_idx, chip);

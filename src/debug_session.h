@@ -35,14 +35,16 @@ DebugSession *debug_session_open(const char *port, int baud,
                                   const MkdbgArch *arch);
 
 /* Open a session from a pre-constructed WireTransport.
- * Takes ownership of t; transport_destroy() is called on debug_session_close().
- * Used by probe_transport.c (PR-3) to attach via hardware probe. */
+ * Takes ownership of t, including when opening fails. */
 DebugSession *debug_session_open_transport(WireTransport *t,
                                             const MkdbgArch *arch);
 
 /* Release transport and session resources without target I/O.
- * Use debug_session_detach() first for a normal debugger exit. */
+ * Use debug_session_finish() for a normal debugger exit. */
 void debug_session_close(DebugSession *s);
+
+/* Attempt to detach and always close the session. Returns the detach result. */
+int debug_session_finish(DebugSession *s);
 
 /* ── Execution control ───────────────────────────────────────────────────── */
 

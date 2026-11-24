@@ -25,7 +25,6 @@
 #include "capture_transport.h"
 #include "uart_transport.h"
 #ifdef MKDBG_PROBE_SUPPORT
-#include "probe_bridge.h"
 #include "probe_transport.h"
 #endif
 
@@ -419,33 +418,8 @@ int cmd_debug(const DebugOptions *opts)
                opts->replay_debug, arch_name);
     } else if (opts->use_probe) {
 #ifdef MKDBG_PROBE_SUPPORT
-        ProbeInfo probes[16];
-        int n = probe_list(probes, 16);
-        if (n < 0) {
-            fprintf(stderr, "mkdbg: probe enumeration failed\n");
-            return 1;
-        }
-        if (n == 0) {
-            fprintf(stderr, "mkdbg: no debug probe detected\n");
-            return 1;
-        }
-        int idx = opts->probe_idx;
-        if (idx < 0) {
-            if (n > 1) {
-                fprintf(stderr, "mkdbg: %d probes found — select one with --probe N:\n", n);
-                for (int i = 0; i < n; i++) {
-                    fprintf(stderr, "  [%d] %s  serial: %s\n",
-                            i,
-                            probes[i].identifier[0] ? probes[i].identifier : "unknown",
-                            probes[i].serial[0] ? probes[i].serial : "(none)");
-                }
-                return 1;
-            }
-            idx = 0;
-        } else if (idx >= n) {
-            fprintf(stderr, "mkdbg: --probe %d out of range (%d probe(s) found)\n", idx, n);
-            return 1;
-        }
+        int idx = probe_transport_select(opts->probe_idx);
+        if (idx < 0) return 1;
         transport = probe_transport_open(idx, opts->chip);
         if (!transport) return 1;
         printf("mkdbg live debug  probe=%d  chip=%s\n",
@@ -586,13 +560,8 @@ int cmd_debug(const DebugOptions *opts)
         }
     }
 
-    int rc = debug_session_detach(s);
-    if (rc != WIRE_OK) {
-        fprintf(stderr, "mkdbg: detach failed (rc=%d); target resume not confirmed; "
-                        "breakpoints/watchpoints may remain\n", rc);
+    if (debug_session_finish(s) != WIRE_OK)
         exit_status = 1;
-    }
-    debug_session_close(s);
     dwarf_close(s_dbi);
     s_dbi = NULL;
     return exit_status;

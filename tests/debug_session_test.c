@@ -58,7 +58,7 @@ static int fake_write(void *ctx, const uint8_t *buf, int len)
 
 static void fake_close(void *ctx)
 {
-    ((FakeTransport *)ctx)->closed = 1;
+    ((FakeTransport *)ctx)->closed++;
 }
 
 void transport_destroy(WireTransport *t)
@@ -125,7 +125,7 @@ static void test_declared_register_mismatch(void)
 
     expect(debug_session_open_transport(t, mkdbg_arch_find("cortex-m")) == NULL,
            "declared register mismatch rejects session");
-    expect(fake.closed, "rejected transport is closed");
+    expect(fake.closed == 1, "rejected transport is closed exactly once");
 }
 
 static void append_registers(char *out, size_t out_size, int count)
@@ -466,6 +466,30 @@ static void test_detach_watchpoint_and_resume_failures(void)
     expect(debug_session_detach(NULL) == WIRE_ERR_IO, "NULL detach fails without a crash");
 }
 
+static void test_finish_closes_on_success_and_failure(void)
+{
+    FakeTransport success = {0};
+    DebugSession *session = open_fake(&success, "cortex-m");
+    expect(debug_session_finish(session) == WIRE_OK && success.closed == 1,
+           "finishing resumes the target and closes the transport once");
+    expect(success.output_len == 5 && memcmp(success.output, "$c#63", 5) == 0,
+           "finishing sends one resume");
+
+    FakeTransport failure = {0};
+    session = open_fake(&failure, "cortex-m");
+    append_packet(&failure, "OK");
+    expect(debug_session_add_breakpoint(session, 0x08001000) > 0,
+           "set breakpoint before finish failure");
+    append_packet(&failure, "E01");
+    size_t written = failure.output_len;
+    expect(debug_session_finish(session) == WIRE_ERR_IO && failure.closed == 1,
+           "finishing reports a failed clear and closes the transport once");
+    const char clear_request[] = "$z1,8001000,4#90+";
+    expect(failure.output_len - written == sizeof(clear_request) - 1 &&
+           memcmp(failure.output + written, clear_request, sizeof(clear_request) - 1) == 0,
+           "finishing does not resume after a failed clear");
+}
+
 int main(void)
 {
     test_declared_register_mismatch();
@@ -483,6 +507,7 @@ int main(void)
     test_detach_clears_owned_records();
     test_detach_clear_failure_can_retry();
     test_detach_watchpoint_and_resume_failures();
+    test_finish_closes_on_success_and_failure();
     puts("debug_session_test: OK");
     return 0;
 }
