@@ -22,6 +22,7 @@ struct DebugSession {
     WireTransport   *transport;    /* byte-stream backend (UART or probe) */
     int              last_signal;  /* GDB signal from most recent stop reply */
     const MkdbgArch *arch;         /* active architecture (live_debug guaranteed non-NULL) */
+    int              register_count;
     DebugBreakpoint breakpoints[DEBUG_SESSION_MAX_BREAKPOINTS];
     DebugWatchpoint watchpoints[DEBUG_SESSION_MAX_WATCHPOINTS];
     size_t breakpoint_count;
@@ -82,6 +83,9 @@ DebugSession *debug_session_open_transport(WireTransport *t,
     s->transport   = t;
     s->last_signal = 0;
     s->arch        = arch;
+    s->register_count = arch->live_debug->nregs;
+    if (t->register_count > 0 && t->register_count < s->register_count)
+        s->register_count = t->register_count;
     s->next_breakpoint_id = 1;
     s->next_watchpoint_id = 1;
     return s;
@@ -323,7 +327,7 @@ int debug_session_read_regs(DebugSession *s, uint32_t regs[DEBUG_SESSION_MAX_REG
     if (available_nregs < required_nregs) return WIRE_ERR_PARSE;
     if (available_nregs > nregs) available_nregs = nregs;
 
-    for (int i = 0; i < nregs; i++) regs[i] = 0;
+    memset(regs, 0, sizeof(*regs) * DEBUG_SESSION_MAX_REGS);
     for (int i = 0; i < available_nregs; i++) {
         const char *p = resp + i * 8;
         uint32_t v = 0;
@@ -335,6 +339,7 @@ int debug_session_read_regs(DebugSession *s, uint32_t regs[DEBUG_SESSION_MAX_REG
         }
         regs[i] = v;
     }
+    s->register_count = available_nregs;
     return WIRE_OK;
 }
 
@@ -397,7 +402,7 @@ int debug_session_reset(DebugSession *s)
 
 int debug_session_nregs(const DebugSession *s)
 {
-    return s ? s->arch->live_debug->nregs : 0;
+    return s ? s->register_count : 0;
 }
 
 const char *debug_session_reg_name(const DebugSession *s, int i)

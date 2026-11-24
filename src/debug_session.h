@@ -23,7 +23,7 @@ typedef struct WireTransport WireTransport;
 typedef struct DebugSession DebugSession;
 
 /* Maximum registers any supported arch can return from RSP 'g'.
- * Cortex-M: 17.  RISC-V 32: 33.  Increase if a future arch needs more. */
+ * Cortex-M: up to 50.  RISC-V 32: 33. */
 #define DEBUG_SESSION_MAX_REGS 64
 
 /* ── Lifecycle ───────────────────────────────────────────────────────────── */
@@ -141,7 +141,8 @@ int debug_session_reset(DebugSession *s);
 
 /* ── Arch metadata ───────────────────────────────────────────────────────── */
 
-/* Number of registers returned by debug_session_read_regs() for this session. */
+/* Number of registers in the last successful read, or the backend/arch count
+ * before the first read. */
 int debug_session_nregs(const DebugSession *s);
 
 /* Register name at index i (e.g. "r0", "pc", "x2").  Returns "??" if out of range. */
