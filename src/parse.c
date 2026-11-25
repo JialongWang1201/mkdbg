@@ -443,12 +443,12 @@ int parse_action_args(int argc, char **argv, ActionOptions *opts)
   memset(opts, 0, sizeof(*opts));
   for (i = 0; i < argc; ++i) {
     if (strcmp(argv[i], "--target") == 0) {
-      if (i + 1 >= argc) {
+      if (i + 1 >= argc || strncmp(argv[i + 1], "--", 2) == 0) {
         die("missing value for --target");
       }
       opts->target = argv[++i];
     } else if (strcmp(argv[i], "--port") == 0) {
-      if (i + 1 >= argc) {
+      if (i + 1 >= argc || strncmp(argv[i + 1], "--", 2) == 0) {
         die("missing value for --port");
       }
       opts->port = argv[++i];
