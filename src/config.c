@@ -64,6 +64,8 @@ void render_repo(FILE *f, const RepoConfig *repo)
   write_config_value(f, "snapshot_cmd", repo->snapshot_cmd);
   write_config_value(f, "attach_cmd", repo->attach_cmd);
   write_config_value(f, "elf_path", repo->elf_path);
+  write_config_value(f, "chip", repo->chip);
+  write_config_value(f, "arch", repo->arch);
   write_config_value(f, "snapshot_output", repo->snapshot_output);
   write_config_value(f, "openocd_cfg", repo->openocd_cfg);
   write_config_value(f, "openocd_server_cmd", repo->openocd_server_cmd);
@@ -129,6 +131,10 @@ void repo_assign_key(RepoConfig *repo, const char *key, const char *value)
     copy_string(repo->attach_cmd, sizeof(repo->attach_cmd), value);
   } else if (strcmp(key, "elf_path") == 0) {
     copy_string(repo->elf_path, sizeof(repo->elf_path), value);
+  } else if (strcmp(key, "chip") == 0) {
+    copy_string(repo->chip, sizeof(repo->chip), value);
+  } else if (strcmp(key, "arch") == 0) {
+    copy_string(repo->arch, sizeof(repo->arch), value);
   } else if (strcmp(key, "snapshot_output") == 0) {
     copy_string(repo->snapshot_output, sizeof(repo->snapshot_output), value);
   } else if (strcmp(key, "openocd_cfg") == 0) {
@@ -301,4 +307,22 @@ int resolve_repo_name(const MkdbgConfig *config, const char *repo, const char *t
     die("config has no default repo");
   }
   return 0;
+}
+
+RepoConfig load_selected_repo(const char *repo, const char *target, char config_path[PATH_MAX])
+{
+  MkdbgConfig config;
+  if (find_config_upward(config_path, PATH_MAX) != 0) {
+    die("missing %s; run `mkdbg init` first", CONFIG_NAME);
+  }
+  if (load_config_file(config_path, &config) != 0) {
+    die("invalid config: %s", config_path);
+  }
+  const char *name;
+  resolve_repo_name(&config, repo, target, &name);
+  const RepoConfig *selected = find_repo_const(&config, name);
+  if (selected == NULL) {
+    die("repo `%s` not found in %s", name, config_path);
+  }
+  return *selected;
 }

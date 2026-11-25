@@ -10,6 +10,9 @@
 
 #include "transport.h"
 
+/* Return the requested or only connected probe's index, or -1 on error. */
+int probe_transport_select(int requested);
+
 /*
  * probe_transport_open — open probe[probe_idx] and return a WireTransport.
  *

@@ -53,11 +53,6 @@ static int parse_stop_signal(const char *reply)
 
 /* ── Lifecycle ───────────────────────────────────────────────────────────── */
 
-/*
- * Open a session from a pre-constructed transport.  Takes ownership of t;
- * transport_destroy() is called on debug_session_close().
- * Used by debug_session_open() (UART) and in PR-3 by probe_transport.
- */
 DebugSession *debug_session_open_transport(WireTransport *t,
                                             const MkdbgArch *arch)
 {
@@ -143,6 +138,17 @@ int debug_session_detach(DebugSession *s)
     }
     /* Send 'c' but do NOT wait — leave the MCU running and return. */
     return rsp_send_packet_t(s->transport, "c");
+}
+
+int debug_session_finish(DebugSession *s)
+{
+    int rc = debug_session_detach(s);
+    if (rc != WIRE_OK) {
+        fprintf(stderr, "mkdbg: detach failed (rc=%d); target resume not confirmed; "
+                        "breakpoints/watchpoints may remain\n", rc);
+    }
+    debug_session_close(s);
+    return rc;
 }
 
 int debug_session_interrupt(DebugSession *s)

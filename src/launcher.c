@@ -3,8 +3,8 @@
 #include "debug_session.h"
 #include "debug_tui.h"
 #ifdef MKDBG_PROBE_SUPPORT
-#include "probe_bridge.h"
 #include "probe_transport.h"
+#include "wire_host.h"
 #endif
 
 static void print_crash_explain(const WireCrashReport *report)
@@ -187,23 +187,9 @@ int cmd_attach(const AttachOptions *opts)
 {
   char config_path[PATH_MAX];
   char repo_root[PATH_MAX];
-  const char *repo_name;
-  const RepoConfig *repo;
-  MkdbgConfig config;
   char *shell_argv[4];
-
-  if (find_config_upward(config_path, sizeof(config_path)) != 0) {
-    die("missing %s; run `mkdbg init` first", CONFIG_NAME);
-  }
-  if (load_config_file(config_path, &config) != 0) {
-    die("invalid config: %s", config_path);
-  }
-  resolve_repo_name(&config, opts->repo, opts->target, &repo_name);
-  repo = find_repo_const(&config, repo_name);
-  if (repo == NULL) {
-    die("repo `%s` not found in %s", repo_name, config_path);
-  }
-  resolve_repo_root(config_path, repo, repo_root, sizeof(repo_root));
+  RepoConfig repo = load_selected_repo(opts->repo, opts->target, config_path);
+  resolve_repo_root(config_path, &repo, repo_root, sizeof(repo_root));
 
   /* wire-host --dump path: triggered by --port flag (direct UART attach) */
   if (!opts->use_probe && opts->port != NULL) {
@@ -248,73 +234,39 @@ int cmd_attach(const AttachOptions *opts)
     return 0;
   }
 
-  if (repo->attach_cmd[0] != '\0') {
+  if (repo.attach_cmd[0] != '\0') {
     if (opts->breakpoint_count > 0U || opts->gdb_command_count > 0U || opts->batch) {
       die("attach_cmd cannot be combined with --break, --command, or --batch");
     }
     shell_argv[0] = "/bin/sh";
     shell_argv[1] = "-lc";
-    shell_argv[2] = (char *)repo->attach_cmd;
+    shell_argv[2] = repo.attach_cmd;
     shell_argv[3] = NULL;
     return run_process(shell_argv, repo_root, opts->dry_run);
   }
 
 #ifdef MKDBG_PROBE_SUPPORT
-  /* Probe path: auto-detect or use explicit --probe N */
-  {
-    ProbeInfo probes[16];
-    int n = probe_list(probes, 16);
-    if (n < 0) {
-      fprintf(stderr, "mkdbg: probe enumeration failed\n");
-      return 1;
-    }
-    if (n == 0) {
-      fprintf(stderr,
-              "mkdbg: no debug probe detected\n"
-              "       insert a CMSIS-DAP / ST-Link / J-Link probe, "
-              "or pass --port for UART\n");
-      return 1;
-    }
-    int idx = opts->probe_idx;
-    if (idx < 0) {
-      if (n > 1) {
-        int i;
-        fprintf(stderr, "mkdbg: %d probes found — select one with --probe N:\n", n);
-        for (i = 0; i < n; i++) {
-          fprintf(stderr, "  [%d] %s  serial: %s\n",
-                  i,
-                  probes[i].identifier[0] ? (char *)probes[i].identifier : "unknown",
-                  probes[i].serial[0]     ? (char *)probes[i].serial     : "(none)");
-        }
-        return 1;
-      }
-      idx = 0;
-    } else if (idx >= n) {
-      fprintf(stderr, "mkdbg: --probe %d out of range (%d probe(s) found)\n", idx, n);
-      return 1;
-    }
-    if (opts->dry_run) {
-      printf("[dry-run] probe_open(%d, %s) → open debug TUI\n",
-             idx, opts->chip ? opts->chip : "auto");
-      return 0;
-    }
-    {
-      const MkdbgArch *arch = mkdbg_arch_find("cortex-m");
-      WireTransport   *t;
-      DebugSession    *s;
-      if (!arch || !arch->live_debug) {
-        fprintf(stderr, "mkdbg: cortex-m arch does not support live debug\n");
-        return 1;
-      }
-      t = probe_transport_open(idx, opts->chip);
-      if (!t) return 1;
-      s = debug_session_open_transport(t, arch);
-      if (!s) { transport_destroy(t); return 1; }
-      printf("mkdbg probe debug  probe=%d  chip=%s\n",
-             idx, opts->chip ? opts->chip : "auto");
-      return debug_tui_run(s, NULL);
-    }
+  int idx = probe_transport_select(opts->probe_idx);
+  if (idx < 0) return 1;
+  if (opts->dry_run) {
+    printf("[dry-run] probe_open(%d, %s) → open debug TUI\n",
+           idx, opts->chip ? opts->chip : "auto");
+    return 0;
   }
+
+  const MkdbgArch *arch = mkdbg_arch_find("cortex-m");
+  if (!arch || !arch->live_debug) {
+    fprintf(stderr, "mkdbg: cortex-m arch does not support live debug\n");
+    return 1;
+  }
+  WireTransport *transport = probe_transport_open(idx, opts->chip);
+  if (!transport) return 1;
+  DebugSession *session = debug_session_open_transport(transport, arch);
+  if (!session) return 1;
+
+  printf("mkdbg probe debug  probe=%d  chip=%s\n", idx, opts->chip ? opts->chip : "auto");
+  int result = debug_tui_run(session, NULL);
+  return debug_session_finish(session) == WIRE_OK ? result : 1;
 #else
   fprintf(stderr,
           "mkdbg: attach requires --port to read a crash report over UART\n"

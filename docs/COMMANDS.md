@@ -128,6 +128,20 @@ Power rails, reset timing, and boot progress require separate measurements.
 For a Raspberry Pi Pico, use the [RP2040 bring-up example](../examples/rp2040/README.md)
 to register its OpenOCD configuration and start a native core 0 debug session.
 
+After registering a target, flash and debug it using the same configured ELF.
+
+```bash
+mkdbg probe flash --target pico
+mkdbg debug --target pico --probe
+```
+
+Set `--chip` and `--arch` in `mkdbg target add` to save the probe's chip
+name and the debugger's architecture. `debug --target` reads those values
+and `elf_path` from the target. A relative configured ELF path is resolved
+from the target's project directory. Explicit `--chip`, `--arch`, and
+`--elf` arguments override the configuration. For a serial session,
+`debug --target` uses the target's configured port unless you pass `--port`.
+
 Keep one profile per board revision. The profile maps probe wiring, instrument
 channels, edge thresholds, and expected delays from a common power-on trigger.
 Feed voltage and logic instrument exports as CSV with columns

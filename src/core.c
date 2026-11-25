@@ -189,6 +189,8 @@ void apply_repo_add_overrides(RepoConfig *repo, const RepoAddOptions *opts)
   if (opts->snapshot_cmd != NULL) copy_string(repo->snapshot_cmd, sizeof(repo->snapshot_cmd), opts->snapshot_cmd);
   if (opts->attach_cmd != NULL) copy_string(repo->attach_cmd, sizeof(repo->attach_cmd), opts->attach_cmd);
   if (opts->elf_path != NULL) copy_string(repo->elf_path, sizeof(repo->elf_path), opts->elf_path);
+  if (opts->chip != NULL) copy_string(repo->chip, sizeof(repo->chip), opts->chip);
+  if (opts->arch != NULL) copy_string(repo->arch, sizeof(repo->arch), opts->arch);
   if (opts->snapshot_output != NULL) copy_string(repo->snapshot_output, sizeof(repo->snapshot_output), opts->snapshot_output);
   if (opts->openocd_cfg != NULL) copy_string(repo->openocd_cfg, sizeof(repo->openocd_cfg), opts->openocd_cfg);
   if (opts->openocd_server_cmd != NULL) copy_string(repo->openocd_server_cmd, sizeof(repo->openocd_server_cmd), opts->openocd_server_cmd);
