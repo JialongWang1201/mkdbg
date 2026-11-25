@@ -443,10 +443,13 @@ int parse_action_args(int argc, char **argv, ActionOptions *opts)
   memset(opts, 0, sizeof(*opts));
   for (i = 0; i < argc; ++i) {
     if (strcmp(argv[i], "--target") == 0) {
-      if (i + 1 >= argc || strncmp(argv[i + 1], "--", 2) == 0) {
+      const char *target = i + 1 < argc ? argv[i + 1] : NULL;
+      if (target == NULL || strcmp(target, "--target") == 0 ||
+          strcmp(target, "--port") == 0 || strcmp(target, "--dry-run") == 0) {
         die("missing value for --target");
       }
-      opts->target = argv[++i];
+      opts->target = target;
+      ++i;
     } else if (strcmp(argv[i], "--port") == 0) {
       if (i + 1 >= argc || strncmp(argv[i + 1], "--", 2) == 0) {
         die("missing value for --port");

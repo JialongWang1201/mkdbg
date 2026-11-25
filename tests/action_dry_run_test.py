@@ -10,7 +10,8 @@ def test_build_dry_run(binary):
     cases = (
         (("--port", "--dry-run"), 2, "missing value for --port"),
         (("--target", "--dry-run"), 2, "missing value for --target"),
-        (("--port", "/dev/null", "--dry-run"), 0, None),
+        (("--port", "/dev/null", "--dry-run"), 0, "touch build-ran"),
+        (("--target", "--bench", "--dry-run"), 0, "touch bench-build-ran"),
     )
     with TemporaryDirectory() as directory:
         workdir = Path(directory)
@@ -20,11 +21,15 @@ def test_build_dry_run(binary):
             '[repos."demo"]\n'
             'preset = "generic"\n'
             'path = "."\n'
-            'build_cmd = "touch build-ran"\n',
+            'build_cmd = "touch build-ran"\n\n'
+            '[repos."--bench"]\n'
+            'preset = "generic"\n'
+            'path = "."\n'
+            'build_cmd = "touch bench-build-ran"\n',
             encoding="utf-8",
         )
-        marker = workdir / "build-ran"
-        for args, expected_status, diagnostic in cases:
+        markers = (workdir / "build-ran", workdir / "bench-build-ran")
+        for args, expected_status, expected_message in cases:
             result = subprocess.run(
                 [binary, "build", *args],
                 cwd=workdir,
@@ -32,13 +37,14 @@ def test_build_dry_run(binary):
                 text=True,
                 timeout=5,
             )
-            assert not marker.exists(), f"build {args}: configured command ran"
+            for marker in markers:
+                assert not marker.exists(), f"build {args}: created {marker.name}"
             assert result.returncode == expected_status, (
                 f"build {args}: expected exit {expected_status}, "
                 f"got {result.returncode}\n{result.stderr}"
             )
-            if diagnostic is not None:
-                assert diagnostic in result.stderr, f"build {args}: {result.stderr!r}"
+            output = result.stdout if expected_status == 0 else result.stderr
+            assert expected_message in output, f"build {args}: {output!r}"
 
 
 if __name__ == "__main__":
